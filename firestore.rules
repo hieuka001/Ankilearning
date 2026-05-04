@@ -1,0 +1,69 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 0. Global Safety Net: Default Deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Helper Functions ---
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // --- User Profiles ---
+    match /users/{userId} {
+      allow get: if isOwner(userId);
+      allow create: if isOwner(userId) 
+        && incoming().uid == userId
+        && incoming().email is string
+        && incoming().keys().hasAll(['uid', 'email']);
+      allow update: if isOwner(userId)
+        && incoming().uid == userId
+        && incoming().email == existing().email;
+        
+      // Nested collections for user data
+      match /sessions/{sessionId} {
+        allow read, write: if isOwner(userId);
+      }
+      match /examResults/{resultId} {
+        allow read, write: if isOwner(userId);
+      }
+    }
+
+    // --- Decks ---
+    match /decks/{deckId} {
+      allow read: if isSignedIn() && (existing().isPublic == true || isOwner(existing().ownerId));
+      allow create: if isSignedIn() 
+        && incoming().ownerId == request.auth.uid
+        && incoming().name is string
+        && incoming().name.size() > 0;
+      allow update: if isOwner(existing().ownerId)
+        && incoming().ownerId == existing().ownerId;
+      allow delete: if isOwner(existing().ownerId);
+
+      // --- Cards (Subcollection of Decks) ---
+      match /cards/{cardId} {
+        allow read: if isSignedIn() && (get(/databases/$(database)/documents/decks/$(deckId)).data.isPublic == true || isOwner(get(/databases/$(database)/documents/decks/$(deckId)).data.ownerId));
+        allow create, update, delete: if isSignedIn() && isOwner(get(/databases/$(database)/documents/decks/$(deckId)).data.ownerId);
+      }
+    }
+  }
+}

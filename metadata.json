@@ -1,0 +1,6 @@
+{
+  "name": "Learning Card",
+  "description": "Ứng dụng học tập toàn diện với Flashcard, AI và Spaced Repetition. Hỗ trợ quét OCR và tạo thẻ bằng AI.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["AI Flashcard Generation", "OCR Document Scanning", "Spaced Repetition Learning"]
+}

@@ -1,0 +1,11 @@
+node_modules/
+.npm-cache/
+.codex-push/
+awesome-design-md-main/
+build/
+dist/
+coverage/
+.DS_Store
+*.log
+.env*
+!.env.example

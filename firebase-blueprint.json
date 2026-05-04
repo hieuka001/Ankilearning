@@ -1,0 +1,127 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User profile and global learning statistics",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "displayName": { "type": "string" },
+        "email": { "type": "string", "format": "email" },
+        "photoURL": { "type": "string" },
+        "totalCardsLearned": { "type": "number" },
+        "streak": { "type": "number" },
+        "lastStudyDate": { "type": "string", "format": "date-time" },
+        "settings": {
+          "type": "object",
+          "properties": {
+            "dailyGoal": { "type": "number" },
+            "theme": { "type": "string" },
+            "language": { "type": "string" },
+            "aiApiKey": { "type": "string" }
+          }
+        }
+      },
+      "required": ["uid", "email"]
+    },
+    "Deck": {
+      "title": "Deck",
+      "description": "A collection of flashcards",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "ownerId": { "type": "string" },
+        "authorName": { "type": "string" },
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "category": { "type": "string" },
+        "cardCount": { "type": "number" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "isPublic": { "type": "boolean" }
+      },
+      "required": ["ownerId", "name"]
+    },
+    "Flashcard": {
+      "title": "Flashcard",
+      "description": "An individual flashcard with spaced repetition data",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "deckId": { "type": "string" },
+        "ownerId": { "type": "string" },
+        "front": { "type": "string" },
+        "back": { "type": "string" },
+        "tags": { "type": "array", "items": { "type": "string" } },
+        "interval": { "type": "number" },
+        "easeFactor": { "type": "number" },
+        "repetitions": { "type": "number" },
+        "nextReview": { "type": "string", "format": "date-time" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "customStyles": {
+          "type": "object",
+          "properties": {
+            "backgroundColor": { "type": "string" },
+            "fontSize": { "type": "string" },
+            "textColor": { "type": "string" }
+          }
+        }
+      },
+      "required": ["deckId", "ownerId", "front", "back"]
+    },
+    "StudySession": {
+      "title": "StudySession",
+      "description": "Record of a study session",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "deckId": { "type": "string" },
+        "cardsReviewed": { "type": "number" },
+        "correctCount": { "type": "number" },
+        "duration": { "type": "number" },
+        "timestamp": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "timestamp"]
+    },
+    "ExamResult": {
+      "title": "ExamResult",
+      "description": "Record of a completed exam (AI or Self-Test)",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "mode": { "type": "string", "enum": ["self", "ai"] },
+        "score": { "type": "number" },
+        "totalQuestions": { "type": "number" },
+        "duration": { "type": "number" },
+        "timestamp": { "type": "string", "format": "date-time" },
+        "deckIds": { "type": "array", "items": { "type": "string" } },
+        "questions": { "type": "array" },
+        "userAnswers": { "type": "array" }
+      },
+      "required": ["userId", "timestamp", "score", "totalQuestions"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "Private user profile"
+    },
+    "/decks/{deckId}": {
+      "schema": "Deck",
+      "description": "Decks created by users"
+    },
+    "/decks/{deckId}/cards/{cardId}": {
+      "schema": "Flashcard",
+      "description": "Flashcards within a deck"
+    },
+    "/users/{userId}/sessions/{sessionId}": {
+      "schema": "StudySession",
+      "description": "User's study history"
+    },
+    "/users/{userId}/examResults/{resultId}": {
+      "schema": "ExamResult",
+      "description": "User's exam history"
+    }
+  }
+}
