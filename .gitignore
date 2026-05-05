@@ -1,6 +1,7 @@
 node_modules/
 .npm-cache/
 .codex-push/
+.git-broken-*/
 awesome-design-md-main/
 build/
 dist/

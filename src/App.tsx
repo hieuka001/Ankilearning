@@ -7,7 +7,7 @@ import { UserProfile } from './types';
 import { Button } from '@/components/ui/button';
 import { Toaster } from '@/components/ui/sonner';
 import { toast } from 'sonner';
-import { motion } from 'motion/react';
+import { AnimatePresence, motion } from 'motion/react';
 import {
   LayoutDashboard,
   Library,
@@ -139,7 +139,7 @@ export default function App() {
   if (!user) {
     return (
       <div className="min-h-screen app-surface p-4 md:p-8 font-sans text-foreground">
-        <div className="mx-auto grid min-h-[calc(100vh-4rem)] max-w-6xl grid-cols-1 overflow-hidden rounded-xl border border-black/5 bg-white/85 shadow-sm backdrop-blur-xl dark:border-white/10 dark:bg-zinc-950/80 lg:grid-cols-[0.9fr_1.1fr]">
+        <div className="mx-auto grid min-h-[calc(100vh-4rem)] max-w-6xl grid-cols-1 overflow-hidden rounded-xl border border-black/5 bg-white/[0.85] shadow-sm backdrop-blur-xl dark:border-white/10 dark:bg-zinc-950/80 lg:grid-cols-[0.9fr_1.1fr]">
           <section className="flex flex-col justify-between border-b border-border/70 p-8 dark:border-white/10 lg:border-b-0 lg:border-r">
             <div className="flex items-center gap-3">
               <Logo className="h-10 w-10" />
@@ -169,7 +169,7 @@ export default function App() {
             </p>
           </section>
 
-          <section className="bg-zinc-50/80 p-6 dark:bg-zinc-900/45 md:p-8">
+          <section className="bg-zinc-50/80 p-6 dark:bg-zinc-900/[0.45] md:p-8">
             <div className="grid h-full content-center gap-4">
               <div className="rounded-lg border border-border bg-white p-5 shadow-sm dark:bg-zinc-950">
                 <div className="mb-5 flex items-center justify-between">
@@ -219,93 +219,81 @@ export default function App() {
     <SettingsProvider>
       <BackgroundMusic />
       <Router>
-        <div className="flex h-screen overflow-hidden app-surface font-sans text-foreground">
+        <div className="flex h-screen overflow-hidden app-surface quiet-grid font-sans text-foreground">
           {sidebarOpen && (
             <button
               aria-label="Dong menu"
-              className="fixed inset-0 z-30 bg-black/20 backdrop-blur-sm md:hidden"
+              className="fixed inset-0 z-30 bg-black/35 backdrop-blur-sm md:hidden"
               onClick={() => setSidebarOpen(false)}
             />
           )}
 
           <button
             aria-label="Mo menu"
-            className="fixed left-4 top-4 z-50 flex h-10 w-10 items-center justify-center rounded-lg border border-border bg-card shadow-sm md:hidden"
+            className="fixed left-4 top-4 z-50 flex h-10 w-10 items-center justify-center rounded-lg border border-white/10 bg-zinc-950 text-white shadow-lg md:hidden"
             onClick={() => setSidebarOpen(!sidebarOpen)}
           >
             {sidebarOpen ? <X size={20} /> : <Menu size={20} />}
           </button>
 
           <aside
-            className={`fixed inset-y-0 left-0 z-40 flex w-72 flex-col border-r border-border bg-sidebar/95 shadow-sm backdrop-blur-xl transition-transform duration-300 md:relative md:translate-x-0 md:shadow-none ${
+            className={`fixed inset-y-0 left-0 z-40 flex w-72 flex-col border-r border-sidebar-border bg-sidebar shadow-[20px_0_80px_rgba(0,0,0,0.16)] transition-transform duration-500 ease-out md:relative md:translate-x-0 ${
               sidebarOpen ? 'translate-x-0' : '-translate-x-full'
             }`}
           >
-            <div className="flex h-16 items-center gap-3 border-b border-sidebar-border px-5">
+            <div className="flex h-20 items-center gap-3 border-b border-sidebar-border px-5">
               <Logo className="h-9 w-9" />
               <div>
-                <p className="text-sm font-semibold text-sidebar-foreground">Learning Card</p>
-                <p className="text-xs text-muted-foreground">Smart flashcards</p>
+                <p className="text-sm font-semibold text-white">Learning Card</p>
+                <p className="text-xs text-white/[0.45]">Gemini study system</p>
               </div>
             </div>
 
-            <nav className="flex-1 space-y-1 p-3">
-              <SidebarLink to="/" icon={<LayoutDashboard size={17} />} label="Tong quan" onClick={() => setSidebarOpen(false)} />
-              <SidebarLink to="/decks" icon={<Library size={17} />} label="Bo the" onClick={() => setSidebarOpen(false)} />
-              <SidebarLink to="/create-deck" icon={<PlusCircle size={17} />} label="Tao bo the" onClick={() => setSidebarOpen(false)} />
+            <nav className="flex-1 space-y-1.5 p-3 pt-5">
+              <SidebarLink to="/" icon={<LayoutDashboard size={17} />} label="Tổng quan" onClick={() => setSidebarOpen(false)} />
+              <SidebarLink to="/decks" icon={<Library size={17} />} label="Bộ thẻ" onClick={() => setSidebarOpen(false)} />
+              <SidebarLink to="/create-deck" icon={<PlusCircle size={17} />} label="Tạo bộ thẻ" onClick={() => setSidebarOpen(false)} />
               <SidebarLink to="/voice-to-card" icon={<Mic size={17} />} label="Voice-to-Card" onClick={() => setSidebarOpen(false)} />
-              <SidebarLink to="/assessment" icon={<BrainCircuit size={17} />} label="Kiem tra" onClick={() => setSidebarOpen(false)} />
+              <SidebarLink to="/assessment" icon={<BrainCircuit size={17} />} label="Kiểm tra" onClick={() => setSidebarOpen(false)} />
               <SidebarLink to="/ai-helper" icon={<BrainCircuit size={17} />} label="AI Helper" onClick={() => setSidebarOpen(false)} />
-              <SidebarLink to="/search" icon={<SearchIcon size={17} />} label="Tim kiem" onClick={() => setSidebarOpen(false)} />
-              <SidebarLink to="/settings" icon={<SettingsIcon size={17} />} label="Cai dat" onClick={() => setSidebarOpen(false)} />
+              <SidebarLink to="/search" icon={<SearchIcon size={17} />} label="Tìm kiếm" onClick={() => setSidebarOpen(false)} />
+              <SidebarLink to="/settings" icon={<SettingsIcon size={17} />} label="Cài đặt" onClick={() => setSidebarOpen(false)} />
             </nav>
 
             <div className="border-t border-sidebar-border p-4">
-              <div className="mb-3 flex items-center gap-3 rounded-lg border border-border bg-background/70 p-3">
-                <img src={user.photoURL || ''} alt="" className="h-9 w-9 rounded-full border border-border object-cover" />
+              <div className="mb-3 flex items-center gap-3 rounded-lg border border-white/10 bg-white/[0.055] p-3">
+                <img src={user.photoURL || ''} alt="" className="h-9 w-9 rounded-full border border-white/10 object-cover" />
                 <div className="min-w-0">
-                  <p className="truncate text-sm font-semibold">{user.displayName}</p>
-                  <p className="truncate text-xs text-muted-foreground">{user.email}</p>
+                  <p className="truncate text-sm font-semibold text-white">{user.displayName}</p>
+                  <p className="truncate text-xs text-white/[0.42]">{user.email}</p>
                 </div>
               </div>
               <button
                 onClick={handleLogout}
-                className="flex h-10 w-full items-center gap-2 rounded-lg px-3 text-sm font-medium text-muted-foreground transition-colors hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-500/10 dark:hover:text-red-300"
+                className="flex h-10 w-full items-center gap-2 rounded-lg px-3 text-sm font-medium text-white/[0.55] transition-colors hover:bg-white/[0.08] hover:text-white"
               >
                 <LogOut size={16} />
-                Dang xuat
+                Đăng xuất
               </button>
             </div>
           </aside>
 
           <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
-            <header className="hidden h-16 shrink-0 items-center justify-between border-b border-border bg-background/70 px-6 backdrop-blur-xl md:flex">
+            <header className="hidden h-20 shrink-0 items-center justify-between border-b border-black/[0.06] bg-white/[0.64] px-8 backdrop-blur-2xl md:flex">
               <div>
-                <p className="text-sm font-semibold">Workspace</p>
-                <p className="text-xs text-muted-foreground">Hoc, tao the va tao de thi trong cung mot noi.</p>
+                <p className="text-sm font-semibold text-zinc-950">Workspace</p>
+                <p className="text-xs text-muted-foreground">Học, tạo thẻ và luyện đề trong một không gian tập trung.</p>
               </div>
-              <div className="flex items-center gap-2 rounded-lg border border-border bg-card px-3 py-2 text-xs text-muted-foreground">
+              <div className="flex items-center gap-2 rounded-lg border border-black/[0.07] bg-white/80 px-3 py-2 text-xs font-medium text-zinc-600 shadow-sm">
                 <span className="h-2 w-2 rounded-full bg-emerald-500" />
                 Gemini 2.5 Flash
               </div>
             </header>
 
-            <div className="min-w-0 flex-1 overflow-y-auto">
-              <div className="mx-auto w-full max-w-7xl p-4 pt-16 md:p-8 lg:p-10">
+            <div className="smooth-scroll min-w-0 flex-1 overflow-y-auto">
+              <div className="mx-auto w-full max-w-[1480px] p-4 pt-16 md:p-8 lg:p-9">
                 <Suspense fallback={<PageLoader />}>
-                  <Routes>
-                    <Route path="/" element={<Dashboard user={user} profile={profile} />} />
-                    <Route path="/decks" element={<Decks user={user} />} />
-                    <Route path="/decks/:deckId" element={<DeckDetail user={user} profile={profile} />} />
-                    <Route path="/study/:deckId" element={<Study user={user} />} />
-                    <Route path="/create-deck" element={<CreateDeck user={user} profile={profile} />} />
-                    <Route path="/voice-to-card" element={<VoiceToCard user={user} profile={profile} />} />
-                    <Route path="/assessment" element={<Assessment user={user} profile={profile} />} />
-                    <Route path="/ai-helper" element={<AIHelper user={user} profile={profile} />} />
-                    <Route path="/search" element={<Search user={user} />} />
-                    <Route path="/settings" element={<Settings user={user} profile={profile} />} />
-                    <Route path="*" element={<Navigate to="/" />} />
-                  </Routes>
+                  <AnimatedRoutes user={user} profile={profile} />
                 </Suspense>
               </div>
             </div>
@@ -315,6 +303,36 @@ export default function App() {
         </div>
       </Router>
     </SettingsProvider>
+  );
+}
+
+function AnimatedRoutes({ user, profile }: { user: User; profile: UserProfile | null }) {
+  const location = useLocation();
+
+  return (
+    <AnimatePresence mode="wait">
+      <motion.div
+        key={location.pathname}
+        initial={{ opacity: 0, y: 14, filter: 'blur(6px)' }}
+        animate={{ opacity: 1, y: 0, filter: 'blur(0px)' }}
+        exit={{ opacity: 0, y: -8, filter: 'blur(4px)' }}
+        transition={{ duration: 0.28, ease: [0.22, 1, 0.36, 1] }}
+      >
+        <Routes location={location}>
+          <Route path="/" element={<Dashboard user={user} profile={profile} />} />
+          <Route path="/decks" element={<Decks user={user} />} />
+          <Route path="/decks/:deckId" element={<DeckDetail user={user} profile={profile} />} />
+          <Route path="/study/:deckId" element={<Study user={user} />} />
+          <Route path="/create-deck" element={<CreateDeck user={user} profile={profile} />} />
+          <Route path="/voice-to-card" element={<VoiceToCard user={user} profile={profile} />} />
+          <Route path="/assessment" element={<Assessment user={user} profile={profile} />} />
+          <Route path="/ai-helper" element={<AIHelper user={user} profile={profile} />} />
+          <Route path="/search" element={<Search user={user} />} />
+          <Route path="/settings" element={<Settings user={user} profile={profile} />} />
+          <Route path="*" element={<Navigate to="/" />} />
+        </Routes>
+      </motion.div>
+    </AnimatePresence>
   );
 }
 
@@ -330,25 +348,26 @@ function SidebarLink({
   onClick?: () => void;
 }) {
   const location = useLocation();
-  const isActive = location.pathname === to;
+  const isActive = to === '/' ? location.pathname === '/' : location.pathname.startsWith(to);
 
   return (
     <Link
       to={to}
       onClick={onClick}
-      className={`relative flex h-10 items-center gap-3 rounded-lg px-3 text-sm font-medium transition-colors ${
+      className={`group relative flex h-10 items-center gap-3 rounded-lg px-3 text-sm font-medium transition-all duration-300 ${
         isActive
-          ? 'bg-primary text-primary-foreground'
-          : 'text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground'
+          ? 'bg-white text-zinc-950 shadow-[0_12px_28px_rgba(0,0,0,0.18)]'
+          : 'text-white/58 hover:bg-white/[0.075] hover:text-white'
       }`}
     >
-      <span className="flex h-5 w-5 items-center justify-center">{icon}</span>
+      <span className={`flex h-5 w-5 items-center justify-center transition-transform duration-300 ${isActive ? 'scale-105' : 'group-hover:scale-105'}`}>{icon}</span>
       <span>{label}</span>
       {isActive && (
         <motion.span
           layoutId="sidebar-active"
-          className="absolute right-2 h-1.5 w-1.5 rounded-full bg-current"
+          className="absolute right-2 h-1.5 w-1.5 rounded-full bg-primary"
           initial={false}
+          transition={{ duration: 0.28, ease: [0.22, 1, 0.36, 1] }}
         />
       )}
     </Link>

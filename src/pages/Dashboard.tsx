@@ -1,686 +1,600 @@
-import { useState, useEffect } from 'react';
-import { collection, query, where, limit, orderBy, onSnapshot, updateDoc, doc, getDocs } from 'firebase/firestore';
-import { db, auth } from '../firebase';
-import { User } from 'firebase/auth';
-import { UserProfile, Deck, StudySession, ExamResult } from '../types';
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
-import { Button } from '@/components/ui/button';
-import { Progress } from '@/components/ui/progress';
-import { 
-  Trophy, 
-  Flame, 
-  Calendar, 
-  ArrowRight, 
-  Clock,
-  BookOpen,
-  CheckCircle2,
-  Sparkles,
-  Loader2,
-  BrainCircuit,
-  FileText,
-  TrendingUp,
-  BarChart3,
-  Zap,
-  Target
-} from 'lucide-react';
+import { lazy, Suspense, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
-import { format, subDays, startOfDay, addDays } from 'date-fns';
+import { User } from 'firebase/auth';
+import { collection, doc, getDocs, limit, onSnapshot, query, updateDoc, where } from 'firebase/firestore';
+import { addDays, format, startOfDay, subDays } from 'date-fns';
 import { vi } from 'date-fns/locale';
 import { motion } from 'motion/react';
-import { lazy, Suspense } from 'react';
+import {
+  ArrowRight,
+  BookOpen,
+  BrainCircuit,
+  CheckCircle2,
+  Clock,
+  Flame,
+  Layers3,
+  Loader2,
+  Plus,
+  Sparkles,
+  Target,
+  TrendingUp,
+} from 'lucide-react';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { db } from '../firebase';
+import { Deck, StudySession, UserProfile } from '../types';
+import { calculateLevel, calculateLevelProgress } from '../lib/gamification';
+import { suggestStudyPath } from '../services/aiService';
 
 const DashboardChart = lazy(() => import('../components/charts/DashboardChart'));
-
-import { suggestStudyPath } from '../services/aiService';
-import { calculateLevel, calculateLevelProgress, ACHIEVEMENTS } from '../lib/gamification';
 
 interface DashboardProps {
   user: User | null;
   profile: UserProfile | null;
 }
 
+interface DayPoint {
+  date: string;
+  fullDate: Date;
+  count: number;
+}
+
+const cardMotion = {
+  initial: { opacity: 0, y: 18 },
+  animate: { opacity: 1, y: 0 },
+};
+
 export default function Dashboard({ user, profile }: DashboardProps) {
   const [recentDecks, setRecentDecks] = useState<(Deck & { dueCount: number })[]>([]);
   const [totalDeckCount, setTotalDeckCount] = useState(0);
   const [recentSessions, setRecentSessions] = useState<StudySession[]>([]);
-  const [recentExams, setRecentExams] = useState<ExamResult[]>([]);
   const [loading, setLoading] = useState(true);
   const [aiSuggestion, setAiSuggestion] = useState<string | null>(null);
   const [isGeneratingSuggestion, setIsGeneratingSuggestion] = useState(false);
-  const [chartData, setChartData] = useState<any[]>([]);
-  const [forecastData, setForecastData] = useState<any[]>([]);
+  const [chartData, setChartData] = useState<DayPoint[]>([]);
+  const [forecastData, setForecastData] = useState<DayPoint[]>([]);
 
   useEffect(() => {
-    // Process session data for chart
-    if (recentSessions.length > 0) {
-      const last7Days = Array.from({ length: 7 }, (_, i) => {
-        const date = subDays(new Date(), i);
-        return {
-          date: format(date, 'dd/MM'),
-          fullDate: startOfDay(date),
-          count: 0
-        };
-      }).reverse();
+    const last7Days = Array.from({ length: 7 }, (_, i) => {
+      const date = subDays(new Date(), 6 - i);
+      return {
+        date: format(date, 'dd/MM'),
+        fullDate: startOfDay(date),
+        count: 0,
+      };
+    });
 
-      recentSessions.forEach(session => {
-        const sessionDate = startOfDay(new Date(session.timestamp));
-        const dayMatch = last7Days.find(d => d.fullDate.getTime() === sessionDate.getTime());
-        if (dayMatch) {
-          dayMatch.count += session.cardsReviewed;
-        }
-      });
+    recentSessions.forEach((session) => {
+      const sessionDate = startOfDay(new Date(session.timestamp));
+      const dayMatch = last7Days.find((day) => day.fullDate.getTime() === sessionDate.getTime());
+      if (dayMatch) dayMatch.count += session.cardsReviewed;
+    });
 
-      setChartData(last7Days);
-    }
+    setChartData(last7Days);
   }, [recentSessions]);
 
   useEffect(() => {
-    if (!user || recentDecks.length === 0) return;
+    if (!user || recentDecks.length === 0) {
+      setForecastData(buildForecastShell());
+      return;
+    }
+
+    let cancelled = false;
 
     const calculateForecast = async () => {
-      try {
-        const next7Days = Array.from({ length: 7 }, (_, i) => {
-          const date = addDays(new Date(), i);
-          return {
-            date: format(date, 'dd/MM'),
-            fullDate: startOfDay(date),
-            count: 0
-          };
-        });
+      const next7Days = buildForecastShell();
 
-        // Simplified for dashboard: fetch all cards from recent decks or a sample
-        // For real logic, we'd query all due dates across all decks
+      try {
         for (const deck of recentDecks) {
           const cardsSnap = await getDocs(collection(db, `decks/${deck.id}/cards`));
-          cardsSnap.docs.forEach(doc => {
-            const data = doc.data();
-            if (data.nextReview) {
-              const reviewDate = startOfDay(new Date(data.nextReview));
-              const dayMatch = next7Days.find(d => d.fullDate.getTime() === reviewDate.getTime());
-              if (dayMatch) dayMatch.count++;
-            }
+          cardsSnap.docs.forEach((cardDoc) => {
+            const data = cardDoc.data();
+            if (!data.nextReview) return;
+
+            const reviewDate = startOfDay(new Date(data.nextReview));
+            const dayMatch = next7Days.find((day) => day.fullDate.getTime() === reviewDate.getTime());
+            if (dayMatch) dayMatch.count += 1;
           });
         }
-        setForecastData(next7Days);
-      } catch (error) {
-        // Forecast error ignored for brevity
+      } catch {
+        // Keep the empty forecast shell if Firestore rejects the optional query.
       }
+
+      if (!cancelled) setForecastData(next7Days);
     };
 
     calculateForecast();
-  }, [user]);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [user, recentDecks]);
 
   useEffect(() => {
     if (!user) return;
-    
+
     setLoading(true);
-    
-    // Streak reset logic
+
     if (profile) {
-      const checkStreak = async () => {
-        const lastStudyStr = profile.lastStudyDate;
-        if (!lastStudyStr) return;
-        
+      const lastStudyStr = profile.lastStudyDate;
+      if (lastStudyStr) {
         const lastStudyDate = new Date(lastStudyStr);
         const today = new Date();
-        
         const lastDate = new Date(lastStudyDate.getFullYear(), lastStudyDate.getMonth(), lastStudyDate.getDate());
         const currentDate = new Date(today.getFullYear(), today.getMonth(), today.getDate());
-        
-        const diffTime = currentDate.getTime() - lastDate.getTime();
-        const diffDays = Math.round(diffTime / (1000 * 60 * 60 * 24));
-        
+        const diffDays = Math.round((currentDate.getTime() - lastDate.getTime()) / (1000 * 60 * 60 * 24));
+
         if (diffDays > 1 && profile.streak > 0) {
-          try {
-            await updateDoc(doc(db, 'users', user.uid), {
-              streak: 0
-            });
-          } catch (error) {
-            // Streak reset error ignored
-          }
+          updateDoc(doc(db, 'users', user.uid), { streak: 0 }).catch(() => undefined);
         }
-      };
-      checkStreak();
+      }
     }
-    
-    // Fetch recent decks with onSnapshot
-    const decksQuery = query(
-      collection(db, 'decks'),
-      where('ownerId', '==', user.uid)
+
+    const decksQuery = query(collection(db, 'decks'), where('ownerId', '==', user.uid));
+    const unsubscribeDecks = onSnapshot(
+      decksQuery,
+      async (snap) => {
+        setTotalDeckCount(snap.size);
+        const decksData = snap.docs.map((deckDoc) => ({ id: deckDoc.id, ...deckDoc.data() } as Deck));
+        decksData.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
+        const topDecks = decksData.slice(0, 4);
+        const decksWithDue = await Promise.all(
+          topDecks.map(async (deck) => {
+            const cardsSnap = await getDocs(
+              query(collection(db, `decks/${deck.id}/cards`), where('nextReview', '<=', new Date().toISOString()))
+            );
+            return { ...deck, dueCount: cardsSnap.size };
+          })
+        );
+
+        setRecentDecks(decksWithDue);
+        setLoading(false);
+      },
+      () => setLoading(false)
     );
 
-    const unsubscribeDecks = onSnapshot(decksQuery, async (snap) => {
-      setTotalDeckCount(snap.size);
-      const decksData = snap.docs.map(doc => ({ id: doc.id, ...doc.data() } as Deck));
-      
-      // Sort and fetch due counts for the top ones
-      decksData.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-      
-      const topDecks = decksData.slice(0, 3);
-      const decksWithDue = await Promise.all(topDecks.map(async (deck) => {
-        const cardsSnap = await getDocs(query(
-          collection(db, `decks/${deck.id}/cards`),
-          where('nextReview', '<=', new Date().toISOString())
-        ));
-        return { ...deck, dueCount: cardsSnap.size };
-      }));
-
-      setRecentDecks(decksWithDue);
-      setLoading(false);
-    }, () => {
-      // Error fetching decks ignored
-    });
-
-    // Fetch recent sessions
-    const sessionsQuery = query(
-      collection(db, `users/${user.uid}/sessions`),
-      limit(200) // Increased for heatmap
-    );
-
+    const sessionsQuery = query(collection(db, `users/${user.uid}/sessions`), limit(200));
     const unsubscribeSessions = onSnapshot(sessionsQuery, (snap) => {
-      const sessionsData = snap.docs.map(doc => ({ id: doc.id, ...doc.data() } as StudySession));
+      const sessionsData = snap.docs.map((sessionDoc) => ({ id: sessionDoc.id, ...sessionDoc.data() } as StudySession));
       sessionsData.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
-      setRecentSessions(sessionsData); // Keep more sessions for heatmap
-    }, () => {
-      // Error fetching sessions ignored
+      setRecentSessions(sessionsData);
     });
 
     return () => {
       unsubscribeDecks();
       unsubscribeSessions();
     };
-  }, [user]);
+  }, [user, profile]);
+
+  const cardsToday = useMemo(
+    () =>
+      recentSessions
+        .filter((session) => startOfDay(new Date(session.timestamp)).getTime() === startOfDay(new Date()).getTime())
+        .reduce((sum, session) => sum + session.cardsReviewed, 0),
+    [recentSessions]
+  );
+
+  const dailyGoal = Math.max(profile?.settings?.dailyGoal || 20, 1);
+  const dailyProgress = Math.min((cardsToday / dailyGoal) * 100, 100);
+  const userLevel = calculateLevel(profile?.xp || 0);
+  const levelProgress = calculateLevelProgress(profile?.xp || 0);
+  const dueToday = recentDecks.reduce((sum, deck) => sum + deck.dueCount, 0);
 
   const handleGetAiSuggestion = async () => {
     if (!profile) return;
     setIsGeneratingSuggestion(true);
     try {
-      const suggestion = await suggestStudyPath({
-        totalCardsLearned: profile.totalCardsLearned,
-        streak: profile.streak,
-        recentSessions: recentSessions.length
-      }, { geminiApiKey: profile.settings?.geminiApiKey || profile.settings?.aiApiKey });
+      const suggestion = await suggestStudyPath(
+        {
+          totalCardsLearned: profile.totalCardsLearned,
+          streak: profile.streak,
+          recentSessions: recentSessions.length,
+          dueToday,
+        },
+        { geminiApiKey: profile.settings?.geminiApiKey || profile.settings?.aiApiKey }
+      );
       setAiSuggestion(suggestion);
-    } catch (error) {
-      console.error(error);
+    } catch {
+      setAiSuggestion('Gemini chưa phản hồi. Kiểm tra API key trong Cài đặt rồi thử lại.');
     } finally {
       setIsGeneratingSuggestion(false);
     }
   };
 
-  if (loading) return (
-    <div className="flex flex-col items-center justify-center min-h-[60vh] space-y-6">
-      <div className="relative">
-        <div className="h-16 w-16 rounded-full border-4 border-primary/10 border-t-primary animate-spin" />
-        <BrainCircuit className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-primary/50" size={24} />
+  if (loading) {
+    return (
+      <div className="flex min-h-[64vh] items-center justify-center">
+        <div className="premium-panel flex items-center gap-4 rounded-lg px-5 py-4">
+          <Loader2 className="h-5 w-5 animate-spin text-primary" />
+          <p className="text-sm font-medium text-muted-foreground">Đang đồng bộ dữ liệu học tập...</p>
+        </div>
       </div>
-      <p className="text-[10px] font-black text-slate-400 uppercase tracking-[0.3em] animate-pulse">Đang tải dữ liệu...</p>
-    </div>
-  );
-
-  const cardsToday = recentSessions
-    .filter(session => {
-      const sessionDate = startOfDay(new Date(session.timestamp));
-      const today = startOfDay(new Date());
-      return sessionDate.getTime() === today.getTime();
-    })
-    .reduce((sum, session) => sum + session.cardsReviewed, 0);
-
-  const dailyProgress = profile ? Math.min((cardsToday / profile.settings.dailyGoal) * 100, 100) : 0;
-  const rawProgress = profile ? (cardsToday / profile.settings.dailyGoal) * 100 : 0;
-  const userLevel = calculateLevel(profile?.xp || 0);
-  const levelProgress = calculateLevelProgress(profile?.xp || 0);
+    );
+  }
 
   return (
-    <div className="max-w-6xl mx-auto space-y-12 animate-in fade-in slide-in-from-bottom-8 duration-700 font-sans pt-6">
-      <header className="flex flex-col md:flex-row md:items-end justify-between gap-6 border-b border-slate-200 dark:border-white/5 pb-8">
-        <div className="space-y-4">
-          <div className="space-y-1">
-            <h1 className="text-4xl md:text-6xl font-black text-slate-900 dark:text-white tracking-tighter">Dashboard</h1>
-            <p className="text-slate-500 dark:text-slate-400 text-lg md:text-xl font-medium">Chào mừng trở lại, <span className="text-primary font-bold">{profile?.displayName}</span>.</p>
-          </div>
-          
-          {/* Level Progress Bar */}
-          <div className="flex flex-col gap-2 max-w-md w-full">
-            <div className="flex justify-between items-end">
-              <div className="flex items-center gap-2">
-                <div className="h-8 w-8 rounded-lg bg-indigo-600 text-white flex items-center justify-center font-black text-xs shadow-lg shadow-indigo-500/20">
-                  {userLevel}
-                </div>
-                <span className="text-[10px] font-black text-indigo-600 uppercase tracking-widest">CẤP ĐỘ HIỆN TẠI</span>
-              </div>
-              <span className="text-[10px] font-black text-slate-400 font-mono tracking-widest">{Math.round(levelProgress)}% EXP</span>
+    <motion.div
+      initial="initial"
+      animate="animate"
+      transition={{ staggerChildren: 0.045 }}
+      className="space-y-6"
+    >
+      <motion.section
+        variants={cardMotion}
+        transition={{ duration: 0.42, ease: [0.22, 1, 0.36, 1] }}
+        className="premium-panel overflow-hidden rounded-lg"
+      >
+        <div className="grid gap-0 lg:grid-cols-[1.35fr_0.65fr]">
+          <div className="border-b border-black/[0.07] p-6 dark:border-white/10 md:p-8 lg:border-b-0 lg:border-r">
+            <div className="mb-8 flex flex-wrap items-center gap-3">
+              <span className="inline-flex items-center gap-2 rounded-full border border-black/[0.08] bg-white/70 px-3 py-1 text-xs font-medium text-zinc-600 shadow-sm">
+                <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                Gemini 2.5 Flash active
+              </span>
+              <span className="rounded-full bg-zinc-950 px-3 py-1 text-xs font-medium text-white">
+                Level {userLevel}
+              </span>
             </div>
-            <div className="h-2 bg-slate-100 dark:bg-white/5 rounded-full overflow-hidden">
-              <motion.div 
-                initial={{ width: 0 }}
-                animate={{ width: `${levelProgress}%` }}
-                className="h-full bg-gradient-to-r from-indigo-600 to-primary shadow-[0_0_15px_rgba(94,106,210,0.4)]"
-              />
-            </div>
-          </div>
-        </div>
-        <div className="flex flex-wrap items-center gap-4">
-          <div className="flex flex-col items-start md:items-end">
-            <span className="text-[10px] font-black text-slate-400 uppercase tracking-[0.3em] mb-1">Học tập liên tục</span>
-            <div className="flex items-center gap-3 px-5 py-2 bg-orange-500/10 text-orange-500 rounded-2xl border border-orange-500/20 shadow-lg shadow-orange-500/5">
-              <Flame size={20} fill="currentColor" />
-              <span className="text-2xl font-black font-mono tracking-tighter">{profile?.streak || 0}</span>
-            </div>
-          </div>
-          <div className="w-px h-12 bg-slate-200 dark:bg-white/10 mx-2" />
-          <div className="flex flex-col items-end">
-            <span className="text-[10px] font-black text-slate-400 uppercase tracking-[0.3em] mb-1">Tổng số thẻ</span>
-            <div className="flex items-center gap-3 px-5 py-2 bg-primary/10 text-primary rounded-2xl border border-primary/20 shadow-lg shadow-primary/5">
-              <Trophy size={20} />
-              <span className="text-2xl font-black font-mono tracking-tighter">{profile?.totalCardsLearned || 0}</span>
-            </div>
-          </div>
-        </div>
-      </header>
 
-      <div className="grid grid-cols-1 md:grid-cols-12 gap-8">
-        {/* Analytics Card - Bento Style */}
-        <div className="md:col-span-8 flex flex-col gap-8">
-          <Card className="overflow-hidden border border-slate-200 dark:border-white/5 shadow-2xl bg-white dark:bg-[#0C0D0E] rounded-[3rem]">
-            <CardHeader className="p-10 pb-2">
-              <div className="flex items-center justify-between">
-                <div className="space-y-1">
-                  <span className="text-[10px] font-black text-primary uppercase tracking-[0.3em]">Phân tích học tập</span>
-                  <CardTitle className="text-3xl font-black tracking-tight">Xu hướng 7 ngày</CardTitle>
+            <div className="max-w-3xl">
+              <p className="mb-2 text-sm font-medium text-muted-foreground">
+                Chào mừng trở lại, <span className="text-zinc-950 dark:text-white">{profile?.displayName || 'bạn'}</span>
+              </p>
+              <h1 className="max-w-2xl text-balance text-3xl font-semibold text-zinc-950 dark:text-white md:text-4xl">
+                Bảng điều khiển học tập gọn, sắc và tập trung vào tiến độ thật.
+              </h1>
+            </div>
+
+            <div className="mt-8 grid gap-4 md:grid-cols-[1fr_auto] md:items-end">
+              <div>
+                <div className="mb-2 flex items-center justify-between gap-4">
+                  <p className="text-sm font-medium text-zinc-700 dark:text-zinc-300">
+                    Hôm nay: {cardsToday}/{dailyGoal} thẻ
+                  </p>
+                  <p className="font-mono text-xs font-semibold text-muted-foreground">{Math.round(dailyProgress)}%</p>
                 </div>
-                <div className="h-12 w-12 rounded-2xl bg-primary/10 text-primary flex items-center justify-center">
-                  <TrendingUp size={24} />
+                <div className="h-2 overflow-hidden rounded-full bg-black/[0.06] dark:bg-white/10">
+                  <motion.div
+                    initial={{ width: 0 }}
+                    animate={{ width: `${dailyProgress}%` }}
+                    transition={{ duration: 0.9, ease: [0.22, 1, 0.36, 1] }}
+                    className="h-full rounded-full bg-zinc-950 dark:bg-white"
+                  />
                 </div>
+              </div>
+
+              <div className="flex gap-2">
+                <Link to="/create-deck">
+                  <Button className="h-10 gap-2 bg-zinc-950 px-4 text-white hover:bg-zinc-800">
+                    <Plus size={16} />
+                    Tạo thẻ
+                  </Button>
+                </Link>
+                <Link to="/assessment">
+                  <Button variant="outline" className="h-10 gap-2 bg-white/70 px-4">
+                    <BrainCircuit size={16} />
+                    Luyện đề
+                  </Button>
+                </Link>
+              </div>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 divide-x divide-y divide-black/[0.07] dark:divide-white/10">
+            <StatTile label="Đến hạn" value={dueToday} icon={<Target size={18} />} tone="blue" />
+            <StatTile label="Chuỗi ngày" value={profile?.streak || 0} icon={<Flame size={18} />} tone="amber" />
+            <StatTile label="Bộ thẻ" value={totalDeckCount} icon={<Layers3 size={18} />} tone="neutral" />
+            <StatTile label="Đã học" value={profile?.totalCardsLearned || 0} icon={<CheckCircle2 size={18} />} tone="emerald" />
+          </div>
+        </div>
+      </motion.section>
+
+      <div className="grid gap-6 xl:grid-cols-[1.45fr_0.85fr]">
+        <motion.div variants={cardMotion} transition={{ duration: 0.42, ease: [0.22, 1, 0.36, 1] }}>
+          <Card className="premium-panel overflow-hidden border-0 bg-transparent">
+            <CardHeader className="flex flex-row items-start justify-between gap-4 p-6 pb-0">
+              <div>
+                <p className="mb-2 text-xs font-semibold uppercase text-primary">Analytics</p>
+                <CardTitle className="text-xl font-semibold">Nhịp học 7 ngày</CardTitle>
+              </div>
+              <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10 text-primary">
+                <TrendingUp size={20} />
               </div>
             </CardHeader>
-            <CardContent className="p-0 pt-4 h-[400px] w-full overflow-hidden flex flex-col items-center justify-center">
-              <Suspense fallback={<div className="h-full w-full flex items-center justify-center animate-pulse bg-slate-100 dark:bg-white/5 rounded-2xl" />}>
+            <CardContent className="h-[340px] p-4 pt-6 md:p-6">
+              <Suspense fallback={<div className="h-full animate-pulse rounded-lg bg-black/[0.04]" />}>
                 <DashboardChart data={chartData} />
               </Suspense>
             </CardContent>
           </Card>
+        </motion.div>
 
-          {/* Heatmap Card */}
-          <Card className="border border-slate-200 dark:border-white/5 shadow-2xl bg-white dark:bg-[#0C0D0E] rounded-[3rem] p-10">
-            <div className="flex items-center justify-between mb-8">
-              <div className="space-y-1">
-                <span className="text-[10px] font-black text-emerald-500 uppercase tracking-[0.3em]">Consistency</span>
-                <h3 className="text-2xl font-black tracking-tight text-slate-900 dark:text-white">Lịch sử học tập</h3>
-              </div>
-              <div className="flex items-center gap-2">
-                <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Ít</span>
-                <div className="flex gap-1">
-                  <div className="w-3 h-3 rounded-sm bg-slate-100 dark:bg-white/5" />
-                  <div className="w-3 h-3 rounded-sm bg-primary/30" />
-                  <div className="w-3 h-3 rounded-sm bg-primary/60" />
-                  <div className="w-3 h-3 rounded-sm bg-primary" />
+        <motion.div variants={cardMotion} transition={{ duration: 0.42, ease: [0.22, 1, 0.36, 1] }}>
+          <Card className="premium-panel h-full border-0 bg-transparent">
+            <CardHeader className="p-6 pb-2">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <p className="mb-2 text-xs font-semibold uppercase text-amber-700 dark:text-amber-300">Forecast</p>
+                  <CardTitle className="text-xl font-semibold">Dự báo ôn tập</CardTitle>
                 </div>
-                <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Nhiều</span>
+                <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-amber-500/10 text-amber-700 dark:text-amber-300">
+                  <Clock size={20} />
+                </div>
               </div>
-            </div>
-            <LearningHeatmap sessions={recentSessions} />
+            </CardHeader>
+            <CardContent className="p-6 pt-4">
+              <ForecastBars data={forecastData} />
+            </CardContent>
           </Card>
-        </div>
-
-        {/* Quick Stats - Bento Style */}
-        <div className="md:col-span-4 grid grid-cols-1 gap-8">
-          {/* SR Forecast Card */}
-          <Card className="border border-slate-200 dark:border-white/5 shadow-2xl bg-white dark:bg-[#0C0D0E] rounded-[3rem] p-8 flex flex-col gap-6 group hover:border-orange-500/30 transition-all">
-            <div className="flex items-center justify-between">
-              <div className="space-y-1">
-                <span className="text-[9px] font-black text-orange-500 uppercase tracking-[0.3em]">Theo dõi định kỳ</span>
-                <p className="font-bold text-slate-800 dark:text-slate-200">Dự báo ôn tập</p>
-              </div>
-              <div className="h-10 w-10 rounded-xl bg-orange-500/10 text-orange-500 flex items-center justify-center">
-                <Zap size={20} />
-              </div>
-            </div>
-            
-            <div className="flex-1 flex items-end gap-1 h-32">
-              {forecastData.map((d, i) => {
-                const max = Math.max(...forecastData.map(fd => fd.count), 1);
-                const height = (d.count / max) * 100;
-                return (
-                  <div key={i} className="flex-1 flex flex-col items-center gap-2 group/bar">
-                    <div className="w-full relative flex items-end justify-center h-full">
-                      <motion.div 
-                        initial={{ height: 0 }}
-                        animate={{ height: `${height || 5}%` }}
-                        className={`w-full rounded-t-lg transition-all ${i === 0 ? 'bg-orange-500' : 'bg-slate-200 dark:bg-white/10 group-hover/bar:bg-orange-200'}`}
-                      />
-                    </div>
-                    <span className="text-[8px] font-black text-slate-400 font-mono">{d.date}</span>
-                  </div>
-                );
-              })}
-            </div>
-          </Card>
-
-          <Card className="border border-slate-200 dark:border-white/5 shadow-2xl bg-white dark:bg-[#0C0D0E] rounded-[3rem] p-8 flex flex-col justify-between group hover:border-emerald-500/30 transition-all relative overflow-hidden">
-            <div className="absolute -top-10 -right-10 opacity-5 pointer-events-none group-hover:opacity-10 transition-opacity">
-              <CheckCircle2 size={160} className="text-emerald-500" />
-            </div>
-            <div className="space-y-1 relative z-10">
-              <span className="text-[10px] font-black text-slate-400 uppercase tracking-[0.3em]">Thành tích</span>
-              <p className="text-xl font-bold text-slate-800 dark:text-slate-200">Thẻ đã học</p>
-            </div>
-            <div className="flex items-end justify-between mt-8 relative z-10">
-              <span className="text-6xl font-black font-mono tracking-tighter text-slate-900 dark:text-white group-hover:text-emerald-500 transition-colors">{profile?.totalCardsLearned || 0}</span>
-              <div className="h-16 w-16 rounded-2xl bg-emerald-500/10 text-emerald-500 flex items-center justify-center shadow-inner group-hover:scale-110 transition-transform">
-                <CheckCircle2 size={32} />
-              </div>
-            </div>
-          </Card>
-        </div>
-
-        {/* AI Suggestion Card - Wide Bento */}
-        <Card className="md:col-span-12 border border-slate-200 dark:border-white/5 shadow-2xl bg-white dark:bg-[#0C0D0E] overflow-hidden relative rounded-[3rem] min-h-[300px] flex flex-col justify-center group">
-          <div className="absolute top-0 right-0 p-12 opacity-5 pointer-events-none group-hover:opacity-10 transition-opacity duration-700">
-            <BrainCircuit size={300} className="text-primary" />
-          </div>
-          <div className="absolute top-0 left-0 w-full h-full bg-[radial-gradient(circle_at_20%_30%,rgba(94,106,210,0.08),transparent_50%)] pointer-events-none" />
-          
-          <CardHeader className="relative z-10 p-6 md:p-12 pb-4 md:pb-6">
-            <div className="inline-flex items-center gap-2 px-3 py-1.5 bg-primary/10 border border-primary/20 rounded-full text-[9px] md:text-[10px] font-black uppercase tracking-[0.3em] text-primary mb-4 md:mb-6 shadow-sm">
-              <Sparkles size={14} />
-              AI Personal Assistant
-            </div>
-            <CardTitle className="text-3xl md:text-5xl lg:text-6xl font-black tracking-tighter leading-[0.9] max-w-3xl text-slate-900 dark:text-white">
-              Lộ trình học tập <br/><span className="text-primary italic">cá nhân hóa</span> của bạn.
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="p-6 md:p-12 pt-0 relative z-10">
-            {aiSuggestion ? (
-              <motion.div 
-                initial={{ opacity: 0, scale: 0.95 }}
-                animate={{ opacity: 1, scale: 1 }}
-                className="glass p-6 md:p-10 rounded-3xl md:rounded-[2.5rem] max-w-3xl shadow-2xl"
-              >
-                <p className="text-lg md:text-2xl leading-relaxed font-medium text-slate-700 dark:text-slate-200">{aiSuggestion}</p>
-                <Button 
-                  variant="link" 
-                  onClick={() => setAiSuggestion(null)} 
-                  className="text-primary p-0 h-auto mt-6 md:mt-8 text-[10px] md:text-xs font-black uppercase tracking-[0.2em] hover:text-slate-900 dark:hover:text-white transition-colors"
-                >
-                  Làm mới phân tích
-                </Button>
-              </motion.div>
-            ) : (
-              <div className="flex flex-col items-start">
-                <p className="text-slate-500 dark:text-slate-400 mb-6 md:mb-10 max-w-lg text-base md:text-lg font-medium leading-relaxed">AI phân tích thói quen và tiến độ của bạn để tối ưu hóa thời gian học tập, giúp bạn đạt được mục tiêu nhanh hơn.</p>
-                <Button 
-                  onClick={handleGetAiSuggestion} 
-                  disabled={isGeneratingSuggestion}
-                  className="bg-primary hover:bg-primary/90 text-white font-black px-8 md:px-12 h-14 md:h-20 rounded-2xl md:rounded-[2rem] shadow-2xl shadow-primary/30 text-lg md:text-xl transition-all active:scale-[0.98] group"
-                >
-                  {isGeneratingSuggestion ? <Loader2 className="animate-spin mr-3 md:mr-4 w-5 h-5 md:w-7 md:h-7" /> : <Sparkles className="mr-3 md:mr-4 group-hover:animate-pulse w-5 h-5 md:w-7 md:h-7" />}
-                  BẮT ĐẦU PHÂN TÍCH
-                </Button>
-              </div>
-            )}
-          </CardContent>
-        </Card>
-
-        {/* Daily Goal Card */}
-        <Card className="md:col-span-6 overflow-hidden border border-slate-200 dark:border-white/5 shadow-2xl bg-white dark:bg-[#0C0D0E] rounded-3xl md:rounded-[3rem]">
-          <CardHeader className="p-6 md:p-10 pb-4 md:pb-6">
-            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
-              <div className="space-y-1">
-                <span className="text-[9px] md:text-[10px] font-black text-slate-400 uppercase tracking-[0.3em]">Tiến độ hôm nay</span>
-                <CardTitle className="text-2xl md:text-3xl font-black tracking-tight">Mục tiêu hàng ngày</CardTitle>
-              </div>
-              <div className="text-left sm:text-right">
-                <span className="text-3xl md:text-5xl font-black text-slate-900 dark:text-white font-mono tracking-tighter">
-                  {cardsToday}
-                </span>
-                <span className="text-base md:text-lg font-bold text-slate-400 ml-2">
-                  / {profile?.settings.dailyGoal || 20}
-                </span>
-              </div>
-            </div>
-          </CardHeader>
-          <CardContent className="p-6 md:p-10 pt-2 md:pt-4 space-y-6 md:space-y-8">
-            <div className="space-y-5">
-              <div className="h-4 bg-slate-100 dark:bg-white/5 rounded-full overflow-hidden p-1 shadow-inner">
-                <motion.div 
-                  initial={{ width: 0 }}
-                  animate={{ width: `${dailyProgress}%` }}
-                  transition={{ duration: 2, ease: "circOut" }}
-                  className="h-full bg-primary rounded-full shadow-[0_0_20px_rgba(94,106,210,0.6)] relative"
-                >
-                  <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/20 to-transparent animate-shimmer" />
-                </motion.div>
-              </div>
-              <div className="flex justify-between items-center">
-                <span className="text-[10px] text-slate-400 font-black uppercase tracking-[0.4em]">Hiệu suất học tập</span>
-                <span className="text-sm font-mono font-black text-primary tracking-widest">{Math.round(rawProgress)}% COMPLETE</span>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* Quick Stats - Technical Style */}
-        <div className="md:col-span-6 grid grid-cols-1 sm:grid-cols-2 gap-4 md:gap-8">
-          <Card className="border border-slate-200 dark:border-white/5 shadow-2xl bg-white dark:bg-[#0C0D0E] rounded-3xl md:rounded-[3rem] p-6 md:p-10 flex flex-col justify-between group hover:border-primary/30 transition-all">
-            <div className="space-y-1">
-              <span className="text-[9px] md:text-[10px] font-black text-slate-400 uppercase tracking-[0.3em]">Thư viện</span>
-              <p className="text-sm md:text-base font-bold text-slate-600 dark:text-slate-400">Tổng số bộ thẻ</p>
-            </div>
-            <div className="flex items-end justify-between mt-4 md:mt-6">
-              <span className="text-4xl md:text-6xl font-black font-mono tracking-tighter text-slate-900 dark:text-white group-hover:text-primary transition-colors">{totalDeckCount}</span>
-              <div className="h-12 w-12 md:h-16 md:w-16 rounded-2xl md:rounded-[1.5rem] bg-primary/10 text-primary flex items-center justify-center shadow-inner group-hover:scale-110 transition-transform">
-                <BookOpen className="w-6 h-6 md:w-8 md:h-8" />
-              </div>
-            </div>
-          </Card>
-
-          <Card className="border border-slate-200 dark:border-white/5 shadow-2xl bg-white dark:bg-[#0C0D0E] rounded-3xl md:rounded-[3rem] p-6 md:p-10 flex flex-col justify-between group hover:border-emerald-500/30 transition-all">
-            <div className="space-y-1">
-              <span className="text-[9px] md:text-[10px] font-black text-slate-400 uppercase tracking-[0.3em]">Thành tích</span>
-              <p className="text-sm md:text-base font-bold text-slate-600 dark:text-slate-400">Thẻ đã thuộc</p>
-            </div>
-            <div className="flex items-end justify-between mt-4 md:mt-6">
-              <span className="text-4xl md:text-6xl font-black font-mono tracking-tighter text-slate-900 dark:text-white group-hover:text-emerald-500 transition-colors">{profile?.totalCardsLearned || 0}</span>
-              <div className="h-12 w-12 md:h-16 md:w-16 rounded-2xl md:rounded-[1.5rem] bg-emerald-500/10 text-emerald-500 flex items-center justify-center shadow-inner group-hover:scale-110 transition-transform">
-                <CheckCircle2 className="w-6 h-6 md:w-8 md:h-8" />
-              </div>
-            </div>
-          </Card>
-        </div>
+        </motion.div>
       </div>
 
-      {/* AI Assessment Highlights */}
-      <section className="space-y-8 animate-in fade-in slide-in-from-bottom-8 duration-700">
-        <div className="flex items-center justify-between border-b border-slate-200 dark:border-white/5 pb-6">
-          <h2 className="text-3xl font-black text-slate-900 dark:text-white tracking-tight">Kiểm tra & Thi thử AI</h2>
-          <Link to="/assessment" className="text-[10px] font-black text-primary hover:text-slate-900 dark:hover:text-white transition-colors flex items-center gap-2 uppercase tracking-[0.3em]">
-            TRUY CẬP <ArrowRight size={14} />
-          </Link>
-        </div>
-        
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          <Link to="/assessment" className="group">
-            <Card className="h-full border-none shadow-xl hover:shadow-2xl transition-all duration-500 bg-gradient-to-br from-indigo-600 to-violet-700 text-white overflow-hidden rounded-[2.5rem] relative">
-              <div className="absolute top-0 right-0 w-32 h-32 bg-white/10 rounded-full blur-3xl -mr-16 -mt-16 animate-pulse" />
-              <CardContent className="p-8 space-y-6">
-                <div className="w-14 h-14 rounded-2xl bg-white/10 flex items-center justify-center group-hover:scale-110 transition-transform duration-500">
-                  <BrainCircuit size={28} />
-                </div>
-                <div className="space-y-1">
-                  <h3 className="text-2xl font-black tracking-tight">Thi Theo Bộ Thẻ</h3>
-                  <p className="text-indigo-100 text-sm font-medium">Đề thi sát nội dung bộ thẻ với dẫn chứng y khoa sâu.</p>
-                </div>
-                <div className="flex items-center gap-2 text-white font-black uppercase text-[10px] tracking-widest bg-white/10 py-2 px-4 rounded-full w-fit">
-                  Bắt đầu ngay <ArrowRight size={14} />
-                </div>
-              </CardContent>
-            </Card>
-          </Link>
-
-          <Link to="/assessment" className="group">
-            <Card className="h-full border-none shadow-xl hover:shadow-2xl transition-all duration-500 bg-slate-900 text-white overflow-hidden rounded-[2.5rem] relative border-2 border-transparent hover:border-primary/20">
-              <div className="absolute bottom-0 left-0 w-32 h-32 bg-primary/20 rounded-full blur-3xl -ml-16 -mb-16" />
-              <CardContent className="p-8 space-y-6">
-                <div className="w-14 h-14 rounded-2xl bg-white/10 text-emerald-400 flex items-center justify-center group-hover:scale-110 transition-transform duration-500">
-                  <Sparkles size={28} />
-                </div>
-                <div className="space-y-1">
-                  <h3 className="text-2xl font-black tracking-tight">Thi Tổng Hợp</h3>
-                  <p className="text-slate-400 text-sm font-medium">Thi theo chuyên khoa Nội, Ngoại, Sản, Nhi từ AI.</p>
-                </div>
-                <div className="flex items-center gap-2 text-primary font-black uppercase text-[10px] tracking-widest bg-white/5 py-2 px-4 rounded-full w-fit">
-                  Khám phá ngay <ArrowRight size={14} />
-                </div>
-              </CardContent>
-            </Card>
-          </Link>
-        </div>
-      </section>
-
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-12 pt-6">
-        {/* Recent Decks - Grid Style */}
-        <section className="lg:col-span-7 space-y-8">
-          <div className="flex items-center justify-between border-b border-slate-200 dark:border-white/5 pb-6">
-            <h2 className="text-3xl font-black text-slate-900 dark:text-white tracking-tight">Bộ thẻ gần đây</h2>
-            <Link to="/decks" className="text-[10px] font-black text-primary hover:text-slate-900 dark:hover:text-white transition-colors flex items-center gap-2 uppercase tracking-[0.3em]">
-              Xem tất cả <ArrowRight size={16} />
-            </Link>
-          </div>
-          <div className="grid grid-gap-4 md:grid-gap-6">
-            {recentDecks.length > 0 ? (
-              recentDecks.map((deck, idx) => (
-                <motion.div
-                  key={deck.id}
-                  initial={{ opacity: 0, x: -20 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  transition={{ delay: idx * 0.1 }}
-                >
-                  <Link to={`/decks/${deck.id}`}>
-                    <div className="group flex items-center gap-4 md:gap-8 p-5 md:p-8 bg-white dark:bg-[#0C0D0E] border border-slate-200 dark:border-white/5 rounded-[2rem] md:rounded-[2.5rem] hover:border-primary/50 transition-all duration-500 hover:shadow-2xl hover:-translate-y-1">
-                      <div className="h-14 w-14 md:h-20 md:w-20 rounded-2xl md:rounded-[1.5rem] bg-slate-50 dark:bg-white/5 flex items-center justify-center text-slate-400 group-hover:bg-primary group-hover:text-white transition-all duration-500 shadow-inner">
-                        <BookOpen className="w-7 h-7 md:w-9 md:h-9" />
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2 mb-1">
-                          <h3 className="text-lg md:text-2xl font-black text-slate-900 dark:text-white group-hover:text-primary transition-colors tracking-tight truncate">{deck.name}</h3>
-                          {deck.dueCount > 0 && (
-                            <span className="flex-shrink-0 px-2 py-0.5 bg-orange-500 text-white text-[8px] font-black rounded-full animate-pulse">
-                              {deck.dueCount} DUE
-                            </span>
-                          )}
-                        </div>
-                        <div className="flex items-center gap-3 md:gap-4">
-                          <span className="text-[9px] md:text-[10px] font-black text-slate-400 uppercase tracking-[0.2em]">{deck.cardCount} cards</span>
-                          <div className="w-1.5 h-1.5 rounded-full bg-slate-200 dark:bg-slate-800" />
-                          <span className="text-[9px] md:text-[10px] font-black text-primary uppercase tracking-[0.2em] truncate">{deck.category}</span>
-                        </div>
-                      </div>
-                      <div className="flex-shrink-0">
-                        {deck.dueCount > 0 ? (
-                          <Button 
-                            className="bg-orange-500 hover:bg-orange-600 text-white font-black text-[10px] h-10 md:h-12 px-6 rounded-2xl shadow-lg shadow-orange-200 dark:shadow-none transition-all active:scale-95"
-                            onClick={(e) => {
-                              e.preventDefault();
-                              e.stopPropagation();
-                              window.location.href = `/study/${deck.id}`;
-                            }}
-                          >
-                            HỌC NGAY
-                          </Button>
-                        ) : (
-                          <div className="h-10 w-10 md:h-12 md:w-12 rounded-full border border-slate-100 dark:border-white/5 flex items-center justify-center text-slate-300 dark:text-slate-700 group-hover:border-primary group-hover:text-primary transition-all duration-500">
-                            <ArrowRight className="w-4.5 h-4.5 md:w-6 md:h-6" />
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  </Link>
-                </motion.div>
-              ))
-            ) : (
-              <div className="text-center py-24 bg-white dark:bg-[#0C0D0E] rounded-[3rem] border-2 border-dashed border-slate-200 dark:border-white/10">
-                <div className="p-8 bg-slate-50 dark:bg-white/5 rounded-full inline-flex mb-6 text-slate-300 dark:text-slate-700">
-                  <BookOpen size={64} />
-                </div>
-                <p className="text-slate-500 font-black uppercase tracking-[0.3em] text-sm">Chưa có bộ thẻ nào</p>
-                <Link to="/create-deck">
-                  <Button variant="link" className="text-primary font-black uppercase tracking-[0.2em] text-xs mt-4 hover:text-slate-900 dark:hover:text-white">Tạo bộ thẻ đầu tiên</Button>
-                </Link>
+      <div className="grid gap-6 xl:grid-cols-[0.95fr_1.05fr]">
+        <motion.div variants={cardMotion} transition={{ duration: 0.42, ease: [0.22, 1, 0.36, 1] }}>
+          <Card className="premium-panel h-full border-0 bg-transparent">
+            <CardHeader className="flex flex-row items-start justify-between gap-4 p-6 pb-3">
+              <div>
+                <p className="mb-2 text-xs font-semibold uppercase text-emerald-700 dark:text-emerald-300">Focus</p>
+                <CardTitle className="text-xl font-semibold">Bộ thẻ gần đây</CardTitle>
               </div>
-            )}
-          </div>
-        </section>
+              <Link to="/decks">
+                <Button variant="ghost" size="sm" className="gap-2 text-muted-foreground">
+                  Xem tất cả
+                  <ArrowRight size={15} />
+                </Button>
+              </Link>
+            </CardHeader>
+            <CardContent className="p-4 pt-0 md:p-6 md:pt-0">
+              <RecentDecksList decks={recentDecks} />
+            </CardContent>
+          </Card>
+        </motion.div>
 
-        {/* Recent Activity - Data Grid Style */}
-        <section className="lg:col-span-5 space-y-12">
-          <div className="space-y-8">
-            <div className="flex items-center justify-between border-b border-slate-200 dark:border-white/5 pb-6">
-              <h2 className="text-3xl font-black text-slate-900 dark:text-white tracking-tight">Hoạt động học</h2>
-              <span className="text-[10px] font-black text-slate-400 uppercase tracking-[0.3em]">Lịch sử ôn tập</span>
+        <motion.div variants={cardMotion} transition={{ duration: 0.42, ease: [0.22, 1, 0.36, 1] }}>
+          <Card className="premium-panel h-full border-0 bg-transparent">
+            <CardHeader className="flex flex-row items-start justify-between gap-4 p-6 pb-3">
+              <div>
+                <p className="mb-2 text-xs font-semibold uppercase text-zinc-500">Timeline</p>
+                <CardTitle className="text-xl font-semibold">Hoạt động học</CardTitle>
+              </div>
+              <div className="hidden items-center gap-1 sm:flex">
+                <LearningHeatmap sessions={recentSessions} compact />
+              </div>
+            </CardHeader>
+            <CardContent className="p-4 pt-0 md:p-6 md:pt-0">
+              <ActivityList sessions={recentSessions} />
+            </CardContent>
+          </Card>
+        </motion.div>
+      </div>
+
+      <motion.section variants={cardMotion} transition={{ duration: 0.42, ease: [0.22, 1, 0.36, 1] }}>
+        <Card className="premium-panel overflow-hidden border-0 bg-transparent">
+          <CardContent className="grid gap-6 p-6 md:grid-cols-[0.9fr_1.1fr] md:p-8">
+            <div className="space-y-4">
+              <div className="inline-flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10 text-primary">
+                <Sparkles size={20} />
+              </div>
+              <div>
+                <p className="mb-2 text-xs font-semibold uppercase text-primary">AI Coach</p>
+                <h2 className="text-2xl font-semibold text-zinc-950 dark:text-white">Gợi ý học tập cá nhân</h2>
+              </div>
+              <p className="max-w-md text-sm leading-6 text-muted-foreground">
+                Gemini phân tích dữ liệu ôn tập và đề xuất ưu tiên học tiếp theo.
+              </p>
+              <Button onClick={handleGetAiSuggestion} disabled={isGeneratingSuggestion} className="gap-2 bg-zinc-950 text-white hover:bg-zinc-800">
+                {isGeneratingSuggestion ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles size={16} />}
+                Phân tích ngay
+              </Button>
             </div>
-            <div className="bg-white dark:bg-[#0C0D0E] border border-slate-200 dark:border-white/5 rounded-[3rem] overflow-hidden shadow-2xl">
-              {recentSessions.length > 0 ? (
-                <div className="divide-y divide-slate-100 dark:divide-white/5">
-                  {recentSessions.slice(0, 5).map((session, idx) => (
-                    <motion.div 
-                      key={session.id} 
-                      initial={{ opacity: 0, y: 10 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      transition={{ delay: idx * 0.05 }}
-                      className="p-8 flex items-center justify-between hover:bg-slate-50 dark:hover:bg-white/5 transition-all cursor-default group"
-                    >
-                      <div className="flex items-center gap-5">
-                        <div className="h-14 w-14 rounded-2xl bg-emerald-500/10 text-emerald-500 flex items-center justify-center shadow-inner group-hover:scale-110 transition-transform">
-                          <CheckCircle2 size={24} />
-                        </div>
-                        <div>
-                          <p className="text-lg font-black text-slate-900 dark:text-white tracking-tight">Đã học {session.cardsReviewed} thẻ</p>
-                          <p className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] mt-1">
-                            {format(new Date(session.timestamp), 'dd/MM/yyyy • HH:mm', { locale: vi })}
-                          </p>
-                        </div>
-                      </div>
-                      <div className="text-right">
-                        <p className="text-xl font-mono font-black text-slate-900 dark:text-white tracking-tighter">{Math.round(session.duration / 60)}m</p>
-                        <p className="text-[9px] font-black text-slate-400 uppercase tracking-[0.3em]">Thời gian</p>
-                      </div>
-                    </motion.div>
-                  ))}
-                </div>
+
+            <div className="rounded-lg border border-black/[0.07] bg-white/[0.62] p-5 shadow-sm dark:border-white/10 dark:bg-white/[0.04]">
+              {aiSuggestion ? (
+                <motion.p
+                  initial={{ opacity: 0, y: 8 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className="whitespace-pre-line text-sm leading-7 text-zinc-700 dark:text-zinc-200"
+                >
+                  {aiSuggestion}
+                </motion.p>
               ) : (
-                <div className="py-20 text-center">
-                  <p className="text-slate-500 font-black uppercase tracking-[0.3em] text-xs">Chưa có hoạt động</p>
+                <div className="flex h-full min-h-40 items-center justify-center text-center text-sm leading-6 text-muted-foreground">
+                  Chưa có phân tích mới. Bấm phân tích để Gemini đề xuất lộ trình học tiếp theo.
                 </div>
               )}
             </div>
-          </div>
-        </section>
+          </CardContent>
+        </Card>
+      </motion.section>
+    </motion.div>
+  );
+}
+
+function buildForecastShell() {
+  return Array.from({ length: 7 }, (_, i) => {
+    const date = addDays(new Date(), i);
+    return {
+      date: format(date, 'dd/MM'),
+      fullDate: startOfDay(date),
+      count: 0,
+    };
+  });
+}
+
+function StatTile({
+  label,
+  value,
+  icon,
+  tone,
+}: {
+  label: string;
+  value: number;
+  icon: ReactNode;
+  tone: 'blue' | 'amber' | 'emerald' | 'neutral';
+}) {
+  const toneClass = {
+    blue: 'bg-blue-500/10 text-blue-700 dark:text-blue-300',
+    amber: 'bg-amber-500/10 text-amber-700 dark:text-amber-300',
+    emerald: 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300',
+    neutral: 'bg-zinc-950/[0.06] text-zinc-700 dark:bg-white/10 dark:text-white',
+  }[tone];
+
+  return (
+    <div className="min-h-36 p-5">
+      <div className={`mb-5 flex h-9 w-9 items-center justify-center rounded-lg ${toneClass}`}>
+        {icon}
       </div>
+      <p className="text-xs font-medium text-muted-foreground">{label}</p>
+      <p className="mt-1 font-mono text-3xl font-semibold text-zinc-950 dark:text-white">{value}</p>
     </div>
   );
 }
 
-function LearningHeatmap({ sessions }: { sessions: StudySession[] }) {
+function ForecastBars({ data }: { data: DayPoint[] }) {
+  const max = Math.max(...data.map((item) => item.count), 1);
+
+  return (
+    <div className="space-y-5">
+      <div className="flex h-40 items-end gap-2">
+        {data.map((item, index) => {
+          const height = Math.max((item.count / max) * 100, 8);
+          return (
+            <div key={item.date} className="group flex flex-1 flex-col items-center gap-2">
+              <div className="flex h-32 w-full items-end rounded-lg bg-black/[0.035] p-1 dark:bg-white/[0.055]">
+                <motion.div
+                  initial={{ height: 0 }}
+                  animate={{ height: `${height}%` }}
+                  transition={{ delay: index * 0.035, duration: 0.55, ease: [0.22, 1, 0.36, 1] }}
+                  className={`w-full rounded-md ${index === 0 ? 'bg-zinc-950 dark:bg-white' : 'bg-primary/60 group-hover:bg-primary'}`}
+                />
+              </div>
+              <span className="font-mono text-[10px] font-medium text-muted-foreground">{item.date}</span>
+            </div>
+          );
+        })}
+      </div>
+      <p className="text-sm leading-6 text-muted-foreground">
+        {data.reduce((sum, item) => sum + item.count, 0)} thẻ dự kiến cần ôn trong 7 ngày tới.
+      </p>
+    </div>
+  );
+}
+
+function RecentDecksList({ decks }: { decks: (Deck & { dueCount: number })[] }) {
+  if (decks.length === 0) {
+    return (
+      <div className="flex min-h-56 flex-col items-center justify-center rounded-lg border border-dashed border-black/[0.08] bg-white/[0.45] text-center dark:border-white/10 dark:bg-white/[0.03]">
+        <BookOpen className="mb-3 h-7 w-7 text-muted-foreground" />
+        <p className="text-sm font-medium text-zinc-700 dark:text-zinc-200">Chưa có bộ thẻ</p>
+        <Link to="/create-deck" className="mt-2 text-sm font-medium text-primary hover:text-zinc-950">
+          Tạo bộ thẻ đầu tiên
+        </Link>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-2">
+      {decks.map((deck, index) => (
+        <motion.div
+          key={deck.id}
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: index * 0.04, duration: 0.32 }}
+        >
+          <Link
+            to={`/decks/${deck.id}`}
+            className="group flex items-center gap-4 rounded-lg border border-transparent p-3 transition-all hover:border-black/[0.07] hover:bg-white/70 hover:shadow-sm dark:hover:border-white/10 dark:hover:bg-white/[0.04]"
+          >
+            <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg bg-zinc-950 text-white transition-transform group-hover:scale-[1.03]">
+              <BookOpen size={18} />
+            </div>
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-2">
+                <p className="truncate text-sm font-semibold text-zinc-950 dark:text-white">{deck.name}</p>
+                {deck.dueCount > 0 && (
+                    <span className="rounded-full bg-amber-500/[0.12] px-2 py-0.5 text-[10px] font-semibold text-amber-700 dark:text-amber-300">
+                    {deck.dueCount} đến hạn
+                  </span>
+                )}
+              </div>
+              <p className="mt-1 truncate text-xs text-muted-foreground">
+                {deck.cardCount} thẻ · {deck.category || 'Chưa phân loại'}
+              </p>
+            </div>
+            <ArrowRight className="h-4 w-4 text-muted-foreground transition-transform group-hover:translate-x-1 group-hover:text-primary" />
+          </Link>
+        </motion.div>
+      ))}
+    </div>
+  );
+}
+
+function ActivityList({ sessions }: { sessions: StudySession[] }) {
+  if (sessions.length === 0) {
+    return (
+      <div className="flex min-h-56 items-center justify-center rounded-lg border border-dashed border-black/[0.08] bg-white/[0.45] text-sm text-muted-foreground dark:border-white/10 dark:bg-white/[0.03]">
+        Chưa có hoạt động học gần đây.
+      </div>
+    );
+  }
+
+  return (
+    <div className="divide-y divide-black/[0.06] overflow-hidden rounded-lg border border-black/[0.07] bg-white/48 dark:divide-white/10 dark:border-white/10 dark:bg-white/[0.03]">
+      {sessions.slice(0, 5).map((session, index) => (
+        <motion.div
+          key={session.id}
+          initial={{ opacity: 0, y: 8 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: index * 0.04, duration: 0.32 }}
+          className="flex items-center justify-between gap-4 p-4"
+        >
+          <div className="flex min-w-0 items-center gap-3">
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-emerald-500/10 text-emerald-700 dark:text-emerald-300">
+              <CheckCircle2 size={17} />
+            </div>
+            <div className="min-w-0">
+              <p className="truncate text-sm font-semibold text-zinc-900 dark:text-white">Đã học {session.cardsReviewed} thẻ</p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                {format(new Date(session.timestamp), 'dd/MM/yyyy · HH:mm', { locale: vi })}
+              </p>
+            </div>
+          </div>
+          <div className="text-right">
+            <p className="font-mono text-sm font-semibold text-zinc-900 dark:text-white">{Math.round(session.duration / 60)}m</p>
+            <p className="text-[10px] text-muted-foreground">thời gian</p>
+          </div>
+        </motion.div>
+      ))}
+    </div>
+  );
+}
+
+function LearningHeatmap({ sessions, compact = false }: { sessions: StudySession[]; compact?: boolean }) {
+  const days = compact ? 28 : 98;
   const today = new Date();
-  const days = 14 * 7; // ~3 months (14 weeks)
   const calendarDays = Array.from({ length: days }, (_, i) => {
     const date = subDays(today, days - 1 - i);
     const dateStr = format(date, 'yyyy-MM-dd');
-    const sessionCount = sessions.filter(s => format(new Date(s.timestamp), 'yyyy-MM-dd') === dateStr).length;
-    return { date, dateStr, count: sessionCount };
+    const sessionCount = sessions.filter((session) => format(new Date(session.timestamp), 'yyyy-MM-dd') === dateStr).length;
+    return { dateStr, count: sessionCount };
   });
 
   return (
-    <div className="flex flex-wrap gap-2 justify-start">
-      {calendarDays.map((day, i) => (
+    <div className={`flex flex-wrap justify-end gap-1 ${compact ? 'max-w-40' : ''}`}>
+      {calendarDays.map((day) => (
         <div
-          key={i}
-          title={`${day.dateStr}: ${day.count} sessions`}
-          className={`w-4 h-4 md:w-5 md:h-5 rounded-md transition-all hover:scale-125 hover:shadow-md ${
-            day.count === 0 ? 'bg-slate-100 dark:bg-white/5' :
-            day.count === 1 ? 'bg-primary/30' :
-            day.count === 2 ? 'bg-primary/60' : 'bg-primary shadow-[0_0_10px_rgba(94,106,210,0.4)]'
+          key={day.dateStr}
+          title={`${day.dateStr}: ${day.count} phiên`}
+          className={`h-2.5 w-2.5 rounded-[3px] transition-transform hover:scale-125 ${
+            day.count === 0
+              ? 'bg-black/[0.08] dark:bg-white/10'
+              : day.count === 1
+                ? 'bg-primary/35'
+                : day.count === 2
+                ? 'bg-primary/[0.65]'
+                  : 'bg-primary'
           }`}
         />
       ))}

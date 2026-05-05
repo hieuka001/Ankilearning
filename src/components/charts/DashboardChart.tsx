@@ -1,63 +1,74 @@
-import { 
-  AreaChart, 
-  Area, 
-  XAxis, 
-  YAxis, 
-  CartesianGrid, 
-  Tooltip, 
-  ResponsiveContainer 
+import {
+  Area,
+  AreaChart,
+  CartesianGrid,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
 } from 'recharts';
 
 interface DashboardChartProps {
-  data: any[];
+  data: Array<{
+    date: string;
+    count: number;
+  }>;
 }
 
 export default function DashboardChart({ data }: DashboardChartProps) {
-  if (!data || data.length === 0) {
+  const total = data?.reduce((sum, item) => sum + item.count, 0) || 0;
+
+  if (!data || data.length === 0 || total === 0) {
     return (
-      <div className="h-full w-full flex items-center justify-center text-[10px] font-black text-slate-400 uppercase tracking-widest">
-        Chưa có dữ liệu xu hướng
+      <div className="flex h-full w-full items-center justify-center rounded-lg border border-dashed border-black/[0.08] bg-white/[0.45] text-sm text-muted-foreground dark:border-white/10 dark:bg-white/[0.03]">
+        Chưa có dữ liệu xu hướng trong 7 ngày gần đây.
       </div>
     );
   }
 
   return (
-    <div className="w-full h-full min-h-[300px] px-6" style={{ minWidth: 0 }}>
+    <div className="h-full w-full min-w-0">
       <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0}>
-        <AreaChart data={data} margin={{ top: 10, right: 30, left: 0, bottom: 0 }}>
+        <AreaChart data={data} margin={{ top: 10, right: 18, left: 0, bottom: 0 }}>
           <defs>
-            <linearGradient id="colorCount" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="5%" stopColor="#5E6AD2" stopOpacity={0.3}/>
-              <stop offset="95%" stopColor="#5E6AD2" stopOpacity={0}/>
+            <linearGradient id="learningCardTrend" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor="#2563EB" stopOpacity={0.22} />
+              <stop offset="80%" stopColor="#2563EB" stopOpacity={0.02} />
             </linearGradient>
           </defs>
-          <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="rgba(255,255,255,0.05)" />
-          <XAxis 
-            dataKey="date" 
-            axisLine={false} 
-            tickLine={false} 
-            tick={{ fontSize: 10, fontWeight: 700, fill: '#94a3b8' }}
-            dy={10}
+          <CartesianGrid stroke="rgba(20,20,22,0.07)" strokeDasharray="4 8" vertical={false} />
+          <XAxis
+            dataKey="date"
+            axisLine={false}
+            tickLine={false}
+            dy={12}
+            tick={{ fontSize: 11, fontWeight: 500, fill: '#71717A' }}
           />
-          <YAxis hide />
-          <Tooltip 
-            contentStyle={{ 
-              backgroundColor: '#0C0D0E', 
-              borderRadius: '1rem', 
-              border: '1px solid rgba(255,255,255,0.1)',
-              boxShadow: '0 20px 25px -5px rgb(0 0 0 / 0.1)',
-              fontWeight: 700
+          <YAxis hide domain={[0, 'dataMax + 4']} />
+          <Tooltip
+            cursor={{ stroke: 'rgba(37,99,235,0.22)', strokeWidth: 1 }}
+            contentStyle={{
+              backgroundColor: 'rgba(255,255,255,0.96)',
+              border: '1px solid rgba(20,20,22,0.08)',
+              borderRadius: 8,
+              boxShadow: '0 18px 42px rgba(20,20,22,0.12)',
+              color: '#141416',
+              fontSize: 12,
+              fontWeight: 600,
             }}
-            itemStyle={{ color: '#5E6AD2' }}
+            itemStyle={{ color: '#2563EB' }}
+            labelStyle={{ color: '#71717A', fontWeight: 500 }}
           />
-          <Area 
-            type="monotone" 
-            dataKey="count" 
-            stroke="#5E6AD2" 
-            strokeWidth={4}
-            fillOpacity={1} 
-            fill="url(#colorCount)" 
-            animationDuration={2000}
+          <Area
+            type="monotone"
+            dataKey="count"
+            name="Thẻ đã học"
+            stroke="#2563EB"
+            strokeWidth={2.5}
+            fill="url(#learningCardTrend)"
+            fillOpacity={1}
+            animationDuration={900}
+            activeDot={{ r: 4, strokeWidth: 3, stroke: '#FFFFFF', fill: '#2563EB' }}
           />
         </AreaChart>
       </ResponsiveContainer>
