@@ -293,4 +293,45 @@
     line-height: 1.3 !important;
     font-weight: 650 !important;
   }
+
+  .review-card-frame,
+  .review-card-face {
+    border-radius: 28px !important;
+  }
+
+  .review-card-scroll {
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .review-card-html img {
+    display: block;
+    max-width: 100% !important;
+    max-height: 45vh !important;
+    width: auto;
+    height: auto;
+    object-fit: contain !important;
+    border-radius: 12px !important;
+    margin: 0.75rem auto;
+    cursor: zoom-in;
+  }
+
+  .review-card-html table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.9rem;
+  }
+
+  .review-card-html th,
+  .review-card-html td {
+    border: 1px solid color-mix(in oklab, var(--border), transparent 10%);
+    padding: 0.5rem;
+    vertical-align: top;
+  }
+
+  .review-card-html pre,
+  .review-card-html code {
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
 }
