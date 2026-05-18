@@ -75,12 +75,17 @@ export default function Settings({ user, profile }: SettingsProps) {
   const [schedulerDraft, setSchedulerDraft] = useState({
     learningSteps: serializeSchedulerSteps(schedulerConfig.learningSteps),
     relearningSteps: serializeSchedulerSteps(schedulerConfig.relearningSteps),
-    graduatingInterval: String(schedulerConfig.graduatingInterval),
-    easyInterval: String(schedulerConfig.easyInterval),
-    hardMultiplier: String(schedulerConfig.hardMultiplier),
-    easyBonus: String(schedulerConfig.easyBonus),
+    desiredRetention: String(schedulerConfig.desiredRetention),
+    initialDifficulty: String(schedulerConfig.initialDifficulty),
+    initialAgain: String(schedulerConfig.initialStability.again),
+    initialHard: String(schedulerConfig.initialStability.hard),
+    initialGood: String(schedulerConfig.initialStability.good),
+    initialEasy: String(schedulerConfig.initialStability.easy),
+    newCardsPerDay: String(schedulerConfig.newCardsPerDay),
+    reviewsPerDay: String(schedulerConfig.reviewsPerDay),
+    maximumInterval: String(schedulerConfig.maximumInterval),
     intervalModifier: String(schedulerConfig.intervalModifier),
-    minimumEaseFactor: String(schedulerConfig.minimumEaseFactor),
+    burySiblings: schedulerConfig.burySiblings,
   });
 
   useEffect(() => {
@@ -91,12 +96,17 @@ export default function Settings({ user, profile }: SettingsProps) {
     setSchedulerDraft({
       learningSteps: serializeSchedulerSteps(schedulerConfig.learningSteps),
       relearningSteps: serializeSchedulerSteps(schedulerConfig.relearningSteps),
-      graduatingInterval: String(schedulerConfig.graduatingInterval),
-      easyInterval: String(schedulerConfig.easyInterval),
-      hardMultiplier: String(schedulerConfig.hardMultiplier),
-      easyBonus: String(schedulerConfig.easyBonus),
+      desiredRetention: String(schedulerConfig.desiredRetention),
+      initialDifficulty: String(schedulerConfig.initialDifficulty),
+      initialAgain: String(schedulerConfig.initialStability.again),
+      initialHard: String(schedulerConfig.initialStability.hard),
+      initialGood: String(schedulerConfig.initialStability.good),
+      initialEasy: String(schedulerConfig.initialStability.easy),
+      newCardsPerDay: String(schedulerConfig.newCardsPerDay),
+      reviewsPerDay: String(schedulerConfig.reviewsPerDay),
+      maximumInterval: String(schedulerConfig.maximumInterval),
       intervalModifier: String(schedulerConfig.intervalModifier),
-      minimumEaseFactor: String(schedulerConfig.minimumEaseFactor),
+      burySiblings: schedulerConfig.burySiblings,
     });
   }, [schedulerConfig]);
 
@@ -159,12 +169,19 @@ export default function Settings({ user, profile }: SettingsProps) {
       const nextScheduler = normalizeSchedulerConfig({
         learningSteps: parseSchedulerSteps(schedulerDraft.learningSteps, DEFAULT_SCHEDULER_CONFIG.learningSteps),
         relearningSteps: parseSchedulerSteps(schedulerDraft.relearningSteps, DEFAULT_SCHEDULER_CONFIG.relearningSteps),
-        graduatingInterval: Number(schedulerDraft.graduatingInterval),
-        easyInterval: Number(schedulerDraft.easyInterval),
-        hardMultiplier: Number(schedulerDraft.hardMultiplier),
-        easyBonus: Number(schedulerDraft.easyBonus),
+        desiredRetention: Number(schedulerDraft.desiredRetention),
+        initialDifficulty: Number(schedulerDraft.initialDifficulty),
+        initialStability: {
+          again: Number(schedulerDraft.initialAgain),
+          hard: Number(schedulerDraft.initialHard),
+          good: Number(schedulerDraft.initialGood),
+          easy: Number(schedulerDraft.initialEasy),
+        },
+        newCardsPerDay: Number(schedulerDraft.newCardsPerDay),
+        reviewsPerDay: Number(schedulerDraft.reviewsPerDay),
+        maximumInterval: Number(schedulerDraft.maximumInterval),
         intervalModifier: Number(schedulerDraft.intervalModifier),
-        minimumEaseFactor: Number(schedulerDraft.minimumEaseFactor),
+        burySiblings: schedulerDraft.burySiblings,
       });
 
       updateSettings({ scheduler: nextScheduler });
@@ -331,7 +348,7 @@ export default function Settings({ user, profile }: SettingsProps) {
             <p className="text-xs font-semibold uppercase text-zinc-500 dark:text-zinc-400">Scheduler</p>
             <h2 className="mt-2 text-2xl font-semibold text-zinc-950 dark:text-white">Thời gian học thẻ</h2>
             <p className="mt-2 max-w-2xl text-sm leading-6 text-zinc-500 dark:text-zinc-400">
-              Nhập bước học bằng dạng ngắn như <span className="font-mono">1m, 10m, 1d</span>. Các thay đổi áp dụng cho lượt ôn tiếp theo.
+              FSRS dùng Stability, Difficulty, Retrievability và retention mục tiêu. Bước học nhập dạng <span className="font-mono">1m, 10m, 1d</span>.
             </p>
           </div>
           <Button type="button" onClick={handleSaveScheduler} className="h-10 px-5">
@@ -362,26 +379,40 @@ export default function Settings({ user, profile }: SettingsProps) {
         </div>
 
         <div className="mt-5 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          {[
-            ['graduatingInterval', 'Graduating interval'],
-            ['easyInterval', 'Easy interval'],
-            ['hardMultiplier', 'Hard multiplier'],
-            ['easyBonus', 'Easy bonus'],
-            ['intervalModifier', 'Interval modifier'],
-            ['minimumEaseFactor', 'Minimum ease'],
-          ].map(([key, label]) => (
+          {([
+            ['desiredRetention', 'Desired retention', '0.01'],
+            ['initialDifficulty', 'Initial difficulty', '0.1'],
+            ['initialAgain', 'Initial S Again', '0.1'],
+            ['initialHard', 'Initial S Hard', '0.1'],
+            ['initialGood', 'Initial S Good', '0.1'],
+            ['initialEasy', 'Initial S Easy', '0.1'],
+            ['newCardsPerDay', 'New / day', '1'],
+            ['reviewsPerDay', 'Reviews / day', '1'],
+            ['maximumInterval', 'Max interval', '1'],
+            ['intervalModifier', 'Interval modifier', '0.05'],
+          ] as const).map(([key, label, step]) => (
             <div key={key}>
               <label className="text-xs font-semibold uppercase text-zinc-500 dark:text-zinc-400">{label}</label>
               <Input
                 type="number"
-                step="0.05"
+                step={step}
                 min="0"
-                value={schedulerDraft[key as keyof typeof schedulerDraft]}
+                value={schedulerDraft[key]}
                 onChange={(event) => setSchedulerDraft((draft) => ({ ...draft, [key]: event.target.value }))}
                 className="mt-2 h-11 font-mono"
               />
             </div>
           ))}
+        </div>
+        <div className="mt-5 flex items-center justify-between rounded-lg border border-zinc-200 bg-zinc-50 p-4 dark:border-white/10 dark:bg-white/5">
+          <div>
+            <p className="text-sm font-semibold text-zinc-950 dark:text-white">Bury siblings</p>
+            <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">Ẩn các thẻ cùng note trong cùng một phiên học để giảm gợi nhớ giả.</p>
+          </div>
+          <Switch
+            checked={schedulerDraft.burySiblings}
+            onCheckedChange={(value) => setSchedulerDraft((draft) => ({ ...draft, burySiblings: value }))}
+          />
         </div>
       </section>
 

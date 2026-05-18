@@ -13,13 +13,27 @@ export interface UserProfile {
     geminiApiKey?: string;
     aiApiKey?: string;
     scheduler?: {
+      desiredRetention?: number;
+      initialStability?: {
+        again?: number;
+        hard?: number;
+        good?: number;
+        easy?: number;
+      };
+      initialDifficulty?: number;
+      minimumDifficulty?: number;
+      maximumDifficulty?: number;
+      maximumInterval?: number;
       learningSteps?: { amount: number; unit: 'minute' | 'day' }[];
       relearningSteps?: { amount: number; unit: 'minute' | 'day' }[];
+      newCardsPerDay?: number;
+      reviewsPerDay?: number;
+      burySiblings?: boolean;
+      intervalModifier?: number;
       graduatingInterval?: number;
       easyInterval?: number;
       hardMultiplier?: number;
       easyBonus?: number;
-      intervalModifier?: number;
       minimumEaseFactor?: number;
     };
   };
@@ -61,19 +75,51 @@ export interface Flashcard {
   interval: number;
   easeFactor: number;
   state?: 'new' | 'learning' | 'review' | 'relearning';
+  due?: string;
+  stability?: number;
+  difficulty?: number;
+  retrievability?: number;
+  elapsedDays?: number;
+  scheduledDays?: number;
   stepIndex?: number;
   dueDate?: string;
   lapses?: number;
+  reps?: number;
   suspended?: boolean;
   buriedUntil?: string;
+  siblingKey?: string;
+  noteId?: string;
+  clozeGroupId?: string;
   repetitions: number;
   nextReview: string;
+  lastReview?: string | ReviewLog;
+  reviewHistory?: ReviewLog[];
+  updatedAt?: string;
   createdAt: string;
   customStyles?: {
     backgroundColor?: string;
     fontSize?: string;
     textColor?: string;
   };
+}
+
+export interface ReviewLog {
+  id: string;
+  cardId: string;
+  rating: 'again' | 'hard' | 'good' | 'easy';
+  reviewTime: string;
+  previousStability: number;
+  newStability: number;
+  previousDifficulty: number;
+  newDifficulty: number;
+  previousInterval: number;
+  newInterval: number;
+  elapsedDays: number;
+  previousRetrievability: number;
+  newRetrievability: number;
+  previousState: 'new' | 'learning' | 'review' | 'relearning';
+  newState: 'new' | 'learning' | 'review' | 'relearning';
+  schedulerVersion: string;
 }
 
 export interface StudySession {

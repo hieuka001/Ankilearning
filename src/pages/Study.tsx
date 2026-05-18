@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
-import { arrayUnion, doc, getDoc, collection, getDocs, updateDoc, addDoc, increment } from 'firebase/firestore';
+import { arrayUnion, doc, getDoc, collection, getDocs, updateDoc, addDoc, increment, writeBatch } from 'firebase/firestore';
 import { db } from '../firebase';
 import { User } from 'firebase/auth';
 import { Deck, Flashcard, UserProfile } from '../types';
@@ -23,12 +23,13 @@ import {
 import {
   calculateSchedulerReview,
   formatScheduledDelay,
+  buildStudyQueues,
   getLocalTomorrowIso,
   getRatingPreviews,
   isCardBuried,
-  isCardDue,
   normalizeCardSchedule,
-  type SchedulerConfig,
+  sortCardsForStudy,
+  type SchedulerConfigInput,
   type SchedulerRating,
 } from '../lib/spacedRepetition';
 import { toast } from 'sonner';
@@ -60,7 +61,7 @@ export default function Study({ user, profile }: StudyProps) {
   const [imageLoaded, setImageLoaded] = useState(false);
   const [fontSize, setFontSize] = useState('text-3xl md:text-5xl');
   const [now, setNow] = useState(() => new Date());
-  const [cloudScheduler, setCloudScheduler] = useState<Partial<SchedulerConfig> | null>(null);
+  const [cloudScheduler, setCloudScheduler] = useState<SchedulerConfigInput | null>(null);
   const prefetchedImages = useRef<Set<string>>(new Set());
   const ratingLockRef = useRef(false);
   const schedulerConfig = cloudScheduler || profile?.settings?.scheduler || settings.scheduler;
@@ -108,27 +109,30 @@ export default function Study({ user, profile }: StudyProps) {
           const cardsSnap = await getDocs(collection(db, `decks/${deckId}/cards`));
           const allCards = cardsSnap.docs.map(doc => ({ id: doc.id, ...doc.data() } as Flashcard));
           const userSnap = await getDoc(doc(db, 'users', user.uid));
+          let remoteScheduler: SchedulerConfigInput | null = null;
           if (userSnap.exists()) {
             const userData = userSnap.data() as UserProfile;
-            setCloudScheduler(userData.settings?.scheduler || null);
+            remoteScheduler = userData.settings?.scheduler || null;
+            setCloudScheduler(remoteScheduler);
           }
+          const activeScheduler = remoteScheduler || profile?.settings?.scheduler || settings.scheduler;
           
           const currentTime = new Date();
           const studyableCards = allCards.filter((card) => {
             const schedule = normalizeCardSchedule(card, currentTime);
             return !schedule.suspended && !isCardBuried(card, currentTime);
           });
-          const dueCards = studyableCards.filter(card => isCardDue(card, currentTime));
+          const dueCards = buildStudyQueues(studyableCards, activeScheduler, currentTime).all;
           
           // If no due cards, ask if they want to study all
           if (dueCards.length === 0 && allCards.length > 0) {
             if (window.confirm("Bạn đã hoàn thành các thẻ cần ôn tập hôm nay. Bạn có muốn ôn lại tất cả không?")) {
-              setCards(studyableCards.sort(() => Math.random() - 0.5));
+              setCards(sortCardsForStudy(studyableCards, activeScheduler, currentTime));
             } else {
               navigate(`/decks/${deckId}`);
             }
           } else {
-            setCards(dueCards.sort(() => Math.random() - 0.5));
+            setCards(dueCards);
           }
         }
       } catch (error) {
@@ -139,7 +143,7 @@ export default function Study({ user, profile }: StudyProps) {
     };
 
     fetchData();
-  }, [deckId, navigate, user]);
+  }, [deckId, navigate, profile?.settings?.scheduler, settings.scheduler, user]);
 
   const advanceCard = (finalStats = sessionStats) => {
     if (currentIndex < cards.length - 1) {
@@ -172,31 +176,40 @@ export default function Study({ user, profile }: StudyProps) {
 
     try {
       if (!user || !deckId) return;
+      const cardRef = doc(db, `decks/${deckId}/cards`, card.id);
+      const reviewRef = doc(collection(db, `decks/${deckId}/cards/${card.id}/reviews`));
       const historyEntry = {
+        ...result.reviewLog,
+        id: reviewRef.id,
         cardId: card.id,
-        rating,
         reviewTime: reviewTime.toISOString(),
-        previousInterval: result.previousInterval,
-        newInterval: result.newInterval,
+        previousState: previousSchedule.state,
+        newState: result.state,
       };
 
-      // Update card in Firestore
-      await updateDoc(doc(db, `decks/${deckId}/cards`, card.id), {
+      const batch = writeBatch(db);
+      batch.update(cardRef, {
         state: result.state,
+        due: result.due,
         interval: result.interval,
         easeFactor: result.easeFactor,
+        stability: result.stability,
+        difficulty: result.difficulty,
+        retrievability: result.retrievability,
+        elapsedDays: result.elapsedDays,
+        scheduledDays: result.scheduledDays,
         stepIndex: result.stepIndex,
         dueDate: result.dueDate,
         nextReview: result.nextReview,
         lapses: result.lapses,
+        reps: result.reps,
         repetitions: result.repetitions,
-        lastReview: {
-          ...historyEntry,
-          previousState: previousSchedule.state,
-          newState: result.state,
-        },
+        lastReview: historyEntry,
         reviewHistory: arrayUnion(historyEntry),
+        updatedAt: reviewTime.toISOString(),
       });
+      batch.set(reviewRef, historyEntry);
+      await batch.commit();
 
       // Update user stats
       if (isCorrect) {
@@ -493,8 +506,10 @@ export default function Study({ user, profile }: StudyProps) {
                   isFlipped ? 'text-white/70' : 'text-slate-400 dark:text-slate-500'
                 }`}>
                   <span>State: {currentSchedule.state}</span>
-                  <span>Interval: {currentSchedule.interval || 0} ngày</span>
-                  <span>Ease: {currentSchedule.easeFactor.toFixed(2)}</span>
+                  <span>Interval: {currentSchedule.scheduledDays || 0} ngày</span>
+                  <span>S: {currentSchedule.stability.toFixed(1)}</span>
+                  <span>D: {currentSchedule.difficulty.toFixed(1)}</span>
+                  <span>R: {Math.round(currentSchedule.retrievability * 100)}%</span>
                 </div>
                 
                 {currentCard.imageUrl && !isFlipped && (

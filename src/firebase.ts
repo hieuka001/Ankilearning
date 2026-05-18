@@ -1,6 +1,6 @@
 import { initializeApp } from 'firebase/app';
 import { getAuth } from 'firebase/auth';
-import { getFirestore } from 'firebase/firestore';
+import { enableIndexedDbPersistence, getFirestore } from 'firebase/firestore';
 import firebaseConfig from '../firebase-applet-config.json';
 
 const app = initializeApp(firebaseConfig);
@@ -10,6 +10,12 @@ export const auth = getAuth(app);
 export const db = firebaseConfig.firestoreDatabaseId === '(default)' 
   ? getFirestore(app) 
   : getFirestore(app, firebaseConfig.firestoreDatabaseId);
+
+if (typeof window !== 'undefined') {
+  enableIndexedDbPersistence(db).catch(() => {
+    // Offline mode is best-effort. Multi-tab or private browsing can disable it.
+  });
+}
 
 export enum OperationType {
   CREATE = 'create',

@@ -6,6 +6,7 @@ node_modules/
 awesome-design-md-main/
 build/
 dist/
+dist-test/
 coverage/
 .DS_Store
 *.log
