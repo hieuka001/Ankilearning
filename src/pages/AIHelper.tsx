@@ -24,10 +24,10 @@ import { toast } from 'sonner';
 import axios from 'axios';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import rehypeRaw from 'rehype-raw';
 import { collection, addDoc, serverTimestamp, writeBatch, doc, query, where, getDocs, updateDoc, increment } from 'firebase/firestore';
 import { db } from '../firebase';
 import { useNavigate } from 'react-router-dom';
+import { createInitialCardSchedule } from '../lib/spacedRepetition';
 
 import { UserProfile, Deck } from '../types';
 
@@ -219,10 +219,7 @@ export default function AIHelper({ user, profile }: AIHelperProps) {
           front: card.front,
           back: card.back,
           tags: ['AI-generated'],
-          interval: 0,
-          easeFactor: 2.5,
-          repetitions: 0,
-          nextReview: new Date().toISOString(),
+          ...createInitialCardSchedule(),
           createdAt: new Date().toISOString(),
         });
       });
@@ -504,7 +501,7 @@ export default function AIHelper({ user, profile }: AIHelperProps) {
                       <div className="space-y-1.5 md:space-y-2">
                         <span className="text-[8px] md:text-[9px] font-black text-slate-400 uppercase tracking-[0.3em]">Mặt trước</span>
                         <div className="text-slate-900 dark:text-white font-black text-lg md:text-xl leading-tight tracking-tight prose dark:prose-invert max-w-none">
-                          <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeRaw]}>
+                          <ReactMarkdown remarkPlugins={[remarkGfm]}>
                             {card.front}
                           </ReactMarkdown>
                         </div>
@@ -512,7 +509,7 @@ export default function AIHelper({ user, profile }: AIHelperProps) {
                       <div className="pt-4 md:pt-6 border-t border-slate-200 dark:border-white/10 space-y-1.5 md:space-y-2">
                         <span className="text-[8px] md:text-[10px] font-black text-primary uppercase tracking-[0.3em]">Mặt sau</span>
                         <div className="text-sm md:text-base text-slate-600 dark:text-slate-400 leading-relaxed font-medium prose dark:prose-invert max-w-none">
-                          <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeRaw]}>
+                          <ReactMarkdown remarkPlugins={[remarkGfm]}>
                             {card.back}
                           </ReactMarkdown>
                         </div>

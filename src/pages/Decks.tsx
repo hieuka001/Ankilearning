@@ -21,6 +21,7 @@ import { Link } from 'react-router-dom';
 import { toast } from 'sonner';
 import { useSettings } from '../contexts/SettingsContext';
 import { importAnkiApkg } from '../services/ankiService';
+import { createInitialCardSchedule } from '../lib/spacedRepetition';
 import { addDoc } from 'firebase/firestore';
 import { useRef } from 'react';
 
@@ -117,10 +118,7 @@ export default function Decks({ user }: DecksProps) {
             imageUrl: card.frontImage || '',
             backImageUrl: card.backImage || '',
             tags: card.tags || [],
-            interval: 0,
-            easeFactor: 2.5,
-            repetitions: 0,
-            nextReview: new Date().toISOString(),
+            ...createInitialCardSchedule(),
             createdAt: new Date().toISOString()
           })
         );

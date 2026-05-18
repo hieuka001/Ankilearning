@@ -2,11 +2,11 @@ import {
   Area,
   AreaChart,
   CartesianGrid,
-  ResponsiveContainer,
   Tooltip,
   XAxis,
   YAxis,
 } from 'recharts';
+import { useLayoutEffect, useRef, useState } from 'react';
 
 interface DashboardChartProps {
   data: Array<{
@@ -17,6 +17,42 @@ interface DashboardChartProps {
 
 export default function DashboardChart({ data }: DashboardChartProps) {
   const total = data?.reduce((sum, item) => sum + item.count, 0) || 0;
+  const frameRef = useRef<HTMLDivElement | null>(null);
+  const [size, setSize] = useState({ width: 0, height: 0 });
+
+  useLayoutEffect(() => {
+    const frame = frameRef.current;
+    if (!frame) return;
+
+    const updateSize = () => {
+      const rect = frame.getBoundingClientRect();
+      const width = Math.floor(rect.width);
+      const height = Math.floor(rect.height);
+      setSize((current) => (
+        current.width === width && current.height === height
+          ? current
+          : { width, height }
+      ));
+    };
+
+    updateSize();
+    const animationFrame = window.requestAnimationFrame(updateSize);
+
+    if (typeof ResizeObserver === 'undefined') {
+      window.addEventListener('resize', updateSize);
+      return () => {
+        window.cancelAnimationFrame(animationFrame);
+        window.removeEventListener('resize', updateSize);
+      };
+    }
+
+    const observer = new ResizeObserver(updateSize);
+    observer.observe(frame);
+    return () => {
+      window.cancelAnimationFrame(animationFrame);
+      observer.disconnect();
+    };
+  }, []);
 
   if (!data || data.length === 0 || total === 0) {
     return (
@@ -26,10 +62,12 @@ export default function DashboardChart({ data }: DashboardChartProps) {
     );
   }
 
+  const canRenderChart = size.width > 0 && size.height > 0;
+
   return (
-    <div className="h-full w-full min-w-0">
-      <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0}>
-        <AreaChart data={data} margin={{ top: 10, right: 18, left: 0, bottom: 0 }}>
+    <div ref={frameRef} className="h-full min-h-[260px] w-full min-w-0">
+      {canRenderChart ? (
+        <AreaChart width={size.width} height={size.height} data={data} margin={{ top: 10, right: 18, left: 0, bottom: 0 }}>
           <defs>
             <linearGradient id="learningCardTrend" x1="0" y1="0" x2="0" y2="1">
               <stop offset="0%" stopColor="#2563EB" stopOpacity={0.22} />
@@ -71,7 +109,9 @@ export default function DashboardChart({ data }: DashboardChartProps) {
             activeDot={{ r: 4, strokeWidth: 3, stroke: '#FFFFFF', fill: '#2563EB' }}
           />
         </AreaChart>
-      </ResponsiveContainer>
+      ) : (
+        <div className="h-full min-h-[260px] animate-pulse rounded-lg bg-black/[0.04] dark:bg-white/[0.06]" />
+      )}
     </div>
   );
 }

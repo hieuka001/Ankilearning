@@ -24,6 +24,7 @@ import { toast } from 'sonner';
 import { generateFlashcardsFromText } from '../services/aiService';
 import { playSound } from '../lib/sounds';
 import { useSettings } from '../contexts/SettingsContext';
+import { createInitialCardSchedule } from '../lib/spacedRepetition';
 
 import { UserProfile } from '../types';
 
@@ -238,10 +239,7 @@ export default function CreateDeck({ user, profile }: CreateDeckProps) {
           back: card.back,
           imageUrl: card.imageUrl || '',
           tags: [],
-          interval: 0,
-          easeFactor: 2.5,
-          repetitions: 0,
-          nextReview: new Date().toISOString(),
+          ...createInitialCardSchedule(),
           createdAt: new Date().toISOString()
         })
       );

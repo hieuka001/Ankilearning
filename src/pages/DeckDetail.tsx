@@ -36,10 +36,15 @@ import { toast } from 'sonner';
 import { format } from 'date-fns';
 import { vi } from 'date-fns/locale';
 import ReactMarkdown from 'react-markdown';
-import rehypeRaw from 'rehype-raw';
 import { Switch } from '@/components/ui/switch';
 import { generateFlashcardsFromText, generateMindmap } from '../services/aiService';
 import { exportAnkiApkg } from '../services/ankiService';
+import {
+  createInitialCardSchedule,
+  isCardDue,
+  isCardBuried,
+  normalizeCardSchedule,
+} from '../lib/spacedRepetition';
 
 interface DeckDetailProps {
   user: User | null;
@@ -185,6 +190,28 @@ export default function DeckDetail({ user, profile }: DeckDetailProps) {
     }
   };
 
+  const handleToggleSuspendCard = async (card: Flashcard) => {
+    if (!deckId) return;
+    const schedule = normalizeCardSchedule(card);
+    await updateDoc(doc(db, `decks/${deckId}/cards`, card.id), {
+      suspended: !schedule.suspended,
+      buriedUntil: schedule.suspended ? '' : card.buriedUntil || '',
+    });
+    toast.success(schedule.suspended ? 'Đã mở suspend thẻ.' : 'Đã suspend thẻ.');
+  };
+
+  const handleBuryCard = async (card: Flashcard) => {
+    if (!deckId) return;
+    const currentlyBuried = isCardBuried(card);
+    const tomorrow = new Date();
+    tomorrow.setHours(24, 0, 0, 0);
+
+    await updateDoc(doc(db, `decks/${deckId}/cards`, card.id), {
+      buriedUntil: currentlyBuried ? '' : tomorrow.toISOString(),
+    });
+    toast.success(currentlyBuried ? 'Đã bỏ bury thẻ.' : 'Đã bury thẻ đến ngày mai.');
+  };
+
   const handleAddCard = async () => {
     if (!deckId || !user || !newCard.front.trim() || !newCard.back.trim()) {
       toast.error("Vui lòng nhập đầy đủ mặt trước và mặt sau.");
@@ -206,10 +233,7 @@ export default function DeckDetail({ user, profile }: DeckDetailProps) {
           textColor: newCard.textColor
         },
         tags: [],
-        interval: 0,
-        easeFactor: 2.5,
-        repetitions: 0,
-        nextReview: new Date().toISOString(),
+        ...createInitialCardSchedule(),
         createdAt: new Date().toISOString()
       });
 
@@ -250,10 +274,7 @@ export default function DeckDetail({ user, profile }: DeckDetailProps) {
             back: card.back,
             imageUrl: card.imageUrl || '',
             tags: [],
-            interval: 0,
-            easeFactor: 2.5,
-            repetitions: 0,
-            nextReview: new Date().toISOString(),
+            ...createInitialCardSchedule(),
             createdAt: new Date().toISOString()
           })
         );
@@ -398,10 +419,7 @@ export default function DeckDetail({ user, profile }: DeckDetailProps) {
           backImageUrl: card.backImageUrl || '',
           customStyles: card.customStyles || {},
           tags: card.tags || [],
-          interval: 0,
-          easeFactor: 2.5,
-          repetitions: 0,
-          nextReview: new Date().toISOString(),
+          ...createInitialCardSchedule(),
           createdAt: new Date().toISOString()
         })
       );
@@ -420,7 +438,7 @@ export default function DeckDetail({ user, profile }: DeckDetailProps) {
   if (loading) return <div>Đang tải...</div>;
   if (!deck) return null;
 
-  const dueCards = cards.filter(card => new Date(card.nextReview) <= new Date()).length;
+  const dueCards = cards.filter(card => isCardDue(card)).length;
 
   return (
     <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
@@ -668,7 +686,7 @@ export default function DeckDetail({ user, profile }: DeckDetailProps) {
                   <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em]">Xem trước Mindmap</h3>
                 </div>
                 <div className="markdown-body prose prose-slate dark:prose-invert max-w-none prose-headings:font-black prose-headings:tracking-tight prose-p:font-medium prose-p:leading-relaxed prose-li:font-medium prose-strong:text-primary dark:prose-strong:text-primary">
-                  <ReactMarkdown rehypePlugins={[rehypeRaw]}>{mindmap}</ReactMarkdown>
+                  <ReactMarkdown>{mindmap}</ReactMarkdown>
                 </div>
               </div>
             )}
@@ -687,7 +705,20 @@ export default function DeckDetail({ user, profile }: DeckDetailProps) {
         </div>
 
         <div className="grid gap-5">
-          {cards.map((card) => (
+          {cards.map((card) => {
+            const schedule = normalizeCardSchedule(card);
+            const due = isCardDue(card);
+            const buried = isCardBuried(card);
+            const statusLabel = schedule.suspended ? 'Suspend' : buried ? 'Bury hôm nay' : due ? 'Cần ôn ngay' : schedule.state;
+            const statusClass = schedule.suspended
+              ? 'bg-zinc-200 text-zinc-700 dark:bg-white/10 dark:text-zinc-300'
+              : buried
+                ? 'bg-sky-100 text-sky-700 dark:bg-sky-900/30 dark:text-sky-300'
+                : due
+                  ? 'bg-orange-100 dark:bg-orange-900/30 text-orange-600 dark:text-orange-400'
+                  : 'bg-emerald-100 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400';
+
+            return (
             <Card key={card.id} className="border-none shadow-xl hover:shadow-2xl transition-all duration-500 group overflow-hidden bg-white dark:bg-slate-900 rounded-[2rem]">
               <CardContent className="p-0 flex items-stretch">
                 <div className="w-2 bg-indigo-100 dark:bg-indigo-900 group-hover:bg-indigo-600 transition-all duration-500" />
@@ -704,7 +735,7 @@ export default function DeckDetail({ user, profile }: DeckDetailProps) {
                     <div className="flex-1">
                       <span className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] block mb-2">Mặt trước</span>
                       <div className="text-lg font-bold text-slate-900 dark:text-white prose prose-sm prose-slate dark:prose-invert leading-relaxed">
-                        <ReactMarkdown rehypePlugins={[rehypeRaw]}>{card.front}</ReactMarkdown>
+                        <ReactMarkdown>{card.front}</ReactMarkdown>
                       </div>
                     </div>
                   </div>
@@ -720,7 +751,7 @@ export default function DeckDetail({ user, profile }: DeckDetailProps) {
                       <div className="flex-1">
                         <span className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] block mb-2">Mặt sau</span>
                         <div className="text-base font-medium text-slate-600 dark:text-slate-400 prose prose-sm prose-slate dark:prose-invert leading-relaxed">
-                          <ReactMarkdown rehypePlugins={[rehypeRaw]}>{card.back}</ReactMarkdown>
+                          <ReactMarkdown>{card.back}</ReactMarkdown>
                         </div>
                       </div>
                     </div>
@@ -730,24 +761,27 @@ export default function DeckDetail({ user, profile }: DeckDetailProps) {
                           <Button variant="ghost" size="icon" className="h-9 w-9 text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 rounded-lg transition-colors" onClick={() => setEditingCard(card)}>
                             <Edit2 size={16} />
                           </Button>
+                          <Button variant="ghost" size="icon" className="h-9 w-9 text-slate-400 hover:text-sky-600 dark:hover:text-sky-400 rounded-lg transition-colors" onClick={() => handleBuryCard(card)}>
+                            <Calendar size={16} />
+                          </Button>
+                          <Button variant="ghost" size="icon" className="h-9 w-9 text-slate-400 hover:text-amber-600 dark:hover:text-amber-400 rounded-lg transition-colors" onClick={() => handleToggleSuspendCard(card)}>
+                            <Lock size={16} />
+                          </Button>
                           <Button variant="ghost" size="icon" className="h-9 w-9 text-slate-400 hover:text-red-500 rounded-lg transition-colors" onClick={() => handleDeleteCard(card.id)}>
                             <Trash2 size={16} />
                           </Button>
                         </div>
                       )}
-                      <span className={`text-[10px] px-3 py-1 rounded-full font-black uppercase tracking-widest ${
-                        new Date(card.nextReview) <= new Date() 
-                          ? 'bg-orange-100 dark:bg-orange-900/30 text-orange-600 dark:text-orange-400' 
-                          : 'bg-emerald-100 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400'
-                      }`}>
-                        {new Date(card.nextReview) <= new Date() ? 'Cần ôn ngay' : 'Đã thuộc'}
+                      <span className={`text-[10px] px-3 py-1 rounded-full font-black uppercase tracking-widest ${statusClass}`}>
+                        {statusLabel}
                       </span>
                     </div>
                   </div>
                 </div>
               </CardContent>
             </Card>
-          ))}
+            );
+          })}
         </div>
       </div>
 

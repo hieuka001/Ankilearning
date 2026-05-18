@@ -7,6 +7,7 @@ import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Search as SearchIcon, BookOpen, Library, Download, User as UserIcon } from 'lucide-react';
 import { toast } from 'sonner';
+import { createInitialCardSchedule } from '../lib/spacedRepetition';
 
 import { User } from 'firebase/auth';
 
@@ -105,10 +106,7 @@ export default function Search({ user }: SearchProps) {
           ownerId: user.uid,
           createdAt: new Date().toISOString(),
           // Reset spaced repetition data
-          interval: 0,
-          easeFactor: 2.5,
-          repetitions: 0,
-          nextReview: new Date().toISOString()
+          ...createInitialCardSchedule(),
         })
       );
 

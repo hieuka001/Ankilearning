@@ -1,4 +1,4 @@
-import { useState, useEffect, lazy, Suspense, type ReactNode } from 'react';
+import { Component, useState, useEffect, lazy, Suspense, type ErrorInfo, type ReactNode } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate, Link, useLocation } from 'react-router-dom';
 import { onAuthStateChanged, signInWithPopup, GoogleAuthProvider, signOut, User } from 'firebase/auth';
 import { doc, getDoc, setDoc, onSnapshot } from 'firebase/firestore';
@@ -42,6 +42,46 @@ function PageLoader() {
       <div className="h-10 w-10 animate-spin rounded-full border-2 border-primary/20 border-t-primary" />
     </div>
   );
+}
+
+class AppErrorBoundary extends Component<
+  { children: ReactNode; resetKey: string },
+  { hasError: boolean }
+> {
+  state = { hasError: false };
+
+  static getDerivedStateFromError() {
+    return { hasError: true };
+  }
+
+  componentDidCatch(error: unknown, errorInfo: ErrorInfo) {
+    console.error('Route render error:', error, errorInfo);
+  }
+
+  componentDidUpdate(prevProps: { resetKey: string }) {
+    if (prevProps.resetKey !== this.props.resetKey && this.state.hasError) {
+      this.setState({ hasError: false });
+    }
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="premium-panel mx-auto flex min-h-[360px] max-w-xl flex-col items-center justify-center rounded-lg p-8 text-center">
+          <BrainCircuit className="mb-4 h-9 w-9 text-primary" />
+          <h2 className="text-xl font-semibold text-zinc-950 dark:text-white">Trang này chưa tải được</h2>
+          <p className="mt-2 text-sm leading-6 text-muted-foreground">
+            Dữ liệu hoặc kết nối vừa trả về trạng thái bất thường. Bạn có thể thử lại mà không cần đăng nhập lại.
+          </p>
+          <Button onClick={() => this.setState({ hasError: false })} className="mt-6">
+            Thử lại
+          </Button>
+        </div>
+      );
+    }
+
+    return this.props.children;
+  }
 }
 
 export default function App() {
@@ -310,29 +350,31 @@ function AnimatedRoutes({ user, profile }: { user: User; profile: UserProfile | 
   const location = useLocation();
 
   return (
-    <AnimatePresence mode="wait">
-      <motion.div
-        key={location.pathname}
-        initial={{ opacity: 0, y: 14, filter: 'blur(6px)' }}
-        animate={{ opacity: 1, y: 0, filter: 'blur(0px)' }}
-        exit={{ opacity: 0, y: -8, filter: 'blur(4px)' }}
-        transition={{ duration: 0.28, ease: [0.22, 1, 0.36, 1] }}
-      >
-        <Routes location={location}>
-          <Route path="/" element={<Dashboard user={user} profile={profile} />} />
-          <Route path="/decks" element={<Decks user={user} />} />
-          <Route path="/decks/:deckId" element={<DeckDetail user={user} profile={profile} />} />
-          <Route path="/study/:deckId" element={<Study user={user} />} />
-          <Route path="/create-deck" element={<CreateDeck user={user} profile={profile} />} />
-          <Route path="/voice-to-card" element={<VoiceToCard user={user} profile={profile} />} />
-          <Route path="/assessment" element={<Assessment user={user} profile={profile} />} />
-          <Route path="/ai-helper" element={<AIHelper user={user} profile={profile} />} />
-          <Route path="/search" element={<Search user={user} />} />
-          <Route path="/settings" element={<Settings user={user} profile={profile} />} />
-          <Route path="*" element={<Navigate to="/" />} />
-        </Routes>
-      </motion.div>
-    </AnimatePresence>
+    <AppErrorBoundary resetKey={location.pathname}>
+      <AnimatePresence mode="wait">
+        <motion.div
+          key={location.pathname}
+          initial={{ opacity: 0, y: 14, filter: 'blur(6px)' }}
+          animate={{ opacity: 1, y: 0, filter: 'blur(0px)' }}
+          exit={{ opacity: 0, y: -8, filter: 'blur(4px)' }}
+          transition={{ duration: 0.28, ease: [0.22, 1, 0.36, 1] }}
+        >
+          <Routes location={location}>
+            <Route path="/" element={<Dashboard user={user} profile={profile} />} />
+            <Route path="/decks" element={<Decks user={user} />} />
+            <Route path="/decks/:deckId" element={<DeckDetail user={user} profile={profile} />} />
+            <Route path="/study/:deckId" element={<Study user={user} profile={profile} />} />
+            <Route path="/create-deck" element={<CreateDeck user={user} profile={profile} />} />
+            <Route path="/voice-to-card" element={<VoiceToCard user={user} profile={profile} />} />
+            <Route path="/assessment" element={<Assessment user={user} profile={profile} />} />
+            <Route path="/ai-helper" element={<AIHelper user={user} profile={profile} />} />
+            <Route path="/search" element={<Search user={user} />} />
+            <Route path="/settings" element={<Settings user={user} profile={profile} />} />
+            <Route path="*" element={<Navigate to="/" />} />
+          </Routes>
+        </motion.div>
+      </AnimatePresence>
+    </AppErrorBoundary>
   );
 }
 

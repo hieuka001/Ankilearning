@@ -73,26 +73,26 @@
 }
 
 :root {
-    --background: #F4F5F7;
-    --foreground: #141416;
+    --background: #F5F6F8;
+    --foreground: #111214;
     --card: #FFFFFF;
     --card-foreground: #141416;
     --popover: #FFFFFF;
     --popover-foreground: #141416;
-    --primary: #2563EB;
+    --primary: #2457D6;
     --primary-foreground: #FFFFFF;
-    --secondary: #E8EAEE;
+    --secondary: #E9ECEF;
     --secondary-foreground: #27272A;
-    --muted: #EEF0F3;
-    --muted-foreground: #6B7280;
-    --accent: #EAF1FF;
-    --accent-foreground: #1D4ED8;
+    --muted: #EEF0F2;
+    --muted-foreground: #68707C;
+    --accent: #EAF0FF;
+    --accent-foreground: #1E4FC4;
     --destructive: #DC2626;
-    --border: #D9DDE3;
-    --input: #D7DCE3;
-    --ring: #2563EB;
+    --border: #DADFE6;
+    --input: #D9DEE5;
+    --ring: #2457D6;
     --radius: 0.5rem;
-    --sidebar: #111214;
+    --sidebar: #101114;
     --sidebar-foreground: #D7DAE0;
     --sidebar-primary: #FFFFFF;
     --sidebar-primary-foreground: #FFFFFF;
@@ -100,9 +100,9 @@
     --sidebar-accent-foreground: #FFFFFF;
     --sidebar-border: rgba(255, 255, 255, 0.09);
     --sidebar-ring: #93C5FD;
-    --success: #059669;
-    --warning: #B45309;
-    --info: #0284C7;
+    --success: #0F8A6A;
+    --warning: #A66A16;
+    --info: #1B6DAE;
 }
 
 .dark {
@@ -112,26 +112,26 @@
     --card-foreground: #F4F4F5;
     --popover: #151517;
     --popover-foreground: #F4F4F5;
-    --primary: #8B7CFF;
+    --primary: #7AA7FF;
     --primary-foreground: #FFFFFF;
     --secondary: #1C1C1F;
     --secondary-foreground: #F4F4F5;
     --muted: #1A1A1D;
     --muted-foreground: #A1A1AA;
-    --accent: #1D1B35;
-    --accent-foreground: #D9D6FF;
+    --accent: #172033;
+    --accent-foreground: #CFE1FF;
     --destructive: #F87171;
     --border: rgba(255, 255, 255, 0.08);
     --input: rgba(255, 255, 255, 0.10);
-    --ring: #8B7CFF;
+    --ring: #7AA7FF;
     --sidebar: #111113;
     --sidebar-foreground: #D4D4D8;
-    --sidebar-primary: #8B7CFF;
+    --sidebar-primary: #7AA7FF;
     --sidebar-primary-foreground: #FFFFFF;
     --sidebar-accent: rgba(255, 255, 255, 0.06);
     --sidebar-accent-foreground: #FFFFFF;
     --sidebar-border: rgba(255, 255, 255, 0.08);
-    --sidebar-ring: #8B7CFF;
+    --sidebar-ring: #7AA7FF;
 }
 
 @layer base {
@@ -171,9 +171,9 @@
 
   .app-surface {
     background:
-      linear-gradient(180deg, rgba(255, 255, 255, 0.74), rgba(244, 245, 247, 0.98)),
-      linear-gradient(115deg, rgba(37, 99, 235, 0.075), transparent 34%),
-      linear-gradient(245deg, rgba(16, 185, 129, 0.07), transparent 32%);
+      linear-gradient(180deg, rgba(255, 255, 255, 0.86), rgba(245, 246, 248, 0.98)),
+      linear-gradient(115deg, rgba(36, 87, 214, 0.07), transparent 38%),
+      linear-gradient(245deg, rgba(15, 138, 106, 0.045), transparent 36%);
   }
 
   .dark .app-surface {
@@ -185,10 +185,10 @@
   }
 
   .premium-panel {
-    background: rgba(255, 255, 255, 0.86);
+    background: rgba(255, 255, 255, 0.88);
     border: 1px solid rgba(20, 20, 22, 0.08);
-    box-shadow: 0 1px 1px rgba(20, 20, 22, 0.04), 0 18px 50px rgba(20, 20, 22, 0.06);
-    backdrop-filter: blur(18px);
+    box-shadow: 0 1px 1px rgba(20, 20, 22, 0.04), 0 20px 60px rgba(20, 20, 22, 0.065);
+    backdrop-filter: blur(20px);
   }
 
   .dark .premium-panel {
@@ -271,9 +271,15 @@
   }
 
   h1[class] {
-    font-size: clamp(1.8rem, 2.4vw, 2.55rem) !important;
+    font-size: 2.25rem !important;
     line-height: 1.15 !important;
     font-weight: 650 !important;
+  }
+
+  @media (max-width: 640px) {
+    h1[class] {
+      font-size: 1.875rem !important;
+    }
   }
 
   h2[class] {

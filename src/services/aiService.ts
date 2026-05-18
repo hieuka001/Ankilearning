@@ -130,11 +130,19 @@ const parseJson = (text: string) => {
     const fenced = cleanText.match(/```(?:json)?\s*([\s\S]*?)```/i);
     if (fenced) cleanText = fenced[1].trim();
 
-    const objectMatch = cleanText.match(/\{[\s\S]*\}/);
-    const arrayMatch = cleanText.match(/\[[\s\S]*\]/);
+    if (!cleanText.startsWith("{") && !cleanText.startsWith("[")) {
+      const objectIndex = cleanText.indexOf("{");
+      const arrayIndex = cleanText.indexOf("[");
+      if (arrayIndex >= 0 && (objectIndex < 0 || arrayIndex < objectIndex)) {
+        cleanText = cleanText.slice(arrayIndex, cleanText.lastIndexOf("]") + 1);
+      } else if (objectIndex >= 0) {
+        cleanText = cleanText.slice(objectIndex, cleanText.lastIndexOf("}") + 1);
+      }
+    }
 
-    if (objectMatch) cleanText = objectMatch[0];
-    else if (arrayMatch) cleanText = arrayMatch[0];
+    cleanText = cleanText
+      .replace(/,\s*([}\]])/g, "$1")
+      .replace(/^\uFEFF/, "");
 
     return JSON.parse(cleanText);
   } catch (error) {
@@ -143,10 +151,55 @@ const parseJson = (text: string) => {
   }
 };
 
+const asArray = (value: any) => (Array.isArray(value) ? value : []);
+
+const normalizeFlashcards = (result: any) => {
+  const rawCards = asArray(result?.flashcards || result?.cards || (Array.isArray(result) ? result : []));
+  return rawCards
+    .map((card) => ({
+      front: String(card?.front || card?.question || "").trim(),
+      back: String(card?.back || card?.answer || card?.explanation || "").trim(),
+      type: card?.type === "cloze" ? "cloze" : "basic",
+      imageUrl: card?.imageUrl || "",
+      tags: Array.isArray(card?.tags) ? card.tags.filter(Boolean).map(String) : [],
+    }))
+    .filter((card) => card.front && card.back);
+};
+
+const normalizeQuestions = (result: any) => {
+  const rawQuestions = asArray(result?.questions || result?.question || (Array.isArray(result) ? result : []));
+  return rawQuestions
+    .map((question) => {
+      const options = asArray(question?.options).map((option) => String(option).trim()).filter(Boolean);
+      const rawCorrectAnswer = question?.correctAnswer ?? question?.answerIndex ?? question?.correct;
+      const correctAnswer = typeof rawCorrectAnswer === "string"
+        ? rawCorrectAnswer.length === 1 && /[A-D]/i.test(rawCorrectAnswer)
+          ? rawCorrectAnswer.toUpperCase().charCodeAt(0) - 65
+          : Number(rawCorrectAnswer)
+        : Number(rawCorrectAnswer);
+
+      return {
+        question: String(question?.question || "").trim(),
+        options,
+        correctAnswer: Number.isFinite(correctAnswer) ? correctAnswer : -1,
+        explanation: String(question?.explanation || question?.rationale || "").trim(),
+      };
+    })
+    .filter((question) =>
+      question.question &&
+      question.options.length >= 2 &&
+      question.correctAnswer >= 0 &&
+      question.correctAnswer < question.options.length
+    );
+};
+
 const MED_SOURCES = `
-SOURCES: Internal medicine (AHA/ACC, ESC, ADA, GINA, Harrison), Surgery (Schwartz, Sabiston), Trauma/Ortho (AO, Orthobullets), OB-GYN (Williams, ACOG), Pediatrics (Nelson, hospital protocols).
+SOURCES: Internal medicine (AHA/ACC, ESC, ADA, GINA, Harrison), Surgery (Schwartz, Sabiston), Trauma/Ortho (AO Reference/AO Surgery Reference, Orthobullets, PubMed, UpToDate, Skeletal Trauma), OB-GYN (Williams, ACOG), Pediatrics (Nelson, hospital protocols).
 REQUIREMENTS: cite the most relevant source family when useful, explain clinical reasoning, and include comorbidity considerations.
 `;
+
+const TRAUMA_ORTHO_SOURCE_NOTE =
+  "For trauma and orthopaedics, prioritize AO Reference/AO Surgery Reference, Orthobullets, Skeletal Trauma, PubMed reviews/guidelines, and UpToDate when creating general exam questions.";
 
 export async function generateFlashcardsFromText(
   text: string,
@@ -174,7 +227,7 @@ Return only valid JSON in this shape: { "flashcards": [{ "front": "...", "back":
     apiKey
   );
 
-  return parseJson(response.text()).flashcards || [];
+  return normalizeFlashcards(parseJson(response.text()));
 }
 
 export async function generateClinicalFlashcardsFromVoice(
@@ -196,7 +249,7 @@ Create medical flashcards from the important content above.`,
     apiKey
   );
 
-  return parseJson(response.text()).flashcards || [];
+  return normalizeFlashcards(parseJson(response.text()));
 }
 
 export async function generateClinicalFlashcardsFromMedia(
@@ -225,7 +278,7 @@ Return only valid JSON: { "flashcards": [{ "front": "...", "back": "..." }] }.`;
     apiKey
   );
 
-  return parseJson(response.text()).flashcards || [];
+  return normalizeFlashcards(parseJson(response.text()));
 }
 
 export async function generateExam(
@@ -243,7 +296,8 @@ ${isAdvanced
   ? "Advanced mode: use clinical vignettes, applied reasoning, diagnosis, next best step, and treatment choices."
   : "Basic mode: focus on definitions, classifications, symptoms, diagnostic criteria, and core theory."}
 Return Vietnamese questions with English medical terms in parentheses when helpful.
-Return only valid JSON: { "questions": [{ "question": "...", "options": ["A", "B", "C", "D"], "correctAnswer": 0, "explanation": "..." }] }.`;
+Each option must be the full answer text, not just A/B/C/D labels.
+Return only valid JSON: { "questions": [{ "question": "...", "options": ["option text", "option text", "option text", "option text"], "correctAnswer": 0, "explanation": "..." }] }.`;
 
   const response = await callAI(
     {
@@ -257,7 +311,7 @@ Create ${count} ${isAdvanced ? "advanced clinical" : "basic theory"} MCQ questio
   );
 
   const result = parseJson(response.text());
-  return result.questions || result.question || [];
+  return normalizeQuestions(result);
 }
 
 export async function generateGeneralExam(
@@ -278,6 +332,7 @@ export async function generateGeneralExam(
 
   const specialtyName = specMap[specialty] || "Y khoa tong hop";
   const systemInstruction = `You are a leading medical lecturer creating MCQs for ${specialtyName}. ${MED_SOURCES}
+${specialty === "trauma_ortho" || specialty === "all" ? TRAUMA_ORTHO_SOURCE_NOTE : ""}
 ${isAdvanced
   ? "Advanced mode: most questions should be case-based and require clinical reasoning."
   : "Basic mode: focus on standard textbook knowledge, symptoms, classifications, definitions, and diagnostic criteria."}
@@ -294,7 +349,7 @@ Use Vietnamese. Return JSON only.`,
   );
 
   const result = parseJson(response.text());
-  return result.questions || result.question || [];
+  return normalizeQuestions(result);
 }
 
 export async function generateMindmap(text: string, apiKey: GeminiKeyConfig = "") {

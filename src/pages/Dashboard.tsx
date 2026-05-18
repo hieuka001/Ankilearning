@@ -1,7 +1,7 @@
 import { lazy, Suspense, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import { User } from 'firebase/auth';
-import { collection, doc, getDocs, limit, onSnapshot, query, updateDoc, where } from 'firebase/firestore';
+import { collection, doc, getDocs, limit, onSnapshot, orderBy, query, updateDoc, where } from 'firebase/firestore';
 import { addDays, format, startOfDay, subDays } from 'date-fns';
 import { vi } from 'date-fns/locale';
 import { motion } from 'motion/react';
@@ -25,6 +25,7 @@ import { db } from '../firebase';
 import { Deck, StudySession, UserProfile } from '../types';
 import { calculateLevel, calculateLevelProgress } from '../lib/gamification';
 import { suggestStudyPath } from '../services/aiService';
+import { getCardDueDate, isCardDue } from '../lib/spacedRepetition';
 
 const DashboardChart = lazy(() => import('../components/charts/DashboardChart'));
 
@@ -89,9 +90,9 @@ export default function Dashboard({ user, profile }: DashboardProps) {
           const cardsSnap = await getDocs(collection(db, `decks/${deck.id}/cards`));
           cardsSnap.docs.forEach((cardDoc) => {
             const data = cardDoc.data();
-            if (!data.nextReview) return;
+            if (!data.dueDate && !data.nextReview) return;
 
-            const reviewDate = startOfDay(new Date(data.nextReview));
+            const reviewDate = startOfDay(new Date(getCardDueDate(data)));
             const dayMatch = next7Days.find((day) => day.fullDate.getTime() === reviewDate.getTime());
             if (dayMatch) dayMatch.count += 1;
           });
@@ -141,10 +142,9 @@ export default function Dashboard({ user, profile }: DashboardProps) {
         const topDecks = decksData.slice(0, 4);
         const decksWithDue = await Promise.all(
           topDecks.map(async (deck) => {
-            const cardsSnap = await getDocs(
-              query(collection(db, `decks/${deck.id}/cards`), where('nextReview', '<=', new Date().toISOString()))
-            );
-            return { ...deck, dueCount: cardsSnap.size };
+            const cardsSnap = await getDocs(collection(db, `decks/${deck.id}/cards`));
+            const dueCount = cardsSnap.docs.filter((cardDoc) => isCardDue(cardDoc.data())).length;
+            return { ...deck, dueCount };
           })
         );
 
@@ -154,7 +154,7 @@ export default function Dashboard({ user, profile }: DashboardProps) {
       () => setLoading(false)
     );
 
-    const sessionsQuery = query(collection(db, `users/${user.uid}/sessions`), limit(200));
+    const sessionsQuery = query(collection(db, `users/${user.uid}/sessions`), orderBy('timestamp', 'desc'), limit(200));
     const unsubscribeSessions = onSnapshot(sessionsQuery, (snap) => {
       const sessionsData = snap.docs.map((sessionDoc) => ({ id: sessionDoc.id, ...sessionDoc.data() } as StudySession));
       sessionsData.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());

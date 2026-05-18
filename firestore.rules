@@ -63,6 +63,10 @@ service cloud.firestore {
       match /cards/{cardId} {
         allow read: if isSignedIn() && (get(/databases/$(database)/documents/decks/$(deckId)).data.isPublic == true || isOwner(get(/databases/$(database)/documents/decks/$(deckId)).data.ownerId));
         allow create, update, delete: if isSignedIn() && isOwner(get(/databases/$(database)/documents/decks/$(deckId)).data.ownerId);
+
+        match /reviews/{reviewId} {
+          allow read, write: if isSignedIn() && isOwner(get(/databases/$(database)/documents/decks/$(deckId)).data.ownerId);
+        }
       }
     }
   }

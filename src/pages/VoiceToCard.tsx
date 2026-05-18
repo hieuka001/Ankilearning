@@ -28,7 +28,7 @@ import { User } from 'firebase/auth';
 import { UserProfile, Deck } from '../types';
 import { useNavigate } from 'react-router-dom';
 import ReactMarkdown from 'react-markdown';
-import rehypeRaw from 'rehype-raw';
+import { createInitialCardSchedule } from '../lib/spacedRepetition';
 
 interface VoiceToCardProps {
   user: User | null;
@@ -224,10 +224,7 @@ export default function VoiceToCard({ user, profile }: VoiceToCardProps) {
           front: card.front,
           back: card.back,
           tags: ['voice-capture', 'clinical-pearl'],
-          interval: 0,
-          easeFactor: 2.5,
-          repetitions: 0,
-          nextReview: new Date().toISOString(),
+          ...createInitialCardSchedule(),
           createdAt: new Date().toISOString(),
         });
       });
@@ -470,13 +467,13 @@ export default function VoiceToCard({ user, profile }: VoiceToCardProps) {
                           <div className="space-y-2">
                             <span className="text-[8px] font-black text-white/30 uppercase tracking-[0.3em]">Front</span>
                             <div className="text-white font-black text-lg leading-tight tracking-tight">
-                              <ReactMarkdown rehypePlugins={[rehypeRaw]}>{card.front}</ReactMarkdown>
+                              <ReactMarkdown>{card.front}</ReactMarkdown>
                             </div>
                           </div>
                           <div className="pt-4 border-t border-white/5 space-y-2">
                             <span className="text-[8px] font-black text-primary/70 uppercase tracking-[0.3em]">Back</span>
                             <div className="text-sm text-slate-400 font-medium leading-relaxed">
-                               <ReactMarkdown rehypePlugins={[rehypeRaw]}>{card.back}</ReactMarkdown>
+                               <ReactMarkdown>{card.back}</ReactMarkdown>
                             </div>
                           </div>
                         </div>

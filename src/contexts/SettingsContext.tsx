@@ -1,4 +1,9 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
+import {
+  DEFAULT_SCHEDULER_CONFIG,
+  normalizeSchedulerConfig,
+  type SchedulerConfig,
+} from '../lib/spacedRepetition';
 
 interface Settings {
   darkMode: boolean;
@@ -7,6 +12,7 @@ interface Settings {
   volume: number;
   geminiApiKey: string;
   aiApiKey?: string;
+  scheduler: SchedulerConfig;
 }
 
 interface SettingsContextType {
@@ -22,20 +28,43 @@ const defaultSettings: Settings = {
   volume: 0.5,
   geminiApiKey: '',
   aiApiKey: '',
+  scheduler: DEFAULT_SCHEDULER_CONFIG,
 };
 
 const SettingsContext = createContext<SettingsContextType | undefined>(undefined);
 
-export const SettingsProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [settings, setSettings] = useState<Settings>(() => {
+const readSavedSettings = (): Settings => {
+  try {
     const saved = localStorage.getItem('anki_settings');
-    return saved ? JSON.parse(saved) : defaultSettings;
-  });
+    if (!saved) return defaultSettings;
+
+    const parsed = JSON.parse(saved) as Partial<Settings>;
+    return {
+      ...defaultSettings,
+      ...parsed,
+      volume: typeof parsed.volume === 'number' ? Math.min(Math.max(parsed.volume, 0), 1) : defaultSettings.volume,
+      scheduler: normalizeSchedulerConfig(parsed.scheduler),
+    };
+  } catch {
+    try {
+      localStorage.removeItem('anki_settings');
+    } catch {
+      // Storage can be blocked in private or restricted browser contexts.
+    }
+    return defaultSettings;
+  }
+};
+
+export const SettingsProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const [settings, setSettings] = useState<Settings>(readSavedSettings);
 
   useEffect(() => {
-    localStorage.setItem('anki_settings', JSON.stringify(settings));
-    
-    // Apply dark mode
+    try {
+      localStorage.setItem('anki_settings', JSON.stringify(settings));
+    } catch {
+      // Keep the app usable even when storage is blocked.
+    }
+
     if (settings.darkMode) {
       document.documentElement.classList.add('dark');
     } else {
@@ -44,7 +73,12 @@ export const SettingsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   }, [settings]);
 
   const updateSettings = (newSettings: Partial<Settings>) => {
-    setSettings(prev => ({ ...prev, ...newSettings }));
+    setSettings(prev => ({
+      ...prev,
+      ...newSettings,
+      volume: newSettings.volume === undefined ? prev.volume : Math.min(Math.max(newSettings.volume, 0), 1),
+      scheduler: newSettings.scheduler === undefined ? prev.scheduler : normalizeSchedulerConfig(newSettings.scheduler),
+    }));
   };
 
   const toggleDarkMode = () => {

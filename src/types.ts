@@ -12,6 +12,16 @@ export interface UserProfile {
     language: string;
     geminiApiKey?: string;
     aiApiKey?: string;
+    scheduler?: {
+      learningSteps?: { amount: number; unit: 'minute' | 'day' }[];
+      relearningSteps?: { amount: number; unit: 'minute' | 'day' }[];
+      graduatingInterval?: number;
+      easyInterval?: number;
+      hardMultiplier?: number;
+      easyBonus?: number;
+      intervalModifier?: number;
+      minimumEaseFactor?: number;
+    };
   };
   role?: 'admin' | 'user';
   xp?: number;
@@ -50,6 +60,12 @@ export interface Flashcard {
   tags: string[];
   interval: number;
   easeFactor: number;
+  state?: 'new' | 'learning' | 'review' | 'relearning';
+  stepIndex?: number;
+  dueDate?: string;
+  lapses?: number;
+  suspended?: boolean;
+  buriedUntil?: string;
   repetitions: number;
   nextReview: string;
   createdAt: string;

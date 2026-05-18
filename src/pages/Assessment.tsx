@@ -25,7 +25,6 @@ import { Link } from 'react-router-dom';
 import { toast } from 'sonner';
 import { motion, AnimatePresence } from 'motion/react';
 import ReactMarkdown from 'react-markdown';
-import rehypeRaw from 'rehype-raw';
 import { playSound } from '../lib/sounds';
 import { useSettings } from '../contexts/SettingsContext';
 import { generateExam, generateGeneralExam } from '../services/aiService';
@@ -73,14 +72,49 @@ export default function Assessment({ user, profile }: AssessmentProps) {
   const [timeLeft, setTimeLeft] = useState(0);
   const [flaggedQuestions, setFlaggedQuestions] = useState<number[]>([]);
   const timerIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const elapsedIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const aiQuestionsRef = useRef<AIQuestion[]>([]);
+  const userAnswersRef = useRef<(number | null)[]>([]);
+  const startTimeRef = useRef(0);
   
   const [score, setScore] = useState(0);
   const [isFinished, setIsFinished] = useState(false);
-  const [startTime, setStartTime] = useState<number>(0);
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [duration, setDuration] = useState(0);
   const [showReview, setShowReview] = useState(false);
 
+  useEffect(() => {
+    aiQuestionsRef.current = aiQuestions;
+  }, [aiQuestions]);
+
+  useEffect(() => {
+    userAnswersRef.current = userAnswers;
+  }, [userAnswers]);
+
+  const clearTimers = () => {
+    if (timerIntervalRef.current) {
+      clearInterval(timerIntervalRef.current);
+      timerIntervalRef.current = null;
+    }
+
+    if (elapsedIntervalRef.current) {
+      clearInterval(elapsedIntervalRef.current);
+      elapsedIntervalRef.current = null;
+    }
+  };
+
+  const startSessionClock = () => {
+    if (elapsedIntervalRef.current) clearInterval(elapsedIntervalRef.current);
+    const now = Date.now();
+    startTimeRef.current = now;
+    setElapsedSeconds(0);
+    elapsedIntervalRef.current = setInterval(() => {
+      setElapsedSeconds(Math.floor((Date.now() - startTimeRef.current) / 1000));
+    }, 1000);
+  };
+
   const handleReset = () => {
+    clearTimers();
     setIsStarted(false);
     setIsFinished(false);
     setShowReview(false);
@@ -89,6 +123,8 @@ export default function Assessment({ user, profile }: AssessmentProps) {
     setAiQuestions([]);
     setTestCards([]);
     setUserAnswers([]);
+    aiQuestionsRef.current = [];
+    userAnswersRef.current = [];
   };
 
   const handleRetest = () => {
@@ -155,7 +191,7 @@ export default function Assessment({ user, profile }: AssessmentProps) {
       setScore(0);
       setIsFinished(false);
       setShowReview(false);
-      setStartTime(Date.now());
+      startSessionClock();
     } catch (error) {
       console.error(error);
       toast.error("Lỗi khi tải thẻ kiểm tra.");
@@ -211,15 +247,18 @@ export default function Assessment({ user, profile }: AssessmentProps) {
         throw new Error("AI không thể tạo đề thi lúc này. Hãy thử lại hoặc kiểm tra API Key.");
       }
 
+      const emptyAnswers = new Array(questions.length).fill(null);
+      aiQuestionsRef.current = questions;
+      userAnswersRef.current = emptyAnswers;
       setAiQuestions(questions);
-      setUserAnswers(new Array(questions.length).fill(null));
+      setUserAnswers(emptyAnswers);
       setMode('ai');
       setIsStarted(true);
       setCurrentIndex(0);
       setScore(0);
       setIsFinished(false);
       setShowReview(false);
-      setStartTime(Date.now());
+      startSessionClock();
       setFlaggedQuestions([]);
       if (isPressureMode) {
         const timeLimit = questionCount * 60; // 1 minute per question
@@ -248,15 +287,18 @@ export default function Assessment({ user, profile }: AssessmentProps) {
         throw new Error("AI không thể tạo danh sách câu hỏi. Vui lòng kiểm tra lại API Key hoặc thử mức độ/chuyên khoa khác.");
       }
 
+      const emptyAnswers = new Array(questions.length).fill(null);
+      aiQuestionsRef.current = questions;
+      userAnswersRef.current = emptyAnswers;
       setAiQuestions(questions);
-      setUserAnswers(new Array(questions.length).fill(null));
+      setUserAnswers(emptyAnswers);
       setMode('general');
       setIsStarted(true);
       setCurrentIndex(0);
       setScore(0);
       setIsFinished(false);
       setShowReview(false);
-      setStartTime(Date.now());
+      startSessionClock();
       setFlaggedQuestions([]);
       if (isPressureMode) {
         const timeLimit = questionCount * 60;
@@ -285,7 +327,8 @@ export default function Assessment({ user, profile }: AssessmentProps) {
       setCurrentIndex(currentIndex + 1);
       setShowAnswer(false);
     } else {
-      const finalDuration = Math.floor((Date.now() - startTime) / 1000);
+      const finalDuration = Math.floor((Date.now() - startTimeRef.current) / 1000);
+      clearTimers();
       setDuration(finalDuration);
       setIsFinished(true);
     }
@@ -294,6 +337,7 @@ export default function Assessment({ user, profile }: AssessmentProps) {
   const handleAIAnswer = (optionIdx: number) => {
     const newAnswers = [...userAnswers];
     newAnswers[currentIndex] = optionIdx;
+    userAnswersRef.current = newAnswers;
     setUserAnswers(newAnswers);
   };
 
@@ -302,7 +346,6 @@ export default function Assessment({ user, profile }: AssessmentProps) {
     timerIntervalRef.current = setInterval(() => {
       setTimeLeft(prev => {
         if (prev <= 1) {
-          clearInterval(timerIntervalRef.current!);
           finishAIExam();
           toast.error("Hết thời gian làm bài!");
           return 0;
@@ -314,7 +357,7 @@ export default function Assessment({ user, profile }: AssessmentProps) {
 
   useEffect(() => {
     return () => {
-      if (timerIntervalRef.current) clearInterval(timerIntervalRef.current);
+      clearTimers();
     };
   }, []);
 
@@ -325,15 +368,15 @@ export default function Assessment({ user, profile }: AssessmentProps) {
   };
 
   const finishAIExam = async () => {
-    if (timerIntervalRef.current) clearInterval(timerIntervalRef.current);
+    clearTimers();
     let finalScore = 0;
-    aiQuestions.forEach((q, idx) => {
-      if (userAnswers[idx] === q.correctAnswer) {
+    aiQuestionsRef.current.forEach((q, idx) => {
+      if (userAnswersRef.current[idx] === q.correctAnswer) {
         finalScore++;
       }
     });
     setScore(finalScore);
-    const finalDuration = Math.floor((Date.now() - startTime) / 1000);
+    const finalDuration = Math.floor((Date.now() - startTimeRef.current) / 1000);
     setDuration(finalDuration);
     setIsFinished(true);
   };
@@ -522,7 +565,7 @@ export default function Assessment({ user, profile }: AssessmentProps) {
               </div>
               <div className="text-lg text-slate-700 dark:text-slate-300 font-medium leading-relaxed prose prose-slate dark:prose-invert max-w-none">
                         {q.explanation ? (
-                          <ReactMarkdown rehypePlugins={[rehypeRaw]}>{q.explanation}</ReactMarkdown>
+                          <ReactMarkdown>{q.explanation}</ReactMarkdown>
                         ) : (
                           <p className="italic text-slate-400">AI chưa cung cấp giải thích cho câu hỏi này.</p>
                         )}
@@ -615,7 +658,7 @@ export default function Assessment({ user, profile }: AssessmentProps) {
             </div>
             <div className="flex items-center gap-3 text-slate-400 font-mono bg-slate-50 dark:bg-white/5 px-4 py-2 rounded-2xl border border-slate-100 dark:border-white/5">
               <Timer size={18} className="text-primary" />
-              <span className="text-sm font-black">{Math.floor((Date.now() - startTime) / 1000)}s</span>
+              <span className="text-sm font-black">{elapsedSeconds}s</span>
             </div>
           </div>
 
@@ -662,7 +705,7 @@ export default function Assessment({ user, profile }: AssessmentProps) {
                   )}
                   <div className="w-full">
                     <div className="font-bold leading-tight tracking-normal text-3xl md:text-4xl" style={{ fontSize: !showAnswer && currentCard.customStyles?.fontSize ? 'inherit' : undefined }}>
-                      <ReactMarkdown rehypePlugins={[rehypeRaw]}>
+                      <ReactMarkdown>
                         {showAnswer ? currentCard.back : currentCard.front}
                       </ReactMarkdown>
                     </div>
@@ -730,7 +773,7 @@ export default function Assessment({ user, profile }: AssessmentProps) {
                 {isPressureMode ? (
                   `${Math.floor(timeLeft / 60)}:${String(timeLeft % 60).padStart(2, '0')}`
                 ) : (
-                  `${Math.floor((Date.now() - startTime) / 1000)}s`
+                  `${elapsedSeconds}s`
                 )}
               </span>
             </div>

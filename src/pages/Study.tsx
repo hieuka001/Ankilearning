@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
-import { doc, getDoc, collection, getDocs, updateDoc, addDoc, increment } from 'firebase/firestore';
-import { db, auth } from '../firebase';
+import { arrayUnion, doc, getDoc, collection, getDocs, updateDoc, addDoc, increment } from 'firebase/firestore';
+import { db } from '../firebase';
 import { User } from 'firebase/auth';
 import { Deck, Flashcard, UserProfile } from '../types';
 import { Button } from '@/components/ui/button';
@@ -16,23 +16,36 @@ import {
   ChevronLeft,
   BrainCircuit,
   Trophy,
-  Image as ImageIcon
+  Image as ImageIcon,
+  Archive,
+  Ban
 } from 'lucide-react';
-import { calculateNextReview } from '../lib/spacedRepetition';
+import {
+  calculateSchedulerReview,
+  formatScheduledDelay,
+  getLocalTomorrowIso,
+  getRatingPreviews,
+  isCardBuried,
+  isCardDue,
+  normalizeCardSchedule,
+  type SchedulerConfig,
+  type SchedulerRating,
+} from '../lib/spacedRepetition';
 import { toast } from 'sonner';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import rehypeRaw from 'rehype-raw';
 import { playSound } from '../lib/sounds';
 import { useSettings } from '../contexts/SettingsContext';
 import { motion, AnimatePresence } from 'motion/react';
 import SpeechButton from '../components/SpeechButton';
+import { XP_PER_CARD } from '../lib/gamification';
 
 interface StudyProps {
   user: User | null;
+  profile?: UserProfile | null;
 }
 
-export default function Study({ user }: StudyProps) {
+export default function Study({ user, profile }: StudyProps) {
   const { settings } = useSettings();
   const { deckId } = useParams();
   const navigate = useNavigate();
@@ -46,7 +59,11 @@ export default function Study({ user }: StudyProps) {
   const [startTime, setStartTime] = useState(Date.now());
   const [imageLoaded, setImageLoaded] = useState(false);
   const [fontSize, setFontSize] = useState('text-3xl md:text-5xl');
+  const [now, setNow] = useState(() => new Date());
+  const [cloudScheduler, setCloudScheduler] = useState<Partial<SchedulerConfig> | null>(null);
   const prefetchedImages = useRef<Set<string>>(new Set());
+  const ratingLockRef = useRef(false);
+  const schedulerConfig = cloudScheduler || profile?.settings?.scheduler || settings.scheduler;
 
   const resetStudy = () => {
     setCurrentIndex(0);
@@ -56,6 +73,11 @@ export default function Study({ user }: StudyProps) {
     setSessionStats({ reviewed: 0, correct: 0 });
     setStartTime(Date.now());
   };
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(new Date()), 15000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   // Prefetch images for the next card
   useEffect(() => {
@@ -85,14 +107,23 @@ export default function Study({ user }: StudyProps) {
           
           const cardsSnap = await getDocs(collection(db, `decks/${deckId}/cards`));
           const allCards = cardsSnap.docs.map(doc => ({ id: doc.id, ...doc.data() } as Flashcard));
+          const userSnap = await getDoc(doc(db, 'users', user.uid));
+          if (userSnap.exists()) {
+            const userData = userSnap.data() as UserProfile;
+            setCloudScheduler(userData.settings?.scheduler || null);
+          }
           
-          // Filter cards that are due for review
-          const dueCards = allCards.filter(card => new Date(card.nextReview) <= new Date());
+          const currentTime = new Date();
+          const studyableCards = allCards.filter((card) => {
+            const schedule = normalizeCardSchedule(card, currentTime);
+            return !schedule.suspended && !isCardBuried(card, currentTime);
+          });
+          const dueCards = studyableCards.filter(card => isCardDue(card, currentTime));
           
           // If no due cards, ask if they want to study all
           if (dueCards.length === 0 && allCards.length > 0) {
             if (window.confirm("Bạn đã hoàn thành các thẻ cần ôn tập hôm nay. Bạn có muốn ôn lại tất cả không?")) {
-              setCards(allCards.sort(() => Math.random() - 0.5));
+              setCards(studyableCards.sort(() => Math.random() - 0.5));
             } else {
               navigate(`/decks/${deckId}`);
             }
@@ -108,48 +139,107 @@ export default function Study({ user }: StudyProps) {
     };
 
     fetchData();
-  }, [deckId, navigate]);
+  }, [deckId, navigate, user]);
 
-  const handleRate = async (quality: number) => {
+  const advanceCard = (finalStats = sessionStats) => {
+    if (currentIndex < cards.length - 1) {
+      setIsFlipped(false);
+      setCurrentIndex(currentIndex + 1);
+    } else {
+      finishSession(finalStats);
+    }
+  };
+
+  const handleRate = async (rating: SchedulerRating) => {
+    if (ratingLockRef.current) return;
+    ratingLockRef.current = true;
+
     const card = cards[currentIndex];
-    const result = calculateNextReview(quality, card.repetitions, card.easeFactor, card.interval);
+    const reviewTime = new Date();
+    const previousSchedule = normalizeCardSchedule(card, reviewTime);
+    const result = calculateSchedulerReview(card, rating, schedulerConfig, reviewTime);
+    const isCorrect = rating !== 'again';
+    const nextStats = {
+      reviewed: sessionStats.reviewed + 1,
+      correct: sessionStats.correct + (isCorrect ? 1 : 0),
+    };
     
-    if (quality >= 3) {
+    if (isCorrect) {
       playSound('correct', settings.volume);
     } else {
       playSound('wrong', settings.volume);
     }
 
     try {
-      if (!user) return;
+      if (!user || !deckId) return;
+      const historyEntry = {
+        cardId: card.id,
+        rating,
+        reviewTime: reviewTime.toISOString(),
+        previousInterval: result.previousInterval,
+        newInterval: result.newInterval,
+      };
+
       // Update card in Firestore
       await updateDoc(doc(db, `decks/${deckId}/cards`, card.id), {
-        ...result
+        state: result.state,
+        interval: result.interval,
+        easeFactor: result.easeFactor,
+        stepIndex: result.stepIndex,
+        dueDate: result.dueDate,
+        nextReview: result.nextReview,
+        lapses: result.lapses,
+        repetitions: result.repetitions,
+        lastReview: {
+          ...historyEntry,
+          previousState: previousSchedule.state,
+          newState: result.state,
+        },
+        reviewHistory: arrayUnion(historyEntry),
       });
 
       // Update user stats
-      if (quality >= 3) {
+      if (isCorrect) {
         await updateDoc(doc(db, 'users', user.uid), {
-          totalCardsLearned: increment(1)
+          totalCardsLearned: increment(1),
+          xp: increment(XP_PER_CARD),
         });
-        setSessionStats(prev => ({ ...prev, correct: prev.correct + 1 }));
       }
-      setSessionStats(prev => ({ ...prev, reviewed: prev.reviewed + 1 }));
+      setSessionStats(nextStats);
 
-      // Move to next card
-      if (currentIndex < cards.length - 1) {
-        setIsFlipped(false);
-        setCurrentIndex(currentIndex + 1);
-      } else {
-        finishSession();
-      }
+      advanceCard(nextStats);
     } catch (error) {
       console.error(error);
       toast.error("Lỗi khi cập nhật tiến độ.");
+    } finally {
+      ratingLockRef.current = false;
     }
   };
 
-  const finishSession = async () => {
+  const handleBuryCurrentCard = async () => {
+    const card = cards[currentIndex];
+    if (!deckId || !card) return;
+
+    await updateDoc(doc(db, `decks/${deckId}/cards`, card.id), {
+      buriedUntil: getLocalTomorrowIso(),
+    });
+    toast.success('Đã bury thẻ đến ngày mai.');
+    advanceCard();
+  };
+
+  const handleSuspendCurrentCard = async () => {
+    const card = cards[currentIndex];
+    if (!deckId || !card) return;
+
+    await updateDoc(doc(db, `decks/${deckId}/cards`, card.id), {
+      suspended: true,
+      buriedUntil: '',
+    });
+    toast.success('Đã suspend thẻ.');
+    advanceCard();
+  };
+
+  const finishSession = async (finalStats = sessionStats) => {
     setIsFinished(true);
     const duration = Math.round((Date.now() - startTime) / 1000);
     
@@ -204,8 +294,8 @@ export default function Study({ user }: StudyProps) {
       await addDoc(collection(db, `users/${user.uid}/sessions`), {
         userId: user.uid,
         deckId,
-        cardsReviewed: sessionStats.reviewed + 1,
-        correctCount: sessionStats.correct + (isFlipped ? 1 : 0), // simplified
+        cardsReviewed: finalStats.reviewed,
+        correctCount: finalStats.correct,
         duration,
         timestamp: new Date().toISOString()
       });
@@ -283,6 +373,8 @@ export default function Study({ user }: StudyProps) {
 
   const currentCard = cards[currentIndex];
   const progress = ((currentIndex) / cards.length) * 100;
+  const currentSchedule = normalizeCardSchedule(currentCard, now);
+  const ratingPreviews = getRatingPreviews(currentCard, schedulerConfig, now);
 
   const renderContent = (content: string, isFlipped: boolean) => {
     if (currentCard.type === 'cloze') {
@@ -329,6 +421,14 @@ export default function Study({ user }: StudyProps) {
           </div>
           <Button variant="ghost" size="icon" onClick={() => navigate(`/decks/${deckId}`)} className="rounded-2xl hover:bg-slate-100 dark:hover:bg-white/5 h-12 w-12">
             <X size={24} className="text-slate-400" />
+          </Button>
+          <Button variant="ghost" size="sm" onClick={handleBuryCurrentCard} className="h-10 gap-2 rounded-xl px-3 text-xs font-bold text-slate-500 hover:bg-slate-100 dark:hover:bg-white/5">
+            <Archive size={15} />
+            Bury
+          </Button>
+          <Button variant="ghost" size="sm" onClick={handleSuspendCurrentCard} className="h-10 gap-2 rounded-xl px-3 text-xs font-bold text-slate-500 hover:bg-slate-100 dark:hover:bg-white/5">
+            <Ban size={15} />
+            Suspend
           </Button>
         </div>
         <div className="flex-1 space-y-3">
@@ -389,6 +489,13 @@ export default function Study({ user }: StudyProps) {
                 }`}>
                   {isFlipped ? 'Mặt sau (Trả lời)' : 'Mặt trước (Câu hỏi)'}
                 </div>
+                <div className={`flex flex-wrap items-center justify-center gap-2 text-[10px] font-bold uppercase ${
+                  isFlipped ? 'text-white/70' : 'text-slate-400 dark:text-slate-500'
+                }`}>
+                  <span>State: {currentSchedule.state}</span>
+                  <span>Interval: {currentSchedule.interval || 0} ngày</span>
+                  <span>Ease: {currentSchedule.easeFactor.toFixed(2)}</span>
+                </div>
                 
                 {currentCard.imageUrl && !isFlipped && (
                   <motion.div 
@@ -437,7 +544,7 @@ export default function Study({ user }: StudyProps) {
                   <div className="w-full">
                     <div className={`prose prose-2xl max-w-none mx-auto ${isFlipped ? 'prose-invert' : 'dark:prose-invert'}`}>
                       <div className={`font-bold leading-tight tracking-normal ${fontSize}`} style={{ fontSize: !isFlipped && currentCard.customStyles?.fontSize ? 'inherit' : undefined }}>
-                        <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeRaw]}>
+                        <ReactMarkdown remarkPlugins={[remarkGfm]}>
                           {renderContent(isFlipped ? currentCard.back : currentCard.front, isFlipped)}
                         </ReactMarkdown>
                       </div>
@@ -472,12 +579,18 @@ export default function Study({ user }: StudyProps) {
                 initial={{ y: 30, opacity: 0 }}
                 animate={{ y: 0, opacity: 1 }}
                 exit={{ y: 20, opacity: 0 }}
-                className="grid grid-cols-4 gap-4"
+                className={`grid gap-4 ${
+                  ratingPreviews.length === 2 ? 'grid-cols-2' : ratingPreviews.length === 3 ? 'grid-cols-3' : 'grid-cols-4'
+                }`}
               >
-                <RatingButton quality={1} label="Quên" color="bg-rose-500" onClick={() => handleRate(1)} />
-                <RatingButton quality={3} label="Khó" color="bg-amber-500" onClick={() => handleRate(3)} />
-                <RatingButton quality={4} label="Tốt" color="bg-primary" onClick={() => handleRate(4)} />
-                <RatingButton quality={5} label="Dễ" color="bg-emerald-500" onClick={() => handleRate(5)} />
+                {ratingPreviews.map(({ rating, result }) => (
+                  <RatingButton
+                    key={rating}
+                    rating={rating}
+                    preview={formatScheduledDelay(result.scheduledDelay)}
+                    onClick={() => handleRate(rating)}
+                  />
+                ))}
               </motion.div>
             ) : (
               <motion.div 
@@ -523,14 +636,31 @@ export default function Study({ user }: StudyProps) {
   );
 }
 
-function RatingButton({ quality, label, color, onClick }: { quality: number, label: string, color: string, onClick: () => void }) {
+const ratingMeta: Record<SchedulerRating, { label: string; color: string }> = {
+  again: { label: 'Quên', color: 'bg-rose-500' },
+  hard: { label: 'Khó', color: 'bg-amber-500' },
+  good: { label: 'Tốt', color: 'bg-primary' },
+  easy: { label: 'Dễ', color: 'bg-emerald-500' },
+};
+
+function RatingButton({
+  rating,
+  preview,
+  onClick,
+}: {
+  rating: SchedulerRating;
+  preview: string;
+  onClick: () => void;
+}) {
+  const meta = ratingMeta[rating];
+
   return (
     <Button 
       onClick={(e) => { e.stopPropagation(); onClick(); }}
-      className={`${color} hover:brightness-110 text-white h-20 rounded-[1.5rem] flex flex-col gap-1 shadow-lg transition-transform active:scale-95 border-b-4 border-black/20`}
+      className={`${meta.color} hover:brightness-110 text-white h-20 rounded-[1.5rem] flex flex-col gap-1 shadow-lg transition-transform active:scale-95 border-b-4 border-black/20`}
     >
-      <span className="text-base font-black">{label}</span>
-      <span className="text-[9px] opacity-70 uppercase font-black tracking-tighter">Mức {quality}</span>
+      <span className="text-base font-black">{meta.label}</span>
+      <span className="text-[9px] opacity-80 uppercase font-black tracking-tighter">{preview}</span>
     </Button>
   );
 }
