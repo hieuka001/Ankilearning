@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
-import { arrayUnion, doc, getDoc, collection, getDocs, updateDoc, addDoc, increment, writeBatch } from 'firebase/firestore';
+import { arrayUnion, doc, getDoc, collection, getDocs, updateDoc, addDoc, increment, setDoc, query, where } from 'firebase/firestore';
 import { db } from '../firebase';
 import { User } from 'firebase/auth';
 import { Deck, Flashcard, UserProfile } from '../types';
@@ -45,6 +45,41 @@ interface StudyProps {
   user: User | null;
   profile?: UserProfile | null;
 }
+
+const progressDocId = (deckId: string, cardId: string) =>
+  `${deckId}__${cardId}`.replace(/\//g, '_');
+
+const localProgressKey = (userId: string, deckId: string) =>
+  `fsrs_progress_${userId}_${deckId}`;
+
+const readLocalProgress = (userId: string, deckId: string) => {
+  try {
+    const raw = localStorage.getItem(localProgressKey(userId, deckId));
+    return raw ? JSON.parse(raw) as Record<string, Partial<Flashcard>> : {};
+  } catch {
+    return {};
+  }
+};
+
+const writeLocalProgress = (
+  userId: string,
+  deckId: string,
+  cardId: string,
+  progress: Partial<Flashcard>,
+) => {
+  try {
+    const current = readLocalProgress(userId, deckId);
+    localStorage.setItem(localProgressKey(userId, deckId), JSON.stringify({
+      ...current,
+      [cardId]: {
+        ...(current[cardId] || {}),
+        ...progress,
+      },
+    }));
+  } catch {
+    // The study flow should keep moving even if browser storage is unavailable.
+  }
+};
 
 export default function Study({ user, profile }: StudyProps) {
   const { settings } = useSettings();
@@ -104,10 +139,36 @@ export default function Study({ user, profile }: StudyProps) {
       try {
         const deckSnap = await getDoc(doc(db, 'decks', deckId));
         if (deckSnap.exists()) {
-          setDeck({ id: deckSnap.id, ...deckSnap.data() } as Deck);
+          const deckData = { id: deckSnap.id, ...deckSnap.data() } as Deck;
+          setDeck(deckData);
           
           const cardsSnap = await getDocs(collection(db, `decks/${deckId}/cards`));
-          const allCards = cardsSnap.docs.map(doc => ({ id: doc.id, ...doc.data() } as Flashcard));
+          const rawCards = cardsSnap.docs.map(doc => ({ id: doc.id, ...doc.data() } as Flashcard));
+          const progressByCardId = new Map<string, Partial<Flashcard>>();
+          try {
+            const progressSnap = await getDocs(query(
+              collection(db, `users/${user.uid}/cardProgress`),
+              where('deckId', '==', deckId),
+            ));
+            progressSnap.docs.forEach((progressDoc) => {
+              const progressData = progressDoc.data() as Partial<Flashcard> & { cardId?: string };
+              if (progressData.cardId) {
+                progressByCardId.set(progressData.cardId, progressData);
+              }
+            });
+          } catch (progressError) {
+            console.warn('Unable to load cloud study progress.', progressError);
+          }
+
+          const localProgress = readLocalProgress(user.uid, deckId);
+          const allCards = rawCards.map((card) => ({
+            ...card,
+            ...(progressByCardId.get(card.id) || {}),
+            ...(localProgress[card.id] || {}),
+            id: card.id,
+            deckId: card.deckId || deckData.id,
+            ownerId: card.ownerId || deckData.ownerId,
+          } as Flashcard));
           const userSnap = await getDoc(doc(db, 'users', user.uid));
           let remoteScheduler: SchedulerConfigInput | null = null;
           if (userSnap.exists()) {
@@ -186,9 +247,7 @@ export default function Study({ user, profile }: StudyProps) {
         previousState: previousSchedule.state,
         newState: result.state,
       };
-
-      const batch = writeBatch(db);
-      batch.update(cardRef, {
+      const schedulerUpdate = {
         state: result.state,
         due: result.due,
         interval: result.interval,
@@ -205,11 +264,53 @@ export default function Study({ user, profile }: StudyProps) {
         reps: result.reps,
         repetitions: result.repetitions,
         lastReview: historyEntry,
-        reviewHistory: arrayUnion(historyEntry),
         updatedAt: reviewTime.toISOString(),
-      });
-      batch.set(reviewRef, historyEntry);
-      await batch.commit();
+      };
+      const cloudProgressPayload = {
+        ...schedulerUpdate,
+        userId: user.uid,
+        deckId,
+        cardId: card.id,
+        sourceDeckOwnerId: deck?.ownerId || card.ownerId || '',
+        reviewHistory: arrayUnion(historyEntry),
+      };
+      const localProgressPayload = {
+        ...schedulerUpdate,
+        reviewHistory: [
+          ...((Array.isArray(card.reviewHistory) ? card.reviewHistory : []) as any[]),
+          historyEntry,
+        ],
+      } as Partial<Flashcard>;
+      const savePersonalProgress = async () => {
+        await setDoc(
+          doc(db, `users/${user.uid}/cardProgress`, progressDocId(deckId, card.id)),
+          cloudProgressPayload,
+          { merge: true },
+        );
+      };
+
+      try {
+        if (deck?.ownerId === user.uid || card.ownerId === user.uid) {
+          await updateDoc(cardRef, {
+            ...schedulerUpdate,
+            reviewHistory: arrayUnion(historyEntry),
+          });
+          setDoc(reviewRef, historyEntry).catch((reviewError) => {
+            console.warn('Review log subcollection was not saved.', reviewError);
+          });
+        } else {
+          await savePersonalProgress();
+        }
+      } catch (progressError) {
+        console.warn('Cloud progress save failed, falling back to personal progress.', progressError);
+        try {
+          await savePersonalProgress();
+        } catch (personalProgressError) {
+          console.warn('Personal cloud progress save failed, falling back to local progress.', personalProgressError);
+          writeLocalProgress(user.uid, deckId, card.id, localProgressPayload);
+          toast.warning('Đã lưu tạm tiến độ trên thiết bị này.');
+        }
+      }
 
       // Update user stats
       if (isCorrect) {

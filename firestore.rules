@@ -46,6 +46,13 @@ service cloud.firestore {
       match /examResults/{resultId} {
         allow read, write: if isOwner(userId);
       }
+      match /cardProgress/{progressId} {
+        allow read: if isOwner(userId);
+        allow create, update, delete: if isOwner(userId)
+          && incoming().userId == userId
+          && incoming().deckId is string
+          && incoming().cardId is string;
+      }
     }
 
     // --- Decks ---
