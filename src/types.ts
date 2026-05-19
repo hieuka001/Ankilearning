@@ -80,6 +80,8 @@ export interface DailyMissionDocument {
   dateKey: string;
   missions: DailyMission[];
   completedAll: boolean;
+  claimedAll?: boolean;
+  claimedExp?: number;
   createdAt: string;
   updatedAt: string;
   resetAt: string;

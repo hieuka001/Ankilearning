@@ -36,6 +36,8 @@ import {
   getUnlockedBadges,
   updateMissionProgress,
   allDailyMissionsCompleted,
+  allDailyMissionsClaimed,
+  claimDailyMissionReward,
   type DailyMission,
   type MissionType,
 } from '../lib/gamification';
@@ -138,6 +140,8 @@ export async function ensureDailyMissions(userId: string, timezone = DEFAULT_TIM
     dateKey,
     missions,
     completedAll: false,
+    claimedAll: false,
+    claimedExp: 0,
     createdAt: nowIso,
     updatedAt: nowIso,
     resetAt: missions[0]?.resetAt || nowIso,
@@ -146,6 +150,16 @@ export async function ensureDailyMissions(userId: string, timezone = DEFAULT_TIM
   await setDoc(ref, payload, { merge: true });
 
   return { id: ref.id, ...payload };
+}
+
+export async function ensureLeaderboardEntry(userId: string) {
+  const nowIso = new Date().toISOString();
+  const snap = await getDoc(userRef(userId));
+  if (!snap.exists()) return;
+
+  const userData = snap.data() as Partial<UserProfile>;
+  const stats = profileStats(userData);
+  await setDoc(leaderboardRef(userId), buildLeaderboardEntry(userId, userData, stats, nowIso), { merge: true });
 }
 
 async function trackActivity(userId: string, input: ActivityInput, timezone = DEFAULT_TIMEZONE): Promise<ActivityResult> {
@@ -193,11 +207,10 @@ async function trackActivity(userId: string, input: ActivityInput, timezone = DE
       ? dailyMissionSnap.data() as DailyMissionDocument
       : undefined;
     const previousMissions = normalizeMissions(existingMissionData, dateKey, timezone);
-    const wasCompletedAll = allDailyMissionsCompleted(previousMissions);
     const progressResult = updateMissionProgress(previousMissions, input.missionType, amount);
     const missions = progressResult.missions;
     const completedAll = allDailyMissionsCompleted(missions);
-    const missionExp = progressResult.rewardExp;
+    const missionExp = 0;
 
     const previousStats = profileStats(userData);
     let streakDays = previousStats.streakDays;
@@ -206,17 +219,11 @@ async function trackActivity(userId: string, input: ActivityInput, timezone = DE
       streakDays = 0;
     }
 
-    let streakBonusExp = 0;
-    if (!wasCompletedAll && completedAll) {
-      streakDays = userData.lastMissionDate === yesterdayKey ? streakDays + 1 : 1;
-      streakBonusExp = streakDays > 0 && streakDays % 7 === 0 ? DAILY_MISSION_EXP : 0;
-    }
-
     const correctStreakBonus = input.missionType === 'study_cards'
       ? Math.floor(cardsReviewed / 10) * CORRECT_STREAK_BONUS_EXP
       : 0;
 
-    const awardedExp = baseExp + missionExp + streakBonusExp + correctStreakBonus;
+    const awardedExp = baseExp + correctStreakBonus;
     const nextStats = {
       totalExp: previousStats.totalExp + awardedExp,
       streakDays,
@@ -232,6 +239,8 @@ async function trackActivity(userId: string, input: ActivityInput, timezone = DE
       dateKey,
       missions,
       completedAll,
+      claimedAll: allDailyMissionsClaimed(missions),
+      claimedExp: existingMissionData?.claimedExp || 0,
       createdAt: existingMissionData?.createdAt || nowIso,
       updatedAt: nowIso,
       resetAt: missions[0]?.resetAt || nowIso,
@@ -248,7 +257,6 @@ async function trackActivity(userId: string, input: ActivityInput, timezone = DE
       totalQuizzesCompleted: nextStats.totalQuizzesCompleted,
       totalStudyTimeMinutes: nextStats.totalStudyTimeMinutes,
       rankScore: calculateRankScore(nextStats),
-      lastMissionDate: completedAll ? dateKey : userData.lastMissionDate || '',
       lastQuizCompletedAt: input.forceCooldownKey === 'quiz' && quizzesCompleted > 0 ? nowIso : userData.lastQuizCompletedAt || '',
       badges,
       achievements: badges,
@@ -272,6 +280,115 @@ async function trackActivity(userId: string, input: ActivityInput, timezone = DE
     return {
       awardedExp,
       missionExp,
+      level: levelInfo.level,
+      antiCheatFlags,
+    };
+  });
+}
+
+export async function claimMissionReward(userId: string, missionId: string, timezone = DEFAULT_TIMEZONE): Promise<ActivityResult> {
+  const now = new Date();
+  const nowIso = now.toISOString();
+  const dateKey = getTodayKey(timezone, now);
+  const yesterdayKey = getDateKeyOffset(-1, timezone, now);
+  const antiCheatFlags: string[] = [];
+
+  return runTransaction(db, async (transaction) => {
+    const [profileSnap, dailyMissionSnap] = await Promise.all([
+      transaction.get(userRef(userId)),
+      transaction.get(missionRef(userId, dateKey)),
+    ]);
+
+    if (!dailyMissionSnap.exists()) {
+      throw new Error('Daily missions are not ready.');
+    }
+
+    const userData = profileSnap.exists() ? profileSnap.data() as Partial<UserProfile> : {};
+    const existingMissionData = dailyMissionSnap.data() as DailyMissionDocument;
+    const previousMissions = normalizeMissions(existingMissionData, dateKey, timezone);
+    const wasClaimedAll = allDailyMissionsClaimed(previousMissions);
+    const claimResult = claimDailyMissionReward(previousMissions, missionId);
+
+    if (!claimResult.claimedMission || claimResult.rewardExp <= 0) {
+      return {
+        awardedExp: 0,
+        missionExp: 0,
+        level: calculateUserLevel(profileStats(userData).totalExp).level,
+        antiCheatFlags: ['nothing_to_claim'],
+      };
+    }
+
+    const missions = claimResult.missions;
+    const completedAll = allDailyMissionsCompleted(missions);
+    const claimedAll = allDailyMissionsClaimed(missions);
+    const previousStats = profileStats(userData);
+    let streakDays = previousStats.streakDays;
+
+    if (userData.lastMissionDate && userData.lastMissionDate !== dateKey && userData.lastMissionDate !== yesterdayKey) {
+      streakDays = 0;
+    }
+
+    let streakBonusExp = 0;
+    if (!wasClaimedAll && claimedAll) {
+      streakDays = userData.lastMissionDate === yesterdayKey ? streakDays + 1 : 1;
+      streakBonusExp = streakDays > 0 && streakDays % 7 === 0 ? DAILY_MISSION_EXP : 0;
+    }
+
+    const awardedExp = claimResult.rewardExp + streakBonusExp;
+    const nextStats = {
+      ...previousStats,
+      totalExp: previousStats.totalExp + awardedExp,
+      streakDays,
+    };
+    const levelInfo = calculateUserLevel(nextStats.totalExp);
+    const badges = getUnlockedBadges(nextStats, (userData.badges || userData.achievements || []) as any[], now);
+    const claimedExp = numberValue(existingMissionData.claimedExp) + claimResult.rewardExp;
+
+    transaction.set(missionRef(userId, dateKey), {
+      userId,
+      dateKey,
+      missions,
+      completedAll,
+      claimedAll,
+      claimedExp,
+      createdAt: existingMissionData.createdAt || nowIso,
+      updatedAt: nowIso,
+      resetAt: missions[0]?.resetAt || existingMissionData.resetAt || nowIso,
+    }, { merge: true });
+
+    transaction.set(userRef(userId), {
+      totalExp: nextStats.totalExp,
+      xp: nextStats.totalExp,
+      level: levelInfo.level,
+      streakDays: nextStats.streakDays,
+      streak: nextStats.streakDays,
+      rankScore: calculateRankScore(nextStats),
+      lastMissionDate: claimedAll ? dateKey : userData.lastMissionDate || '',
+      badges,
+      achievements: badges,
+      updatedAt: nowIso,
+    }, { merge: true });
+
+    transaction.set(leaderboardRef(userId), buildLeaderboardEntry(userId, userData, nextStats, nowIso), { merge: true });
+
+    const logRef = doc(collection(db, 'activity_logs'));
+    transaction.set(logRef, {
+      id: logRef.id,
+      userId,
+      dateKey,
+      createdAt: nowIso,
+      type: 'mission_claim',
+      missionId,
+      missionType: claimResult.claimedMission.type,
+      awardedExp,
+      missionExp: claimResult.rewardExp,
+      streakBonusExp,
+      antiCheatFlags,
+    });
+
+    return {
+      awardedExp,
+      missionExp: claimResult.rewardExp,
       level: levelInfo.level,
       antiCheatFlags,
     };
@@ -459,16 +576,28 @@ export function subscribeDailyMissions(
   const dateKey = getTodayKey(timezone);
   const ref = missionRef(userId, dateKey);
 
-  ensureDailyMissions(userId, timezone).catch((error) => console.warn('Could not ensure daily missions.', error));
-
-  return onSnapshot(ref, (snap) => {
-    if (!snap.exists()) {
+  ensureDailyMissions(userId, timezone)
+    .then(onChange)
+    .catch((error) => {
+      console.warn('Could not ensure daily missions.', error);
       onChange(null);
-      return;
-    }
+    });
 
-    onChange({ id: snap.id, ...(snap.data() as Omit<DailyMissionDocument, 'id'>) });
-  });
+  return onSnapshot(
+    ref,
+    (snap) => {
+      if (!snap.exists()) {
+        onChange(null);
+        return;
+      }
+
+      onChange({ id: snap.id, ...(snap.data() as Omit<DailyMissionDocument, 'id'>) });
+    },
+    (error) => {
+      console.warn('Daily missions listener failed.', error);
+      onChange(null);
+    }
+  );
 }
 
 export function subscribeLeaderboard(

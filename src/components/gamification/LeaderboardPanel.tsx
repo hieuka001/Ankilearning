@@ -1,14 +1,22 @@
 import { motion } from 'motion/react';
 import { Crown, Medal, TrendingUp, Trophy } from 'lucide-react';
-import type { LeaderboardEntry } from '../../types';
+import type { LeaderboardEntry, UserProfile } from '../../types';
+import { calculateUserLevel, calculateRankScore } from '../../lib/gamification';
 
 interface LeaderboardPanelProps {
   entries: Array<LeaderboardEntry & { rank?: number }>;
   currentUserId?: string;
+  currentProfile?: UserProfile | null;
 }
 
-export default function LeaderboardPanel({ entries, currentUserId }: LeaderboardPanelProps) {
-  const topEntries = entries.slice(0, 8);
+export default function LeaderboardPanel({ entries, currentUserId, currentProfile }: LeaderboardPanelProps) {
+  const fallbackEntry = currentUserId && currentProfile
+    ? buildCurrentUserEntry(currentUserId, currentProfile)
+    : null;
+  const mergedEntries = fallbackEntry && !entries.some((entry) => entry.userId === currentUserId)
+    ? [fallbackEntry, ...entries]
+    : entries;
+  const topEntries = mergedEntries.slice(0, 8);
 
   return (
     <section className="premium-panel h-full overflow-hidden rounded-lg">
@@ -84,6 +92,32 @@ export default function LeaderboardPanel({ entries, currentUserId }: Leaderboard
       </div>
     </section>
   );
+}
+
+function buildCurrentUserEntry(userId: string, profile: UserProfile): LeaderboardEntry & { rank?: number } {
+  const totalExp = profile.totalExp ?? profile.xp ?? 0;
+  const streakDays = profile.streakDays ?? profile.streak ?? 0;
+  const totalCardsReviewed = profile.totalCardsReviewed ?? profile.totalCardsLearned ?? 0;
+  const totalQuizzesCompleted = profile.totalQuizzesCompleted ?? 0;
+
+  return {
+    id: userId,
+    rank: 1,
+    userId,
+    username: profile.displayName || profile.email || 'Learner',
+    avatar: profile.photoURL || '',
+    level: profile.level || calculateUserLevel(totalExp).level,
+    totalExp,
+    streakDays,
+    totalCardsReviewed,
+    rankScore: profile.rankScore || calculateRankScore({
+      totalExp,
+      streakDays,
+      totalCardsReviewed,
+      totalQuizzesCompleted,
+    }),
+    updatedAt: new Date().toISOString(),
+  };
 }
 
 function RankBadge({ rank }: { rank: number }) {

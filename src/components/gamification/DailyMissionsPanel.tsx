@@ -1,13 +1,19 @@
+import { useState } from 'react';
 import { motion } from 'motion/react';
-import { Award, CheckCircle2, Clock3, ClipboardCheck, Flame, Layers3 } from 'lucide-react';
+import { Award, CheckCircle2, Clock3, ClipboardCheck, Flame, Layers3, Loader2 } from 'lucide-react';
+import { toast } from 'sonner';
 import type { DailyMissionDocument } from '../../types';
 import { formatMissionProgress, MISSION_LABELS, calculateUserLevel } from '../../lib/gamification';
 import type { UserProfile } from '../../types';
+import { Button } from '@/components/ui/button';
+import { claimMissionReward } from '../../services/gamificationService';
 
 interface DailyMissionsPanelProps {
   missionDoc: DailyMissionDocument | null;
   profile: UserProfile | null;
   loading?: boolean;
+  userId?: string;
+  timezone?: string;
 }
 
 const missionIcons = {
@@ -16,11 +22,31 @@ const missionIcons = {
   online_time: Clock3,
 };
 
-export default function DailyMissionsPanel({ missionDoc, profile, loading }: DailyMissionsPanelProps) {
+export default function DailyMissionsPanel({ missionDoc, profile, loading, userId, timezone }: DailyMissionsPanelProps) {
+  const [claimingId, setClaimingId] = useState<string | null>(null);
   const totalExp = profile?.totalExp ?? profile?.xp ?? 0;
   const levelInfo = calculateUserLevel(totalExp);
   const missions = missionDoc?.missions || [];
   const completedCount = missions.filter((mission) => mission.completed).length;
+  const claimedCount = missions.filter((mission) => mission.claimed).length;
+
+  const handleClaim = async (missionId: string) => {
+    if (!userId) return;
+    setClaimingId(missionId);
+    try {
+      const result = await claimMissionReward(userId, missionId, timezone);
+      if (result.awardedExp > 0) {
+        toast.success(`Đã nhận +${result.awardedExp} EXP.`);
+      } else {
+        toast.info('Nhiệm vụ này chưa sẵn sàng để nhận.');
+      }
+    } catch (error) {
+      console.warn('Mission claim failed.', error);
+      toast.error('Chưa nhận được EXP nhiệm vụ. Hãy thử lại.');
+    } finally {
+      setClaimingId(null);
+    }
+  };
 
   return (
     <section className="premium-panel overflow-hidden rounded-lg">
@@ -32,7 +58,7 @@ export default function DailyMissionsPanel({ missionDoc, profile, loading }: Dai
           </div>
           <div className="rounded-lg border border-black/[0.07] bg-white/70 px-3 py-2 text-right dark:border-white/10 dark:bg-white/[0.05]">
             <p className="font-mono text-sm font-semibold text-zinc-950 dark:text-white">{completedCount}/3</p>
-            <p className="text-[10px] font-medium text-muted-foreground">đã xong</p>
+            <p className="text-[10px] font-medium text-muted-foreground">{claimedCount} đã nhận</p>
           </div>
         </div>
       </div>
@@ -103,13 +129,24 @@ export default function DailyMissionsPanel({ missionDoc, profile, loading }: Dai
                         </p>
                       </div>
                     </div>
-                    <span className={`rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase ${
-                      mission.completed
-                        ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
-                        : 'bg-zinc-950/[0.06] text-zinc-600 dark:bg-white/10 dark:text-zinc-300'
-                    }`}>
-                      {mission.completed ? 'Done' : 'Active'}
-                    </span>
+                    {mission.completed && !mission.claimed ? (
+                      <Button
+                        size="sm"
+                        onClick={() => handleClaim(mission.id)}
+                        disabled={claimingId === mission.id}
+                        className="h-8 rounded-lg bg-zinc-950 px-3 text-xs font-semibold text-white hover:bg-zinc-800 dark:bg-white dark:text-zinc-950"
+                      >
+                        {claimingId === mission.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : 'Nhận'}
+                      </Button>
+                    ) : (
+                      <span className={`rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase ${
+                        mission.claimed
+                          ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
+                          : 'bg-zinc-950/[0.06] text-zinc-600 dark:bg-white/10 dark:text-zinc-300'
+                      }`}>
+                        {mission.claimed ? 'Đã nhận' : 'Đang làm'}
+                      </span>
+                    )}
                   </div>
                   <div className="h-1.5 overflow-hidden rounded-full bg-black/[0.06] dark:bg-white/10">
                     <motion.div

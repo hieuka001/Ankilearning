@@ -306,10 +306,16 @@ export default function Dashboard({ user, profile }: DashboardProps) {
 
       <div className="grid gap-6 xl:grid-cols-[0.9fr_1.1fr]">
         <motion.div variants={cardMotion} transition={{ duration: 0.42, ease: [0.22, 1, 0.36, 1] }}>
-          <DailyMissionsPanel missionDoc={missionDoc} profile={profile} loading={gamificationLoading} />
+          <DailyMissionsPanel
+            missionDoc={missionDoc}
+            profile={profile}
+            loading={gamificationLoading}
+            userId={userId}
+            timezone={profile?.settings?.studyReminder?.timezone || 'Asia/Bangkok'}
+          />
         </motion.div>
         <motion.div variants={cardMotion} transition={{ duration: 0.42, ease: [0.22, 1, 0.36, 1] }}>
-          <LeaderboardPanel entries={leaderboard} currentUserId={userId} />
+          <LeaderboardPanel entries={leaderboard} currentUserId={userId} currentProfile={profile} />
         </motion.div>
       </div>
 

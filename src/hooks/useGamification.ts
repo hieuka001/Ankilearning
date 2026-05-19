@@ -1,12 +1,14 @@
-import { useEffect, useMemo, useRef } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { User } from 'firebase/auth';
 import {
   ACTIVE_TIME_FLUSH_SECONDS,
   DEFAULT_TIMEZONE,
   ONLINE_INACTIVE_TIMEOUT_MS,
+  getTodayKey,
 } from '../lib/gamification';
 import {
   ensureDailyMissions,
+  ensureLeaderboardEntry,
   flushGamificationQueue,
   subscribeDailyMissions,
   subscribeLeaderboard,
@@ -20,6 +22,19 @@ export function useGamification(user: User | null, timezone = DEFAULT_TIMEZONE) 
   const loading = useGamificationStore((state) => state.loading);
   const lastError = useGamificationStore((state) => state.lastError);
   const userId = user?.uid;
+  const [todayKey, setTodayKey] = useState(() => getTodayKey(timezone));
+
+  useEffect(() => {
+    setTodayKey(getTodayKey(timezone));
+    const timer = window.setInterval(() => {
+      setTodayKey((currentKey) => {
+        const nextKey = getTodayKey(timezone);
+        return currentKey === nextKey ? currentKey : nextKey;
+      });
+    }, 60_000);
+
+    return () => window.clearInterval(timer);
+  }, [timezone]);
 
   useEffect(() => {
     if (!userId) {
@@ -31,8 +46,9 @@ export function useGamification(user: User | null, timezone = DEFAULT_TIMEZONE) 
 
     ensureDailyMissions(userId, timezone).catch((error) => {
       console.warn('Daily missions initialization failed.', error);
-      gamificationStore.setState({ lastError: 'Khong the tai nhiem vu ngay.' });
+      gamificationStore.setState({ loading: false, lastError: 'Không thể tải nhiệm vụ ngày.' });
     });
+    ensureLeaderboardEntry(userId).catch((error) => console.warn('Leaderboard profile sync failed.', error));
     flushGamificationQueue().catch((error) => console.warn('Gamification queue sync failed.', error));
 
     const unsubscribeMissions = subscribeDailyMissions(userId, (nextMissionDoc) => {
@@ -47,7 +63,7 @@ export function useGamification(user: User | null, timezone = DEFAULT_TIMEZONE) 
       unsubscribeMissions();
       unsubscribeLeaderboard();
     };
-  }, [timezone, userId]);
+  }, [timezone, todayKey, userId]);
 
   useActiveTimeTracker(userId || null, timezone);
 

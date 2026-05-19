@@ -186,13 +186,15 @@ export function xpForNextLevel(currentLevel: number): number {
 }
 
 export function getTodayKey(timeZone = DEFAULT_TIMEZONE, date = new Date()): string {
-  const formatter = new Intl.DateTimeFormat('en-CA', {
+  const parts = new Intl.DateTimeFormat('en-US', {
     timeZone,
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',
-  });
-  return formatter.format(date);
+  }).formatToParts(date);
+  const value = (type: string) => parts.find((part) => part.type === type)?.value || '';
+
+  return `${value('year')}-${value('month')}-${value('day')}`;
 }
 
 export function getNextLocalMidnightIso(timeZone = DEFAULT_TIMEZONE, date = new Date()): string {
@@ -275,7 +277,6 @@ export function updateMissionProgress(
   type: MissionType,
   amount: number
 ): { missions: DailyMission[]; rewardExp: number; completedNow: DailyMission[] } {
-  let rewardExp = 0;
   const completedNow: DailyMission[] = [];
 
   const nextMissions = missions.map((mission) => {
@@ -284,30 +285,57 @@ export function updateMissionProgress(
     const previousCompleted = mission.completed;
     const progress = Math.min(mission.target, Math.max(0, mission.progress + amount));
     const completed = progress >= mission.target;
-    const claimed = mission.claimed || completed;
 
     if (!previousCompleted && completed && !mission.claimed) {
-      rewardExp += mission.rewardExp;
-      completedNow.push({ ...mission, progress, completed, claimed });
+      completedNow.push({ ...mission, progress, completed, claimed: mission.claimed });
     }
 
     return {
       ...mission,
       progress,
       completed,
-      claimed,
     };
   });
 
   return {
     missions: nextMissions,
-    rewardExp: Math.min(rewardExp, MAX_DAILY_MISSION_EXP),
+    rewardExp: 0,
     completedNow,
   };
 }
 
 export function allDailyMissionsCompleted(missions: DailyMission[]): boolean {
   return missions.length > 0 && missions.every((mission) => mission.completed);
+}
+
+export function allDailyMissionsClaimed(missions: DailyMission[]): boolean {
+  return missions.length > 0 && missions.every((mission) => mission.completed && mission.claimed);
+}
+
+export function claimDailyMissionReward(
+  missions: DailyMission[],
+  missionId: string
+): { missions: DailyMission[]; rewardExp: number; claimedMission?: DailyMission } {
+  let rewardExp = 0;
+  let claimedMission: DailyMission | undefined;
+
+  const nextMissions = missions.map((mission) => {
+    if (mission.id !== missionId || !mission.completed || mission.claimed) return mission;
+
+    rewardExp = mission.rewardExp;
+    claimedMission = {
+      ...mission,
+      claimed: true,
+    };
+
+    return claimedMission;
+  });
+
+  return {
+    missions: nextMissions,
+    rewardExp,
+    claimedMission,
+  };
 }
 
 export function calculateRankScore(stats: Pick<GamificationStats, 'totalExp' | 'streakDays' | 'totalCardsReviewed' | 'totalQuizzesCompleted'>): number {
