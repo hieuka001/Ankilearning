@@ -46,6 +46,7 @@ const cardMotion = {
 };
 
 export default function Dashboard({ user, profile }: DashboardProps) {
+  const userId = user?.uid;
   const [recentDecks, setRecentDecks] = useState<(Deck & { dueCount: number })[]>([]);
   const [totalDeckCount, setTotalDeckCount] = useState(0);
   const [recentSessions, setRecentSessions] = useState<StudySession[]>([]);
@@ -75,7 +76,7 @@ export default function Dashboard({ user, profile }: DashboardProps) {
   }, [recentSessions]);
 
   useEffect(() => {
-    if (!user || recentDecks.length === 0) {
+    if (!userId || recentDecks.length === 0) {
       setForecastData(buildForecastShell());
       return;
     }
@@ -109,29 +110,34 @@ export default function Dashboard({ user, profile }: DashboardProps) {
     return () => {
       cancelled = true;
     };
-  }, [user, recentDecks]);
+  }, [userId, recentDecks]);
 
   useEffect(() => {
-    if (!user) return;
+    if (!userId || !profile?.lastStudyDate || !profile.streak) return;
+
+    const lastStudyDate = new Date(profile.lastStudyDate);
+    const today = new Date();
+    const lastDate = new Date(lastStudyDate.getFullYear(), lastStudyDate.getMonth(), lastStudyDate.getDate());
+    const currentDate = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+    const diffDays = Math.round((currentDate.getTime() - lastDate.getTime()) / (1000 * 60 * 60 * 24));
+
+    if (diffDays > 1) {
+      updateDoc(doc(db, 'users', userId), { streak: 0 }).catch(() => undefined);
+    }
+  }, [profile?.lastStudyDate, profile?.streak, userId]);
+
+  useEffect(() => {
+    if (!userId) {
+      setRecentDecks([]);
+      setRecentSessions([]);
+      setTotalDeckCount(0);
+      setLoading(false);
+      return;
+    }
 
     setLoading(true);
 
-    if (profile) {
-      const lastStudyStr = profile.lastStudyDate;
-      if (lastStudyStr) {
-        const lastStudyDate = new Date(lastStudyStr);
-        const today = new Date();
-        const lastDate = new Date(lastStudyDate.getFullYear(), lastStudyDate.getMonth(), lastStudyDate.getDate());
-        const currentDate = new Date(today.getFullYear(), today.getMonth(), today.getDate());
-        const diffDays = Math.round((currentDate.getTime() - lastDate.getTime()) / (1000 * 60 * 60 * 24));
-
-        if (diffDays > 1 && profile.streak > 0) {
-          updateDoc(doc(db, 'users', user.uid), { streak: 0 }).catch(() => undefined);
-        }
-      }
-    }
-
-    const decksQuery = query(collection(db, 'decks'), where('ownerId', '==', user.uid));
+    const decksQuery = query(collection(db, 'decks'), where('ownerId', '==', userId));
     const unsubscribeDecks = onSnapshot(
       decksQuery,
       async (snap) => {
@@ -154,7 +160,7 @@ export default function Dashboard({ user, profile }: DashboardProps) {
       () => setLoading(false)
     );
 
-    const sessionsQuery = query(collection(db, `users/${user.uid}/sessions`), orderBy('timestamp', 'desc'), limit(200));
+    const sessionsQuery = query(collection(db, `users/${userId}/sessions`), orderBy('timestamp', 'desc'), limit(200));
     const unsubscribeSessions = onSnapshot(sessionsQuery, (snap) => {
       const sessionsData = snap.docs.map((sessionDoc) => ({ id: sessionDoc.id, ...sessionDoc.data() } as StudySession));
       sessionsData.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
@@ -165,7 +171,7 @@ export default function Dashboard({ user, profile }: DashboardProps) {
       unsubscribeDecks();
       unsubscribeSessions();
     };
-  }, [user, profile]);
+  }, [userId]);
 
   const cardsToday = useMemo(
     () =>
