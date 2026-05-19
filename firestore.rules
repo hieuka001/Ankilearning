@@ -63,6 +63,60 @@ service cloud.firestore {
       }
     }
 
+    // --- Gamification ---
+    match /daily_missions/{missionId} {
+      allow read: if isSignedIn() && existing().userId == request.auth.uid;
+      allow create: if isSignedIn()
+        && incoming().userId == request.auth.uid
+        && incoming().dateKey is string
+        && incoming().missions is list;
+      allow update: if isSignedIn()
+        && existing().userId == request.auth.uid
+        && incoming().userId == existing().userId
+        && incoming().dateKey == existing().dateKey
+        && incoming().missions is list;
+      allow delete: if false;
+    }
+
+    match /leaderboards/{boardId} {
+      allow get: if isSignedIn();
+      allow list: if isSignedIn();
+
+      match /users/{userId} {
+        allow read: if isSignedIn();
+        allow create, update: if isOwner(userId)
+          && incoming().userId == userId
+          && incoming().username is string
+          && incoming().totalExp is number
+          && incoming().rankScore is number;
+        allow delete: if false;
+      }
+    }
+
+    match /review_logs/{logId} {
+      allow read: if isSignedIn() && existing().userId == request.auth.uid;
+      allow create: if isSignedIn()
+        && incoming().userId == request.auth.uid
+        && incoming().dateKey is string;
+      allow update, delete: if false;
+    }
+
+    match /quiz_logs/{logId} {
+      allow read: if isSignedIn() && existing().userId == request.auth.uid;
+      allow create: if isSignedIn()
+        && incoming().userId == request.auth.uid
+        && incoming().dateKey is string;
+      allow update, delete: if false;
+    }
+
+    match /activity_logs/{logId} {
+      allow read: if isSignedIn() && existing().userId == request.auth.uid;
+      allow create: if isSignedIn()
+        && incoming().userId == request.auth.uid
+        && incoming().dateKey is string;
+      allow update, delete: if false;
+    }
+
     // --- Decks ---
     match /decks/{deckId} {
       allow read: if isSignedIn() && (existing().isPublic == true || isOwner(existing().ownerId));

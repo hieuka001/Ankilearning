@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { collection, query, where, limit, getDocs, onSnapshot, doc, getDoc, addDoc } from 'firebase/firestore';
+import { collection, query, where, limit, getDocs, onSnapshot, doc, getDoc } from 'firebase/firestore';
 import { db, auth } from '../firebase';
 import { Deck, Flashcard, UserProfile } from '../types';
 import { Button } from '@/components/ui/button';
@@ -28,6 +28,7 @@ import ReactMarkdown from 'react-markdown';
 import { playSound } from '../lib/sounds';
 import { useSettings } from '../contexts/SettingsContext';
 import { generateExam, generateGeneralExam } from '../services/aiService';
+import { trackQuizCompletion } from '../services/gamificationService';
 import SpeechButton from '../components/SpeechButton';
 import { lazy, Suspense } from 'react';
 
@@ -76,6 +77,7 @@ export default function Assessment({ user, profile }: AssessmentProps) {
   const aiQuestionsRef = useRef<AIQuestion[]>([]);
   const userAnswersRef = useRef<(number | null)[]>([]);
   const startTimeRef = useRef(0);
+  const quizLoggedRef = useRef(false);
   
   const [score, setScore] = useState(0);
   const [isFinished, setIsFinished] = useState(false);
@@ -125,6 +127,7 @@ export default function Assessment({ user, profile }: AssessmentProps) {
     setUserAnswers([]);
     aiQuestionsRef.current = [];
     userAnswersRef.current = [];
+    quizLoggedRef.current = false;
   };
 
   const handleRetest = () => {
@@ -191,6 +194,7 @@ export default function Assessment({ user, profile }: AssessmentProps) {
       setScore(0);
       setIsFinished(false);
       setShowReview(false);
+      quizLoggedRef.current = false;
       startSessionClock();
     } catch (error) {
       console.error(error);
@@ -258,6 +262,7 @@ export default function Assessment({ user, profile }: AssessmentProps) {
       setScore(0);
       setIsFinished(false);
       setShowReview(false);
+      quizLoggedRef.current = false;
       startSessionClock();
       setFlaggedQuestions([]);
       if (isPressureMode) {
@@ -298,6 +303,7 @@ export default function Assessment({ user, profile }: AssessmentProps) {
       setScore(0);
       setIsFinished(false);
       setShowReview(false);
+      quizLoggedRef.current = false;
       startSessionClock();
       setFlaggedQuestions([]);
       if (isPressureMode) {
@@ -310,6 +316,29 @@ export default function Assessment({ user, profile }: AssessmentProps) {
       toast.error(error.message || "Lỗi khi tạo đề thi tổng hợp.");
     } finally {
       setIsGenerating(false);
+    }
+  };
+
+  const recordQuizCompletion = async (finalScore: number, totalQuestions: number, finalDuration: number) => {
+    if (!user || quizLoggedRef.current || totalQuestions <= 0) return;
+    quizLoggedRef.current = true;
+
+    try {
+      const result = await trackQuizCompletion(user.uid, {
+        score: finalScore,
+        totalQuestions,
+        durationSeconds: finalDuration,
+        mode,
+        deckIds: selectedDeckIds,
+      });
+
+      if (result.awardedExp > 0) {
+        toast.success(`+${result.awardedExp} EXP đã được ghi nhận.`);
+      }
+    } catch (error) {
+      quizLoggedRef.current = false;
+      console.warn('Quiz gamification tracking failed.', error);
+      toast.error('Chưa đồng bộ được EXP bài kiểm tra. Vui lòng thử lại sau.');
     }
   };
 
@@ -331,6 +360,7 @@ export default function Assessment({ user, profile }: AssessmentProps) {
       clearTimers();
       setDuration(finalDuration);
       setIsFinished(true);
+      void recordQuizCompletion(newScore, testCards.length, finalDuration);
     }
   };
 
@@ -379,6 +409,7 @@ export default function Assessment({ user, profile }: AssessmentProps) {
     const finalDuration = Math.floor((Date.now() - startTimeRef.current) / 1000);
     setDuration(finalDuration);
     setIsFinished(true);
+    void recordQuizCompletion(finalScore, aiQuestionsRef.current.length, finalDuration);
   };
 
   if (loading && !isStarted) {

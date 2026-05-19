@@ -1,7 +1,7 @@
-import { arrayUnion, doc, increment, writeBatch } from 'firebase/firestore';
+import { arrayUnion, doc, writeBatch } from 'firebase/firestore';
 import { db } from '../firebase';
-import { XP_PER_CARD } from '../lib/gamification';
 import type { Flashcard, ReviewLog } from '../types';
+import { trackReviewActivity } from '../services/gamificationService';
 import {
   getPendingReviewResults,
   markReviewResultsFailed,
@@ -87,7 +87,7 @@ export async function flushReviewQueue() {
   const ids = records.map((record) => record.id);
   try {
     const batch = writeBatch(db);
-    const correctByUser = new Map<string, number>();
+    const reviewedByUser = new Map<string, number>();
 
     records.forEach((record) => {
       if (record.isOwnerReview) {
@@ -110,20 +110,23 @@ export async function flushReviewQueue() {
         }, { merge: true });
       }
 
-      if (record.isCorrect) {
-        correctByUser.set(record.userId, (correctByUser.get(record.userId) || 0) + 1);
-      }
-    });
-
-    correctByUser.forEach((count, userId) => {
-      batch.update(doc(db, 'users', userId), {
-        totalCardsLearned: increment(count),
-        xp: increment(count * XP_PER_CARD),
-      });
+      reviewedByUser.set(record.userId, (reviewedByUser.get(record.userId) || 0) + 1);
     });
 
     await batch.commit();
     await markReviewResultsSynced(ids);
+
+    await Promise.all(
+      Array.from(reviewedByUser.entries()).map(([userId, count]) =>
+        trackReviewActivity(userId, {
+          cardsReviewed: count,
+          correctCount: count,
+          source: 'review_queue',
+        }).catch((error) => {
+          console.warn('Gamification review tracking failed.', error);
+        })
+      )
+    );
   } catch (error) {
     await markReviewResultsFailed(ids, error);
     scheduleFlush();

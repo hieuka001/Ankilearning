@@ -23,9 +23,12 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { db } from '../firebase';
 import { Deck, StudySession, UserProfile } from '../types';
-import { calculateLevel, calculateLevelProgress } from '../lib/gamification';
+import { calculateLevel } from '../lib/gamification';
 import { suggestStudyPath } from '../services/aiService';
 import { getCardDueDate, isCardDue } from '../lib/spacedRepetition';
+import { useGamificationStore } from '../gamification/gamificationStore';
+import DailyMissionsPanel from '../components/gamification/DailyMissionsPanel';
+import LeaderboardPanel from '../components/gamification/LeaderboardPanel';
 
 const DashboardChart = lazy(() => import('../components/charts/DashboardChart'));
 
@@ -55,6 +58,9 @@ export default function Dashboard({ user, profile }: DashboardProps) {
   const [isGeneratingSuggestion, setIsGeneratingSuggestion] = useState(false);
   const [chartData, setChartData] = useState<DayPoint[]>([]);
   const [forecastData, setForecastData] = useState<DayPoint[]>([]);
+  const missionDoc = useGamificationStore((state) => state.missionDoc);
+  const leaderboard = useGamificationStore((state) => state.leaderboard);
+  const gamificationLoading = useGamificationStore((state) => state.loading);
 
   useEffect(() => {
     const last7Days = Array.from({ length: 7 }, (_, i) => {
@@ -113,7 +119,7 @@ export default function Dashboard({ user, profile }: DashboardProps) {
   }, [userId, recentDecks]);
 
   useEffect(() => {
-    if (!userId || !profile?.lastStudyDate || !profile.streak) return;
+    if (!userId || !profile?.lastStudyDate || !profile.streak || profile.streakDays !== undefined) return;
 
     const lastStudyDate = new Date(profile.lastStudyDate);
     const today = new Date();
@@ -183,9 +189,11 @@ export default function Dashboard({ user, profile }: DashboardProps) {
 
   const dailyGoal = Math.max(profile?.settings?.dailyGoal || 20, 1);
   const dailyProgress = Math.min((cardsToday / dailyGoal) * 100, 100);
-  const userLevel = calculateLevel(profile?.xp || 0);
-  const levelProgress = calculateLevelProgress(profile?.xp || 0);
+  const totalExp = profile?.totalExp ?? profile?.xp ?? 0;
+  const userLevel = calculateLevel(totalExp);
   const dueToday = recentDecks.reduce((sum, deck) => sum + deck.dueCount, 0);
+  const streakDays = profile?.streakDays ?? profile?.streak ?? 0;
+  const cardsReviewed = profile?.totalCardsReviewed ?? profile?.totalCardsLearned ?? 0;
 
   const handleGetAiSuggestion = async () => {
     if (!profile) return;
@@ -193,8 +201,8 @@ export default function Dashboard({ user, profile }: DashboardProps) {
     try {
       const suggestion = await suggestStudyPath(
         {
-          totalCardsLearned: profile.totalCardsLearned,
-          streak: profile.streak,
+          totalCardsLearned: cardsReviewed,
+          streak: streakDays,
           recentSessions: recentSessions.length,
           dueToday,
         },
@@ -289,12 +297,21 @@ export default function Dashboard({ user, profile }: DashboardProps) {
 
           <div className="grid grid-cols-2 divide-x divide-y divide-black/[0.07] dark:divide-white/10">
             <StatTile label="Đến hạn" value={dueToday} icon={<Target size={18} />} tone="blue" />
-            <StatTile label="Chuỗi ngày" value={profile?.streak || 0} icon={<Flame size={18} />} tone="amber" />
+            <StatTile label="Chuỗi ngày" value={streakDays} icon={<Flame size={18} />} tone="amber" />
             <StatTile label="Bộ thẻ" value={totalDeckCount} icon={<Layers3 size={18} />} tone="neutral" />
-            <StatTile label="Đã học" value={profile?.totalCardsLearned || 0} icon={<CheckCircle2 size={18} />} tone="emerald" />
+            <StatTile label="Đã học" value={cardsReviewed} icon={<CheckCircle2 size={18} />} tone="emerald" />
           </div>
         </div>
       </motion.section>
+
+      <div className="grid gap-6 xl:grid-cols-[0.9fr_1.1fr]">
+        <motion.div variants={cardMotion} transition={{ duration: 0.42, ease: [0.22, 1, 0.36, 1] }}>
+          <DailyMissionsPanel missionDoc={missionDoc} profile={profile} loading={gamificationLoading} />
+        </motion.div>
+        <motion.div variants={cardMotion} transition={{ duration: 0.42, ease: [0.22, 1, 0.36, 1] }}>
+          <LeaderboardPanel entries={leaderboard} currentUserId={userId} />
+        </motion.div>
+      </div>
 
       <div className="grid gap-6 xl:grid-cols-[1.45fr_0.85fr]">
         <motion.div variants={cardMotion} transition={{ duration: 0.42, ease: [0.22, 1, 0.36, 1] }}>

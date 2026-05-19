@@ -24,15 +24,33 @@ export interface ReviewQueueRecord {
   error?: string;
 }
 
+export interface GamificationQueueRecord {
+  id: string;
+  userId: string;
+  kind: 'review' | 'quiz' | 'active_time';
+  payload: Record<string, unknown>;
+  timezone: string;
+  status: 'pending' | 'synced';
+  createdAt: string;
+  syncedAt?: string;
+  error?: string;
+}
+
 class LearningCardDB extends Dexie {
   cards!: Table<CachedCardRecord, string>;
   reviewResults!: Table<ReviewQueueRecord, string>;
+  gamificationEvents!: Table<GamificationQueueRecord, string>;
 
   constructor() {
     super('learning-card-review-cache');
     this.version(1).stores({
       cards: '&cacheKey,userId,deckId,cardId,state,dueDate,nextReview,cachedAt',
       reviewResults: '&id,userId,deckId,cardId,status,createdAt',
+    });
+    this.version(2).stores({
+      cards: '&cacheKey,userId,deckId,cardId,state,dueDate,nextReview,cachedAt',
+      reviewResults: '&id,userId,deckId,cardId,status,createdAt',
+      gamificationEvents: '&id,userId,kind,status,createdAt',
     });
   }
 }
@@ -98,5 +116,31 @@ export async function markReviewResultsFailed(ids: string[], error: unknown) {
       status: 'pending',
       error: error instanceof Error ? error.message : String(error),
     })));
+  });
+}
+
+export async function saveGamificationEvent(record: GamificationQueueRecord) {
+  await localDB.gamificationEvents.put(record);
+}
+
+export async function getPendingGamificationEvents() {
+  return localDB.gamificationEvents.where('status').equals('pending').sortBy('createdAt');
+}
+
+export async function markGamificationEventsSynced(ids: string[]) {
+  const syncedAt = new Date().toISOString();
+  await localDB.transaction('rw', localDB.gamificationEvents, async () => {
+    await Promise.all(ids.map((id) => localDB.gamificationEvents.update(id, {
+      status: 'synced',
+      syncedAt,
+      error: undefined,
+    })));
+  });
+}
+
+export async function markGamificationEventFailed(id: string, error: unknown) {
+  await localDB.gamificationEvents.update(id, {
+    status: 'pending',
+    error: error instanceof Error ? error.message : String(error),
   });
 }

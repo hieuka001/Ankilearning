@@ -297,7 +297,7 @@ export default function Study({ user, profile }: StudyProps) {
 
         await updateDoc(userRef, {
           lastStudyDate: today.toISOString(),
-          ...(shouldUpdateStreak ? { streak: newStreak } : {}),
+          ...(userData.streakDays === undefined && shouldUpdateStreak ? { streak: newStreak } : {}),
         });
       }
 

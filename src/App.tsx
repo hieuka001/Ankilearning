@@ -25,6 +25,7 @@ import { SettingsProvider } from './contexts/SettingsContext';
 import BackgroundMusic from './components/BackgroundMusic';
 import Logo from './components/Logo';
 import NotificationCenter from './components/NotificationCenter';
+import { useGamification } from './hooks/useGamification';
 
 const Dashboard = lazy(() => import('./pages/Dashboard'));
 const Decks = lazy(() => import('./pages/Decks'));
@@ -90,6 +91,7 @@ export default function App() {
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState(true);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  useGamification(user, profile?.settings?.studyReminder?.timezone || 'Asia/Bangkok');
 
   useEffect(() => {
     let unsubscribeProfile: (() => void) | null = null;
@@ -117,6 +119,14 @@ export default function App() {
               photoURL: firebaseUser.photoURL || '',
               totalCardsLearned: 0,
               streak: 0,
+              totalExp: 0,
+              xp: 0,
+              level: 1,
+              streakDays: 0,
+              totalCardsReviewed: 0,
+              totalQuizzesCompleted: 0,
+              totalStudyTimeMinutes: 0,
+              rankScore: 0,
               lastStudyDate: new Date().toISOString(),
               settings: {
                 dailyGoal: 20,
