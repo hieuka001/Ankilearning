@@ -28,6 +28,11 @@ service cloud.firestore {
       return resource.data;
     }
 
+    function isOwnDailyMissionId(missionId) {
+      return isSignedIn()
+        && missionId.matches('^' + request.auth.uid + '_[0-9]{4}-[0-9]{2}-[0-9]{2}$');
+    }
+
     // --- User Profiles ---
     match /users/{userId} {
       allow get: if isOwner(userId);
@@ -65,15 +70,15 @@ service cloud.firestore {
 
     // --- Gamification ---
     match /daily_missions/{missionId} {
-      allow read: if isSignedIn() && existing().userId == request.auth.uid;
-      allow create: if isSignedIn()
+      allow get: if isOwnDailyMissionId(missionId);
+      allow list: if false;
+      allow create: if isOwnDailyMissionId(missionId)
         && incoming().userId == request.auth.uid
         && incoming().dateKey is string
         && incoming().missions is list;
-      allow update: if isSignedIn()
-        && existing().userId == request.auth.uid
-        && incoming().userId == existing().userId
-        && incoming().dateKey == existing().dateKey
+      allow update: if isOwnDailyMissionId(missionId)
+        && incoming().userId == request.auth.uid
+        && incoming().dateKey is string
         && incoming().missions is list;
       allow delete: if false;
     }
