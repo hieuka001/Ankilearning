@@ -46,6 +46,87 @@ const escapeHtml = (value: string) =>
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#039;');
 
+const markdownImagePattern =
+  /!\[([^\]\n]*)\]\s*\(\s*(<?https?:\/\/[^)\s>]+>?)\s*(?:"[^"]*"|'[^']*')?\s*\)/gi;
+const plainUrlPattern = /https?:\/\/[^\s<>"']+/gi;
+
+function normalizeUrl(value: string) {
+  const cleanValue = value.trim().replace(/^<|>$/g, '');
+  try {
+    const url = new URL(cleanValue);
+    if (url.hostname.toLowerCase() === 'github.com') {
+      const [, owner, repo, blob, branch, ...pathParts] = url.pathname.split('/');
+      if (owner && repo && blob === 'blob' && branch && pathParts.length > 0) {
+        return `https://raw.githubusercontent.com/${owner}/${repo}/${branch}/${pathParts.join('/')}`;
+      }
+    }
+  } catch {
+    return cleanValue;
+  }
+  return cleanValue;
+}
+
+function isLikelyImageUrl(value: string) {
+  try {
+    const url = new URL(normalizeUrl(value));
+    const host = url.hostname.toLowerCase();
+    const path = `${url.pathname}${url.search}`.toLowerCase();
+    return (
+      /\.(avif|bmp|gif|jpe?g|png|svg|webp)(\?|#|$)/i.test(path) ||
+      host === 'raw.githubusercontent.com' ||
+      host.endsWith('.githubusercontent.com') ||
+      host.includes('firebasestorage.googleapis.com') ||
+      host.includes('googleusercontent.com')
+    );
+  } catch {
+    return false;
+  }
+}
+
+function renderImageTag(src: string, alt = '') {
+  return `<figure><img src="${escapeHtml(normalizeUrl(src))}" alt="${escapeHtml(alt)}" /></figure>`;
+}
+
+function renderTextWithImageUrls(text: string) {
+  let html = '';
+  let lastIndex = 0;
+
+  text.replace(plainUrlPattern, (match, offset) => {
+    const trailing = match.match(/[),.;!?]+$/)?.[0] || '';
+    const src = trailing ? match.slice(0, -trailing.length) : match;
+
+    html += escapeHtml(text.slice(lastIndex, offset)).replace(/\n/g, '<br />');
+    html += isLikelyImageUrl(src)
+      ? renderImageTag(src)
+      : escapeHtml(match);
+    if (trailing && isLikelyImageUrl(src)) html += escapeHtml(trailing);
+    lastIndex = offset + match.length;
+    return match;
+  });
+
+  html += escapeHtml(text.slice(lastIndex)).replace(/\n/g, '<br />');
+  return html;
+}
+
+function renderPlainReviewContent(rawContent: string) {
+  let html = '';
+  let lastIndex = 0;
+
+  rawContent.replace(markdownImagePattern, (match, alt, src, offset) => {
+    html += renderTextWithImageUrls(rawContent.slice(lastIndex, offset));
+    html += renderImageTag(src, alt);
+    lastIndex = offset + match.length;
+    return match;
+  });
+
+  html += renderTextWithImageUrls(rawContent.slice(lastIndex));
+  return html.trim() ? `<div>${html}</div>` : '';
+}
+
+function renderMarkdownImagesInHtml(rawContent: string) {
+  return rawContent.replace(markdownImagePattern, (_match, alt, src) => renderImageTag(src, alt));
+}
+
 const allowedTags = new Set([
   'A', 'B', 'BLOCKQUOTE', 'BR', 'CODE', 'DIV', 'EM', 'FIGURE', 'FIGCAPTION',
   'H1', 'H2', 'H3', 'H4', 'HR', 'I', 'IMG', 'LI', 'MARK', 'OL', 'P', 'PRE',
@@ -56,8 +137,9 @@ const allowedTags = new Set([
 const allowedAttributes = new Set(['alt', 'aria-label', 'class', 'colspan', 'href', 'rowspan', 'src', 'title']);
 
 function sanitizeReviewHtml(rawContent: string) {
-  const looksLikeHtml = /<\/?[a-z][\s\S]*>/i.test(rawContent);
-  const source = looksLikeHtml ? rawContent : `<p>${escapeHtml(rawContent).replace(/\n/g, '<br />')}</p>`;
+  const htmlReadyContent = renderMarkdownImagesInHtml(rawContent);
+  const looksLikeHtml = /<\/?[a-z][\s\S]*>/i.test(htmlReadyContent);
+  const source = looksLikeHtml ? htmlReadyContent : renderPlainReviewContent(rawContent);
 
   if (typeof window === 'undefined') return source;
 

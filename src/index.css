@@ -316,6 +316,11 @@
     cursor: zoom-in;
   }
 
+  .review-card-html figure {
+    margin: 0.75rem auto;
+    max-width: 100%;
+  }
+
   .review-card-html table {
     width: 100%;
     border-collapse: collapse;
