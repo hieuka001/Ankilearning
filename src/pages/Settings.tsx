@@ -4,6 +4,8 @@ import { doc, updateDoc } from 'firebase/firestore';
 import { motion } from 'motion/react';
 import {
   BadgeCheck,
+  Bell,
+  Clock,
   ExternalLink,
   Flame,
   Key,
@@ -71,6 +73,17 @@ export default function Settings({ user, profile }: SettingsProps) {
   const { settings, updateSettings, toggleDarkMode } = useSettings();
   const [geminiApiKey, setGeminiApiKey] = useState(profile?.settings?.geminiApiKey || profile?.settings?.aiApiKey || '');
   const [isSaving, setIsSaving] = useState(false);
+  const [isSavingReminder, setIsSavingReminder] = useState(false);
+  const reminderSettings = profile?.settings?.studyReminder || settings.studyReminder || {
+    enabled: false,
+    time: '21:00',
+    timezone: 'Asia/Bangkok',
+  };
+  const [reminderDraft, setReminderDraft] = useState({
+    enabled: reminderSettings.enabled,
+    time: reminderSettings.time || '21:00',
+    timezone: reminderSettings.timezone || 'Asia/Bangkok',
+  });
   const schedulerConfig = useMemo(() => normalizeSchedulerConfig(profile?.settings?.scheduler || settings.scheduler), [profile?.settings?.scheduler, settings.scheduler]);
   const [schedulerDraft, setSchedulerDraft] = useState({
     learningSteps: serializeSchedulerSteps(schedulerConfig.learningSteps),
@@ -91,6 +104,14 @@ export default function Settings({ user, profile }: SettingsProps) {
   useEffect(() => {
     setGeminiApiKey(profile?.settings?.geminiApiKey || profile?.settings?.aiApiKey || '');
   }, [profile?.settings?.geminiApiKey, profile?.settings?.aiApiKey]);
+
+  useEffect(() => {
+    setReminderDraft({
+      enabled: reminderSettings.enabled,
+      time: reminderSettings.time || '21:00',
+      timezone: reminderSettings.timezone || 'Asia/Bangkok',
+    });
+  }, [reminderSettings.enabled, reminderSettings.time, reminderSettings.timezone]);
 
   useEffect(() => {
     setSchedulerDraft({
@@ -195,6 +216,32 @@ export default function Settings({ user, profile }: SettingsProps) {
       toast.success('Đã lưu cấu hình scheduler.');
     } catch {
       toast.error('Không thể lưu cấu hình scheduler.');
+    }
+  };
+
+  const handleSaveReminder = async () => {
+    if (!user) return;
+
+    const nextReminder = {
+      enabled: reminderDraft.enabled,
+      time: '21:00',
+      timezone: 'Asia/Bangkok',
+    };
+
+    setIsSavingReminder(true);
+    try {
+      await updateDoc(doc(db, 'users', user.uid), {
+        'settings.studyReminder': {
+          ...(profile?.settings?.studyReminder || {}),
+          ...nextReminder,
+        },
+      });
+      updateSettings({ studyReminder: nextReminder });
+      toast.success(nextReminder.enabled ? 'Đã bật nhắc học qua Gmail lúc 21:00.' : 'Đã tắt nhắc học qua Gmail.');
+    } catch {
+      toast.error('Không thể lưu cài đặt nhắc học.');
+    } finally {
+      setIsSavingReminder(false);
     }
   };
 
@@ -341,6 +388,47 @@ export default function Settings({ user, profile }: SettingsProps) {
           </div>
         </section>
       </div>
+
+      <section className="premium-panel p-6 dark:bg-zinc-950/70">
+        <div className="flex flex-col gap-5 border-b border-zinc-200/70 pb-5 dark:border-white/10 md:flex-row md:items-start md:justify-between">
+          <div>
+            <p className="text-xs font-semibold uppercase text-zinc-500 dark:text-zinc-400">Nhắc học</p>
+            <h2 className="mt-2 text-2xl font-semibold text-zinc-950 dark:text-white">Gửi nhắc ôn tập qua Gmail</h2>
+            <p className="mt-2 max-w-2xl text-sm leading-6 text-zinc-500 dark:text-zinc-400">
+              App sẽ gửi một email ngắn mỗi ngày vào khoảng 21:00 nếu bạn bật nhắc học. Email nhận là tài khoản đang đăng nhập.
+            </p>
+          </div>
+          <Button type="button" onClick={handleSaveReminder} disabled={isSavingReminder} className="h-10 px-5">
+            {isSavingReminder ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+            Lưu nhắc học
+          </Button>
+        </div>
+
+        <div className="mt-5 divide-y divide-zinc-200/70 dark:divide-white/10">
+          <SettingRow
+            icon={<Bell className="h-4 w-4" />}
+            title="Bật nhắc học hằng ngày"
+            description={`Gửi đến ${profile?.email || user?.email || 'email tài khoản'} khi đến giờ ôn tập.`}
+            action={
+              <Switch
+                checked={reminderDraft.enabled}
+                onCheckedChange={(value) => setReminderDraft((draft) => ({ ...draft, enabled: value }))}
+              />
+            }
+          />
+          <SettingRow
+            icon={<Clock className="h-4 w-4" />}
+            title="Giờ gửi"
+            description="Lịch gửi cố định theo giờ Việt Nam để phù hợp thói quen ôn bài buổi tối."
+            action={
+              <div className="flex items-center gap-2">
+                <Input value="21:00" disabled className="h-10 w-28 text-center font-mono" />
+                <span className="text-sm font-medium text-zinc-500">GMT+7</span>
+              </div>
+            }
+          />
+        </div>
+      </section>
 
       <section className="premium-panel p-6 dark:bg-zinc-950/70">
         <div className="flex flex-col gap-5 border-b border-zinc-200/70 pb-5 dark:border-white/10 md:flex-row md:items-start md:justify-between">

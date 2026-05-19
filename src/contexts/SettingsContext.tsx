@@ -12,6 +12,12 @@ interface Settings {
   volume: number;
   geminiApiKey: string;
   aiApiKey?: string;
+  studyReminder: {
+    enabled: boolean;
+    time: string;
+    timezone: string;
+    lastSentDate?: string;
+  };
   scheduler: SchedulerConfig;
 }
 
@@ -28,6 +34,11 @@ const defaultSettings: Settings = {
   volume: 0.5,
   geminiApiKey: '',
   aiApiKey: '',
+  studyReminder: {
+    enabled: false,
+    time: '21:00',
+    timezone: 'Asia/Bangkok',
+  },
   scheduler: DEFAULT_SCHEDULER_CONFIG,
 };
 

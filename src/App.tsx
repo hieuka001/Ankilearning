@@ -123,6 +123,11 @@ export default function App() {
                 language: 'vi',
                 geminiApiKey: '',
                 aiApiKey: '',
+                studyReminder: {
+                  enabled: false,
+                  time: '21:00',
+                  timezone: 'Asia/Bangkok',
+                },
               },
             };
             await setDoc(userDoc, currentProfile);

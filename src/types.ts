@@ -12,6 +12,7 @@ export interface UserProfile {
     language: string;
     geminiApiKey?: string;
     aiApiKey?: string;
+    studyReminder?: StudyReminderSettings;
     scheduler?: {
       desiredRetention?: number;
       initialStability?: {
@@ -45,6 +46,13 @@ export interface UserProfile {
     unlockedAt: string;
     title: string;
   }[];
+}
+
+export interface StudyReminderSettings {
+  enabled: boolean;
+  time: string;
+  timezone: string;
+  lastSentDate?: string;
 }
 
 export interface Deck {
