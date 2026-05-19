@@ -2,12 +2,7 @@ import { useCallback, useEffect, useRef } from 'react';
 import { useSettings } from '../contexts/SettingsContext';
 
 const AMBIENT_CONTROL_EVENT = 'learning-card:ambient-control';
-
-type AmbientNode = {
-  context: AudioContext;
-  master: GainNode;
-  oscillators: OscillatorNode[];
-};
+const BACKGROUND_MUSIC_SRC = '/audio/background-music.mp3';
 
 type AmbientControlDetail = {
   enabled: boolean;
@@ -15,110 +10,63 @@ type AmbientControlDetail = {
 };
 
 const clampVolume = (volume: number) => Math.min(Math.max(volume, 0), 1);
-
-const getTargetVolume = (volume: number) => clampVolume(volume) * 0.36;
-
-const createAmbientLayer = (volume: number): AmbientNode => {
-  const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
-  const context = new AudioContextClass() as AudioContext;
-  const master = context.createGain();
-  const filter = context.createBiquadFilter();
-  const compressor = context.createDynamicsCompressor();
-
-  master.gain.value = 0;
-  filter.type = 'lowpass';
-  filter.frequency.value = 760;
-  filter.Q.value = 0.38;
-
-  compressor.threshold.value = -34;
-  compressor.knee.value = 18;
-  compressor.ratio.value = 2.1;
-  compressor.attack.value = 0.08;
-  compressor.release.value = 0.72;
-
-  filter.connect(compressor);
-  compressor.connect(master);
-  master.connect(context.destination);
-
-  const baseFrequencies = [110, 146.83, 196];
-  const oscillators = baseFrequencies.map((frequency, index) => {
-    const oscillator = context.createOscillator();
-    const gain = context.createGain();
-    const pan = typeof context.createStereoPanner === 'function' ? context.createStereoPanner() : null;
-
-    oscillator.type = index === 1 ? 'triangle' : 'sine';
-    oscillator.frequency.value = frequency;
-    oscillator.detune.value = index === 0 ? -4 : index === 1 ? 3 : 7;
-    gain.gain.value = 0.05 - index * 0.008;
-
-    oscillator.connect(gain);
-    if (pan) {
-      pan.pan.value = index === 0 ? -0.32 : index === 1 ? 0.22 : 0.04;
-      gain.connect(pan);
-      pan.connect(filter);
-    } else {
-      gain.connect(filter);
-    }
-
-    oscillator.start();
-    return oscillator;
-  });
-
-  master.gain.linearRampToValueAtTime(getTargetVolume(volume), context.currentTime + 0.7);
-
-  return { context, master, oscillators };
-};
+const getTargetVolume = (volume: number) => clampVolume(volume) * 0.42;
 
 export { AMBIENT_CONTROL_EVENT };
 
 export default function BackgroundMusic() {
   const { settings } = useSettings();
-  const ambientRef = useRef<AmbientNode | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
   const settingsRef = useRef(settings);
+  const shouldPlayRef = useRef(false);
 
   useEffect(() => {
     settingsRef.current = settings;
   }, [settings]);
 
+  const ensureAudio = useCallback(() => {
+    if (audioRef.current) return audioRef.current;
+
+    const audio = new Audio(BACKGROUND_MUSIC_SRC);
+    audio.loop = true;
+    audio.preload = 'auto';
+    audio.volume = 0;
+    audioRef.current = audio;
+
+    return audio;
+  }, []);
+
   const stopAmbient = useCallback(() => {
-    const ambient = ambientRef.current;
-    if (!ambient) return;
+    shouldPlayRef.current = false;
 
-    const now = ambient.context.currentTime;
-    ambient.master.gain.cancelScheduledValues(now);
-    ambient.master.gain.setValueAtTime(ambient.master.gain.value, now);
-    ambient.master.gain.linearRampToValueAtTime(0.0001, now + 0.45);
+    const audio = audioRef.current;
+    if (!audio) return;
 
-    window.setTimeout(() => {
-      ambient.oscillators.forEach((oscillator) => {
-        try {
-          oscillator.stop();
-        } catch {
-          // Already stopped by the browser.
-        }
-      });
-      ambient.context.close().catch(() => undefined);
-    }, 520);
-
-    ambientRef.current = null;
+    const fade = window.setInterval(() => {
+      audio.volume = Math.max(0, audio.volume - 0.055);
+      if (audio.volume <= 0.01) {
+        window.clearInterval(fade);
+        audio.pause();
+        audio.currentTime = 0;
+        audio.volume = 0;
+      }
+    }, 40);
   }, []);
 
   const startAmbient = useCallback(async (volumeOverride?: number) => {
-    const volume = volumeOverride ?? settingsRef.current.volume;
+    shouldPlayRef.current = true;
 
-    if (!ambientRef.current) {
-      ambientRef.current = createAmbientLayer(volume);
+    const audio = ensureAudio();
+    const targetVolume = getTargetVolume(volumeOverride ?? settingsRef.current.volume);
+    audio.volume = targetVolume;
+
+    try {
+      await audio.play();
+    } catch {
+      // Browsers only allow music after a real user gesture. The interaction
+      // listeners below will call startAmbient again when the user taps or types.
     }
-
-    const ambient = ambientRef.current;
-    const now = ambient.context.currentTime;
-    ambient.master.gain.cancelScheduledValues(now);
-    ambient.master.gain.setTargetAtTime(getTargetVolume(volume), now, 0.22);
-
-    if (ambient.context.state === 'suspended') {
-      await ambient.context.resume();
-    }
-  }, []);
+  }, [ensureAudio]);
 
   useEffect(() => {
     const handleControl = (event: Event) => {
@@ -157,15 +105,20 @@ export default function BackgroundMusic() {
   }, [settings.backgroundMusic, startAmbient, stopAmbient]);
 
   useEffect(() => {
-    const ambient = ambientRef.current;
-    if (!ambient) return;
+    const audio = audioRef.current;
+    if (!audio) return;
 
-    const now = ambient.context.currentTime;
-    ambient.master.gain.cancelScheduledValues(now);
-    ambient.master.gain.setTargetAtTime(getTargetVolume(settings.volume), now, 0.22);
+    audio.volume = shouldPlayRef.current ? getTargetVolume(settings.volume) : 0;
   }, [settings.volume]);
 
-  useEffect(() => stopAmbient, [stopAmbient]);
+  useEffect(() => {
+    return () => {
+      const audio = audioRef.current;
+      if (!audio) return;
+      audio.pause();
+      audioRef.current = null;
+    };
+  }, []);
 
   return null;
 }
