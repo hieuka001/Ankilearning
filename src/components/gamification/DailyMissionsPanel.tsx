@@ -2,10 +2,15 @@ import { useState } from 'react';
 import { motion } from 'motion/react';
 import { Award, CheckCircle2, Clock3, ClipboardCheck, Flame, Layers3, Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
-import type { DailyMissionDocument } from '../../types';
-import { formatMissionProgress, MISSION_LABELS, calculateUserLevel } from '../../lib/gamification';
-import type { UserProfile } from '../../types';
 import { Button } from '@/components/ui/button';
+import type { DailyMissionDocument, UserProfile } from '../../types';
+import {
+  DEFAULT_TIMEZONE,
+  MISSION_LABELS,
+  calculateUserLevel,
+  createDefaultDailyMissions,
+  formatMissionProgress,
+} from '../../lib/gamification';
 import { claimMissionReward } from '../../services/gamificationService';
 
 interface DailyMissionsPanelProps {
@@ -22,11 +27,19 @@ const missionIcons = {
   online_time: Clock3,
 };
 
-export default function DailyMissionsPanel({ missionDoc, profile, loading, userId, timezone }: DailyMissionsPanelProps) {
+export default function DailyMissionsPanel({
+  missionDoc,
+  profile,
+  loading,
+  userId,
+  timezone = DEFAULT_TIMEZONE,
+}: DailyMissionsPanelProps) {
   const [claimingId, setClaimingId] = useState<string | null>(null);
   const totalExp = profile?.totalExp ?? profile?.xp ?? 0;
   const levelInfo = calculateUserLevel(totalExp);
-  const missions = missionDoc?.missions || [];
+  const missions = missionDoc?.missions?.length
+    ? missionDoc.missions
+    : createDefaultDailyMissions(missionDoc?.dateKey, timezone);
   const completedCount = missions.filter((mission) => mission.completed).length;
   const claimedCount = missions.filter((mission) => mission.claimed).length;
 
@@ -94,7 +107,7 @@ export default function DailyMissionsPanel({ missionDoc, profile, loading, userI
         </div>
 
         <div className="space-y-3">
-          {loading && missions.length === 0 ? (
+          {loading && !missionDoc ? (
             Array.from({ length: 3 }).map((_, index) => (
               <div key={index} className="h-20 animate-pulse rounded-lg bg-black/[0.04] dark:bg-white/[0.06]" />
             ))
@@ -102,6 +115,7 @@ export default function DailyMissionsPanel({ missionDoc, profile, loading, userI
             missions.map((mission, index) => {
               const Icon = missionIcons[mission.type];
               const progress = Math.min(100, (mission.progress / Math.max(mission.target, 1)) * 100);
+              const canClaim = mission.completed && !mission.claimed && !!userId;
 
               return (
                 <motion.div
@@ -129,24 +143,24 @@ export default function DailyMissionsPanel({ missionDoc, profile, loading, userI
                         </p>
                       </div>
                     </div>
-                    {mission.completed && !mission.claimed ? (
-                      <Button
-                        size="sm"
-                        onClick={() => handleClaim(mission.id)}
-                        disabled={claimingId === mission.id}
-                        className="h-8 rounded-lg bg-zinc-950 px-3 text-xs font-semibold text-white hover:bg-zinc-800 dark:bg-white dark:text-zinc-950"
-                      >
-                        {claimingId === mission.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : 'Nhận'}
-                      </Button>
-                    ) : (
-                      <span className={`rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase ${
-                        mission.claimed
-                          ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
-                          : 'bg-zinc-950/[0.06] text-zinc-600 dark:bg-white/10 dark:text-zinc-300'
-                      }`}>
-                        {mission.claimed ? 'Đã nhận' : 'Đang làm'}
-                      </span>
-                    )}
+                    <Button
+                      size="sm"
+                      onClick={() => handleClaim(mission.id)}
+                      disabled={!canClaim || claimingId === mission.id}
+                      className={`h-8 min-w-20 rounded-lg px-3 text-xs font-semibold transition-all ${
+                        canClaim
+                          ? 'bg-zinc-950 text-white hover:bg-zinc-800 dark:bg-white dark:text-zinc-950'
+                          : 'border border-black/[0.07] bg-zinc-950/[0.04] text-zinc-500 opacity-55 hover:bg-zinc-950/[0.04] dark:border-white/10 dark:bg-white/[0.06] dark:text-zinc-400'
+                      }`}
+                    >
+                      {claimingId === mission.id ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      ) : mission.claimed ? (
+                        'Đã nhận'
+                      ) : (
+                        'Nhận'
+                      )}
+                    </Button>
                   </div>
                   <div className="h-1.5 overflow-hidden rounded-full bg-black/[0.06] dark:bg-white/10">
                     <motion.div

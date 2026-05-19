@@ -131,7 +131,29 @@ export async function ensureDailyMissions(userId: string, timezone = DEFAULT_TIM
   const snap = await getDoc(ref);
 
   if (snap.exists()) {
-    return { id: snap.id, ...(snap.data() as Omit<DailyMissionDocument, 'id'>) };
+    const existingData = snap.data() as Omit<DailyMissionDocument, 'id'>;
+    const missions = normalizeMissions(existingData, dateKey, timezone);
+    const shouldRepair = !Array.isArray(existingData.missions) || existingData.missions.length < 3;
+
+    if (shouldRepair) {
+      const repairedPayload: Omit<DailyMissionDocument, 'id'> = {
+        ...existingData,
+        userId,
+        dateKey,
+        missions,
+        completedAll: allDailyMissionsCompleted(missions),
+        claimedAll: allDailyMissionsClaimed(missions),
+        claimedExp: existingData.claimedExp || 0,
+        createdAt: existingData.createdAt || nowIso,
+        updatedAt: nowIso,
+        resetAt: missions[0]?.resetAt || existingData.resetAt || nowIso,
+      };
+
+      await setDoc(ref, repairedPayload, { merge: true });
+      return { id: snap.id, ...repairedPayload };
+    }
+
+    return { id: snap.id, ...existingData };
   }
 
   const missions = createDefaultDailyMissions(dateKey, timezone);
@@ -591,7 +613,12 @@ export function subscribeDailyMissions(
         return;
       }
 
-      onChange({ id: snap.id, ...(snap.data() as Omit<DailyMissionDocument, 'id'>) });
+      const missionData = snap.data() as Omit<DailyMissionDocument, 'id'>;
+      onChange({
+        id: snap.id,
+        ...missionData,
+        missions: normalizeMissions(missionData, dateKey, timezone),
+      });
     },
     (error) => {
       console.warn('Daily missions listener failed.', error);
