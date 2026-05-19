@@ -53,6 +53,14 @@ service cloud.firestore {
           && incoming().deckId is string
           && incoming().cardId is string;
       }
+      match /notifications/{notificationId} {
+        allow read: if isOwner(userId);
+        allow create, update, delete: if isOwner(userId)
+          && incoming().userId == userId
+          && incoming().id == notificationId
+          && incoming().title is string
+          && incoming().message is string;
+      }
     }
 
     // --- Decks ---

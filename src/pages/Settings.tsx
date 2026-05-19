@@ -237,7 +237,8 @@ export default function Settings({ user, profile }: SettingsProps) {
         },
       });
       updateSettings({ studyReminder: nextReminder });
-      toast.success(nextReminder.enabled ? 'Đã bật nhắc học qua Gmail lúc 21:00.' : 'Đã tắt nhắc học qua Gmail.');
+      setReminderDraft((draft) => ({ ...draft, enabled: nextReminder.enabled }));
+      toast.success(nextReminder.enabled ? 'Đã bật thông báo học lúc 21:00.' : 'Đã tắt thông báo học.');
     } catch {
       toast.error('Không thể lưu cài đặt nhắc học.');
     } finally {
@@ -393,9 +394,9 @@ export default function Settings({ user, profile }: SettingsProps) {
         <div className="flex flex-col gap-5 border-b border-zinc-200/70 pb-5 dark:border-white/10 md:flex-row md:items-start md:justify-between">
           <div>
             <p className="text-xs font-semibold uppercase text-zinc-500 dark:text-zinc-400">Nhắc học</p>
-            <h2 className="mt-2 text-2xl font-semibold text-zinc-950 dark:text-white">Gửi nhắc ôn tập qua Gmail</h2>
+            <h2 className="mt-2 text-2xl font-semibold text-zinc-950 dark:text-white">Thông báo ôn tập trên web</h2>
             <p className="mt-2 max-w-2xl text-sm leading-6 text-zinc-500 dark:text-zinc-400">
-              App sẽ gửi một email ngắn mỗi ngày vào khoảng 21:00 nếu bạn bật nhắc học. Email nhận là tài khoản đang đăng nhập.
+              App sẽ tạo thông báo trong hộp thông báo mỗi ngày vào khoảng 21:00 nếu bạn bật nhắc học. Khi đăng nhập lại, thông báo chưa xem sẽ tự hiện lên để xác nhận.
             </p>
           </div>
           <Button type="button" onClick={handleSaveReminder} disabled={isSavingReminder} className="h-10 px-5">
@@ -407,8 +408,8 @@ export default function Settings({ user, profile }: SettingsProps) {
         <div className="mt-5 divide-y divide-zinc-200/70 dark:divide-white/10">
           <SettingRow
             icon={<Bell className="h-4 w-4" />}
-            title="Bật nhắc học hằng ngày"
-            description={`Gửi đến ${profile?.email || user?.email || 'email tài khoản'} khi đến giờ ôn tập.`}
+            title="Bật thông báo hằng ngày"
+            description="Thông báo nằm trong app, có thể đóng sau khi xác nhận và mở lại bằng nút chuông."
             action={
               <Switch
                 checked={reminderDraft.enabled}
@@ -418,8 +419,8 @@ export default function Settings({ user, profile }: SettingsProps) {
           />
           <SettingRow
             icon={<Clock className="h-4 w-4" />}
-            title="Giờ gửi"
-            description="Lịch gửi cố định theo giờ Việt Nam để phù hợp thói quen ôn bài buổi tối."
+            title="Giờ nhắc"
+            description="Lịch nhắc cố định theo giờ Việt Nam để phù hợp thói quen ôn bài buổi tối."
             action={
               <div className="flex items-center gap-2">
                 <Input value="21:00" disabled className="h-10 w-28 text-center font-mono" />

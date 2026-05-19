@@ -24,6 +24,7 @@ import {
 import { SettingsProvider } from './contexts/SettingsContext';
 import BackgroundMusic from './components/BackgroundMusic';
 import Logo from './components/Logo';
+import NotificationCenter from './components/NotificationCenter';
 
 const Dashboard = lazy(() => import('./pages/Dashboard'));
 const Decks = lazy(() => import('./pages/Decks'));
@@ -264,6 +265,7 @@ export default function App() {
     <SettingsProvider>
       <BackgroundMusic />
       <Router>
+        <NotificationCenter user={user} profile={profile} />
         <div className="flex h-screen overflow-hidden app-surface quiet-grid font-sans text-foreground">
           {sidebarOpen && (
             <button

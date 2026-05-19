@@ -55,6 +55,19 @@ export interface StudyReminderSettings {
   lastSentDate?: string;
 }
 
+export interface InAppNotification {
+  id: string;
+  userId: string;
+  type: 'study-reminder' | 'system';
+  title: string;
+  message: string;
+  createdAt: string;
+  dateKey?: string;
+  readAt?: string;
+  actionLabel?: string;
+  actionPath?: string;
+}
+
 export interface Deck {
   id: string;
   ownerId: string;
