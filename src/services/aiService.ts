@@ -194,12 +194,15 @@ const normalizeQuestions = (result: any) => {
 };
 
 const MED_SOURCES = `
-SOURCES: Internal medicine (AHA/ACC, ESC, ADA, GINA, Harrison), Surgery (Schwartz, Sabiston), Trauma/Ortho (AO Reference/AO Surgery Reference, Orthobullets, PubMed, UpToDate, Skeletal Trauma), OB-GYN (Williams, ACOG), Pediatrics (Nelson, hospital protocols).
+SOURCES: Internal medicine (AHA/ACC, ESC, ADA, GINA, Harrison), Surgery (Schwartz, Sabiston), Trauma/Ortho (AO Reference/AO Surgery Reference, Orthobullets, PubMed, UpToDate, Skeletal Trauma), ECG (ECGs Made Easy, Life in the Fast Lane ECG Library, The Only EKG Book You'll Ever Need, Marriott's Practical Electrocardiography), OB-GYN (Williams, ACOG), Pediatrics (Nelson, hospital protocols).
 REQUIREMENTS: cite the most relevant source family when useful, explain clinical reasoning, and include comorbidity considerations.
 `;
 
 const TRAUMA_ORTHO_SOURCE_NOTE =
   "For trauma and orthopaedics, prioritize AO Reference/AO Surgery Reference, Orthobullets, Skeletal Trauma, PubMed reviews/guidelines, and UpToDate when creating general exam questions.";
+
+const ECG_SOURCE_NOTE =
+  "For ECG questions, prioritize ECGs Made Easy, Life in the Fast Lane ECG Library, The Only EKG Book You'll Ever Need, and Marriott's Practical Electrocardiography. Basic mode should cover rate, rhythm, axis, intervals, hypertrophy, conduction blocks, ischemia basics, and common electrolyte/drug patterns. Advanced mode should use clinical ECG interpretation cases, arrhythmia mechanisms, AV blocks, bundle branch blocks, wide-complex tachycardia, STEMI localization and mimics, pericarditis, PE, WPW, electrolyte/drug toxicity, and management-oriented reasoning.";
 
 export async function generateFlashcardsFromText(
   text: string,
@@ -325,6 +328,7 @@ export async function generateGeneralExam(
     internal: "Noi khoa",
     surgery: "Ngoai khoa",
     trauma_ortho: "Chan thuong chinh hinh",
+    ecg: "Dien tam do ECG",
     pediatrics: "Nhi khoa",
     obgyn: "San phu khoa",
     all: "Tong hop cac chuyen khoa y khoa",
@@ -333,6 +337,7 @@ export async function generateGeneralExam(
   const specialtyName = specMap[specialty] || "Y khoa tong hop";
   const systemInstruction = `You are a leading medical lecturer creating MCQs for ${specialtyName}. ${MED_SOURCES}
 ${specialty === "trauma_ortho" || specialty === "all" ? TRAUMA_ORTHO_SOURCE_NOTE : ""}
+${specialty === "ecg" ? ECG_SOURCE_NOTE : ""}
 ${isAdvanced
   ? "Advanced mode: most questions should be case-based and require clinical reasoning."
   : "Basic mode: focus on standard textbook knowledge, symptoms, classifications, definitions, and diagnostic criteria."}

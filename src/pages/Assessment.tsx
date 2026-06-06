@@ -1072,6 +1072,7 @@ export default function Assessment({ user, profile }: AssessmentProps) {
                     { id: 'internal', label: 'Nội khoa' },
                     { id: 'surgery', label: 'Ngoại khoa' },
                     { id: 'trauma_ortho', label: 'Chấn thương chỉnh hình' },
+                    { id: 'ecg', label: 'ECG' },
                     { id: 'obgyn', label: 'Sản phụ khoa' },
                     { id: 'pediatrics', label: 'Nhi khoa' },
                     { id: 'all', label: 'Tổng hợp' }
