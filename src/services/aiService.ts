@@ -153,6 +153,92 @@ const parseJson = (text: string) => {
 
 const asArray = (value: any) => (Array.isArray(value) ? value : []);
 
+type ImageCandidate = {
+  id: string;
+  url: string;
+  source: string;
+  context: string;
+};
+
+const isValidImageUrl = (url: unknown): url is string => {
+  if (typeof url !== "string") return false;
+  const trimmed = url.trim();
+  if (!trimmed) return false;
+  if (/^data:image\/(png|jpe?g|webp|gif);base64,/i.test(trimmed)) return true;
+
+  try {
+    const parsed = new URL(trimmed);
+    return ["http:", "https:"].includes(parsed.protocol);
+  } catch {
+    return false;
+  }
+};
+
+const cleanImageUrl = (url: unknown) => (isValidImageUrl(url) ? String(url).trim() : "");
+
+const extractMarkdownImages = (text = "") => {
+  const images: ImageCandidate[] = [];
+  const seen = new Set<string>();
+  const markdownImagePattern = /!\[([^\]]*)\]\((https?:\/\/[^)\s]+)\)/gi;
+  const rawImagePattern = /(https?:\/\/[^\s)"']+\.(?:png|jpe?g|webp|gif)(?:\?[^\s)"']*)?)/gi;
+
+  for (const match of text.matchAll(markdownImagePattern)) {
+    const url = cleanImageUrl(match[2]);
+    if (!url || seen.has(url)) continue;
+    seen.add(url);
+    images.push({
+      id: `mindmap_${images.length + 1}`,
+      url,
+      source: "mindmap",
+      context: String(match[1] || "Mindmap image").slice(0, 220),
+    });
+  }
+
+  for (const match of text.matchAll(rawImagePattern)) {
+    const url = cleanImageUrl(match[1]);
+    if (!url || seen.has(url)) continue;
+    seen.add(url);
+    images.push({
+      id: `mindmap_${images.length + 1}`,
+      url,
+      source: "mindmap",
+      context: "Image URL found in mindmap/notes",
+    });
+  }
+
+  return images;
+};
+
+const buildImageCandidates = (cards: any[] = [], context = "") => {
+  const candidates: ImageCandidate[] = [];
+  const seen = new Set<string>();
+
+  cards.forEach((card, index) => {
+    [
+      { key: "imageUrl", side: "front" },
+      { key: "backImageUrl", side: "back" },
+    ].forEach(({ key, side }) => {
+      const url = cleanImageUrl(card?.[key]);
+      if (!url || seen.has(url)) return;
+      seen.add(url);
+      candidates.push({
+        id: `card_${index + 1}_${side}`,
+        url,
+        source: `card:${side}`,
+        context: `${String(card?.front || "").slice(0, 140)} ${String(card?.back || "").slice(0, 140)}`.trim(),
+      });
+    });
+  });
+
+  extractMarkdownImages(context).forEach((image) => {
+    if (seen.has(image.url)) return;
+    seen.add(image.url);
+    candidates.push(image);
+  });
+
+  return candidates.slice(0, 40);
+};
+
 const normalizeFlashcards = (result: any) => {
   const rawCards = asArray(result?.flashcards || result?.cards || (Array.isArray(result) ? result : []));
   return rawCards
@@ -166,8 +252,11 @@ const normalizeFlashcards = (result: any) => {
     .filter((card) => card.front && card.back);
 };
 
-const normalizeQuestions = (result: any) => {
+const normalizeQuestions = (result: any, imageCandidates: ImageCandidate[] = []) => {
   const rawQuestions = asArray(result?.questions || result?.question || (Array.isArray(result) ? result : []));
+  const imageById = new Map(imageCandidates.map((image) => [image.id, image]));
+  const allowedImageUrls = new Set(imageCandidates.map((image) => image.url));
+
   return rawQuestions
     .map((question) => {
       const options = asArray(question?.options).map((option) => String(option).trim()).filter(Boolean);
@@ -178,11 +267,20 @@ const normalizeQuestions = (result: any) => {
           : Number(rawCorrectAnswer)
         : Number(rawCorrectAnswer);
 
+      const imageId = String(question?.imageId || question?.imageRef || "").trim();
+      const candidateImage = imageId ? imageById.get(imageId) : undefined;
+      const rawImageUrl = candidateImage?.url || question?.imageUrl || question?.figureUrl || question?.image || "";
+      const imageUrl = imageCandidates.length > 0
+        ? allowedImageUrls.has(String(rawImageUrl).trim()) ? String(rawImageUrl).trim() : ""
+        : cleanImageUrl(rawImageUrl);
+
       return {
         question: String(question?.question || "").trim(),
         options,
         correctAnswer: Number.isFinite(correctAnswer) ? correctAnswer : -1,
         explanation: String(question?.explanation || question?.rationale || "").trim(),
+        imageUrl,
+        imageAlt: String(question?.imageAlt || candidateImage?.context || "").trim(),
       };
     })
     .filter((question) =>
@@ -293,20 +391,32 @@ export async function generateExam(
   difficulty = "advanced"
 ) {
   const isAdvanced = difficulty === "advanced";
+  const imageCandidates = buildImageCandidates(cards, context);
+  const imageInstruction = imageCandidates.length > 0
+    ? `IMAGE RULES: Some questions may include a relevant image. Use imageUrl only from IMAGE_LIBRARY below, or set imageUrl to an empty string. Never invent image URLs. If using an image, include imageId, imageUrl, and a short imageAlt. Prefer images only when they materially improve the question.`
+    : `IMAGE RULES: No verified image library was provided. Set imageUrl to an empty string. If a visual would help, describe the visual finding in the question stem instead.`;
   const systemInstruction = `You are a senior medical professor writing MCQ exam questions. ${MED_SOURCES}
 Create questions based on the user's flashcards and notes.
 ${isAdvanced
   ? "Advanced mode: use clinical vignettes, applied reasoning, diagnosis, next best step, and treatment choices."
   : "Basic mode: focus on definitions, classifications, symptoms, diagnostic criteria, and core theory."}
+${imageInstruction}
 Return Vietnamese questions with English medical terms in parentheses when helpful.
 Each option must be the full answer text, not just A/B/C/D labels.
-Return only valid JSON: { "questions": [{ "question": "...", "options": ["option text", "option text", "option text", "option text"], "correctAnswer": 0, "explanation": "..." }] }.`;
+Return only valid JSON: { "questions": [{ "question": "...", "options": ["option text", "option text", "option text", "option text"], "correctAnswer": 0, "explanation": "...", "imageId": "", "imageUrl": "", "imageAlt": "" }] }.`;
 
   const response = await callAI(
     {
       contents: `DATA FOR EXAM:
-- FLASHCARDS: ${JSON.stringify(cards.map((card) => ({ f: card.front, b: card.back })))}
+- FLASHCARDS: ${JSON.stringify(cards.map((card, index) => ({
+        id: `card_${index + 1}`,
+        f: card.front,
+        b: card.back,
+        imageUrl: cleanImageUrl(card.imageUrl),
+        backImageUrl: cleanImageUrl(card.backImageUrl),
+      })))}
 - MINDMAP/NOTES: ${context}
+- IMAGE_LIBRARY: ${JSON.stringify(imageCandidates)}
 Create ${count} ${isAdvanced ? "advanced clinical" : "basic theory"} MCQ questions from the data above.`,
       config: { systemInstruction, responseMimeType: "application/json" },
     },
@@ -314,7 +424,7 @@ Create ${count} ${isAdvanced ? "advanced clinical" : "basic theory"} MCQ questio
   );
 
   const result = parseJson(response.text());
-  return normalizeQuestions(result);
+  return normalizeQuestions(result, imageCandidates);
 }
 
 export async function generateGeneralExam(
@@ -341,8 +451,9 @@ ${specialty === "ecg" ? ECG_SOURCE_NOTE : ""}
 ${isAdvanced
   ? "Advanced mode: most questions should be case-based and require clinical reasoning."
   : "Basic mode: focus on standard textbook knowledge, symptoms, classifications, definitions, and diagnostic criteria."}
+IMAGE RULES: If a question genuinely requires a visual such as an ECG tracing, radiograph, diagram, or clinical image, include imageUrl only when it is a stable public educational image URL from the listed source families and likely directly loadable. Otherwise keep imageUrl empty and describe the key visual findings in the stem. Never invent URLs.
 Return Vietnamese questions with English medical terms in parentheses when helpful.
-Return only valid JSON: { "questions": [{ "question": "...", "options": ["...", "...", "...", "..."], "correctAnswer": 0, "explanation": "..." }] }.`;
+Return only valid JSON: { "questions": [{ "question": "...", "options": ["...", "...", "...", "..."], "correctAnswer": 0, "explanation": "...", "imageUrl": "", "imageAlt": "" }] }.`;
 
   const response = await callAI(
     {

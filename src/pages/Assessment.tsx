@@ -47,6 +47,7 @@ interface AIQuestion {
   correctAnswer: number;
   explanation: string;
   imageUrl?: string;
+  imageAlt?: string;
 }
 
 export default function Assessment({ user, profile }: AssessmentProps) {
@@ -827,9 +828,13 @@ export default function Assessment({ user, profile }: AssessmentProps) {
                 <div className="flex justify-center mb-8 md:mb-12">
                   <img 
                     src={currentQ.imageUrl} 
-                    alt="Question" 
-                    className="w-full max-w-2xl rounded-3xl shadow-2xl border-4 border-white dark:border-white/10 object-contain bg-slate-50 dark:bg-white/5"
+                    alt={currentQ.imageAlt || "Question visual"}
+                    className="max-h-[45vh] w-full max-w-2xl rounded-3xl border-4 border-white bg-slate-50 object-contain shadow-2xl dark:border-white/10 dark:bg-white/5"
                     referrerPolicy="no-referrer"
+                    loading="lazy"
+                    onError={(event) => {
+                      event.currentTarget.style.display = 'none';
+                    }}
                   />
                 </div>
               )}
