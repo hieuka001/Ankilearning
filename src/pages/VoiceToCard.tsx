@@ -250,6 +250,14 @@ export default function VoiceToCard({ user, profile }: VoiceToCardProps) {
           <p className="text-slate-500 dark:text-slate-400 text-lg md:text-xl font-medium max-w-2xl mx-auto leading-relaxed">
             Ghi lời bình lâm sàng ngay tại giường bệnh. <span className="text-red-500 font-bold">AI Assistant</span> sẽ tự động trích xuất thành flashcards y khoa súc tích.
           </p>
+          <div className="mx-auto grid max-w-3xl grid-cols-2 gap-2 pt-4 text-left md:grid-cols-5">
+            {['Audio', 'Transcript', 'AI Summary', 'Flashcards', 'Quiz'].map((step, index) => (
+              <div key={step} className="workflow-step p-3">
+                <p className="font-mono text-[10px] font-black text-primary">0{index + 1}</p>
+                <p className="mt-1 text-xs font-bold text-slate-700 dark:text-slate-200">{step}</p>
+              </div>
+            ))}
+          </div>
         </div>
       </header>
 

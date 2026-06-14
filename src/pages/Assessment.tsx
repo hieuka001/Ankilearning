@@ -908,6 +908,20 @@ export default function Assessment({ user, profile }: AssessmentProps) {
         <p className="text-slate-500 dark:text-slate-400 text-lg md:text-xl font-medium leading-relaxed">
           Đánh giá kiến thức của bạn thông qua các bài kiểm tra trắc nghiệm nhanh và hiệu quả.
         </p>
+        <div className="grid grid-cols-1 gap-3 pt-4 text-left sm:grid-cols-2 lg:grid-cols-5">
+          {[
+            { name: 'Blitz Mode', meta: '20 câu nhanh' },
+            { name: 'Exam Mode', meta: 'Mô phỏng thi thật' },
+            { name: 'Survival Mode', meta: 'Sai quá giới hạn sẽ dừng' },
+            { name: 'Adaptive Mode', meta: 'AI tăng giảm độ khó' },
+            { name: 'Review Mode', meta: 'Ôn câu sai' },
+          ].map((mode) => (
+            <div key={mode.name} className="mode-chip p-4 transition hover:-translate-y-1 hover:border-primary/30">
+              <p className="text-sm font-black text-slate-900 dark:text-white">{mode.name}</p>
+              <p className="mt-1 text-xs font-medium text-slate-500 dark:text-slate-400">{mode.meta}</p>
+            </div>
+          ))}
+        </div>
       </header>
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-10 pb-20">

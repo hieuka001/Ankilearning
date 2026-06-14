@@ -29,6 +29,7 @@ import BackgroundMusic from './components/BackgroundMusic';
 import Logo from './components/Logo';
 import NotificationCenter from './components/NotificationCenter';
 import { useGamification } from './hooks/useGamification';
+import { calculateUserLevel } from './lib/gamification';
 
 const Dashboard = lazy(() => import('./pages/Dashboard'));
 const Decks = lazy(() => import('./pages/Decks'));
@@ -47,7 +48,7 @@ const navItems = [
   { to: '/create-deck', label: 'Tạo bộ thẻ', icon: <PlusCircle size={17} /> },
   { to: '/voice-to-card', label: 'Voice-to-Card', icon: <Mic size={17} /> },
   { to: '/assessment', label: 'Kiểm tra', icon: <BrainCircuit size={17} /> },
-  { to: '/ai-helper', label: 'AI Helper', icon: <Sparkles size={17} /> },
+  { to: '/ai-helper', label: 'Study Copilot', icon: <Sparkles size={17} /> },
   { to: '/search', label: 'Tìm kiếm', icon: <SearchIcon size={17} /> },
   { to: '/settings', label: 'Cài đặt', icon: <SettingsIcon size={17} /> },
 ];
@@ -117,6 +118,7 @@ export default function App() {
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState(true);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [cardsReviewedToday, setCardsReviewedToday] = useState(0);
 
   useGamification(user, profile?.settings?.studyReminder?.timezone || 'Asia/Bangkok');
@@ -255,6 +257,8 @@ export default function App() {
 
   const dailyGoal = Math.max(1, profile?.settings?.dailyGoal || 20);
   const sidebarDailyProgress = Math.min(100, (cardsReviewedToday / dailyGoal) * 100);
+  const totalExp = profile?.totalExp ?? profile?.xp ?? 0;
+  const sidebarLevelInfo = calculateUserLevel(totalExp);
 
   return (
     <SettingsProvider>
@@ -278,17 +282,25 @@ export default function App() {
             {sidebarOpen ? <X size={20} /> : <Menu size={20} />}
           </button>
 
-          <aside className={`app-sidebar ${sidebarOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}`}>
+          <aside className={`app-sidebar ${sidebarCollapsed ? 'app-sidebar-collapsed' : ''} ${sidebarOpen ? 'translate-x-0 sidebar-pinned-open' : '-translate-x-full md:translate-x-0'}`}>
             <div className="sidebar-brand">
               <Logo className="h-10 w-10" />
-              <div className="min-w-0">
+              <div className="sidebar-text min-w-0">
                 <p className="truncate text-sm font-semibold text-white">Learning Card</p>
                 <p className="truncate text-xs text-white/48">Gemini study system</p>
               </div>
+              <button
+                type="button"
+                aria-label="Thu gọn sidebar"
+                className="sidebar-collapse-button ml-auto hidden h-8 w-8 items-center justify-center rounded-lg text-white/55 transition hover:bg-white/10 hover:text-white md:flex"
+                onClick={() => setSidebarCollapsed((value) => !value)}
+              >
+                <Menu size={16} />
+              </button>
             </div>
 
             <nav className="flex-1 space-y-1.5 px-3 py-5">
-              <p className="px-3 pb-2 text-[10px] font-semibold uppercase text-white/32">Workspace</p>
+              <p className="sidebar-text px-3 pb-2 text-[10px] font-semibold uppercase text-white/32">Study Workspace</p>
               {navItems.map((item) => (
                 <SidebarLink
                   key={item.to}
@@ -304,30 +316,40 @@ export default function App() {
               <div className="sidebar-metric">
                 <div className="flex items-center gap-2 text-white">
                   <Activity size={15} />
-                  <span className="text-xs font-semibold">Hôm nay</span>
+                  <span className="sidebar-expanded-only text-xs font-semibold">Hôm nay</span>
                 </div>
-                <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-white/10">
+                <div className="sidebar-expanded-only mt-3 h-1.5 overflow-hidden rounded-full bg-white/10">
                   <div
-                    className="h-full rounded-full bg-white"
+                    className="xp-gradient h-full rounded-full"
                     style={{ width: `${sidebarDailyProgress}%` }}
                   />
                 </div>
-                <p className="mt-2 text-xs text-white/42">
+                <p className="sidebar-expanded-only mt-2 text-xs text-white/42">
                   {cardsReviewedToday}/{dailyGoal} thẻ
                 </p>
               </div>
 
               <div className="sidebar-user-card">
                 <img src={user.photoURL || ''} alt="" className="h-9 w-9 rounded-full border border-white/10 object-cover" />
-                <div className="min-w-0">
-                  <p className="truncate text-sm font-semibold text-white">{user.displayName}</p>
-                  <p className="truncate text-xs text-white/42">{user.email}</p>
+                <div className="sidebar-expanded-only min-w-0 flex-1">
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="truncate text-sm font-semibold text-white">{user.displayName}</p>
+                    <span className="rounded-md bg-white/10 px-2 py-0.5 text-[10px] font-bold text-violet-100">
+                      Lv {sidebarLevelInfo.level}
+                    </span>
+                  </div>
+                  <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-white/10">
+                    <div className="xp-gradient h-full rounded-full" style={{ width: `${sidebarLevelInfo.progressPercent}%` }} />
+                  </div>
+                  <p className="mt-1 font-mono text-[10px] text-white/42">
+                    {totalExp.toLocaleString()} XP / {sidebarLevelInfo.expForNextLevel.toLocaleString()}
+                  </p>
                 </div>
               </div>
 
-              <button onClick={handleLogout} className="sidebar-logout">
+              <button onClick={handleLogout} className="sidebar-logout" title="Đăng xuất">
                 <LogOut size={16} />
-                Đăng xuất
+                <span className="sidebar-expanded-only">Đăng xuất</span>
               </button>
             </div>
           </aside>
@@ -335,7 +357,7 @@ export default function App() {
           <main className="relative flex min-w-0 flex-1 flex-col overflow-hidden">
             <header className="app-topbar">
               <div className="min-w-0">
-                <p className="text-sm font-semibold text-zinc-950 dark:text-white">Workspace</p>
+                <p className="text-sm font-semibold text-zinc-950 dark:text-white">Study Workspace</p>
                 <p className="truncate text-xs text-muted-foreground">
                   Học, tạo thẻ và luyện đề trong một không gian tập trung.
                 </p>
@@ -512,9 +534,9 @@ function SidebarLink({
   const isActive = to === '/' ? location.pathname === '/' : location.pathname.startsWith(to);
 
   return (
-    <Link to={to} onClick={onClick} className={`nav-item ${isActive ? 'nav-item-active' : ''}`}>
+    <Link to={to} onClick={onClick} title={label} className={`nav-item ${isActive ? 'nav-item-active' : ''}`}>
       <span className="nav-item-icon">{icon}</span>
-      <span className="min-w-0 flex-1 truncate">{label}</span>
+      <span className="nav-label min-w-0 flex-1 truncate">{label}</span>
       {isActive && (
         <motion.span
           layoutId="sidebar-active"

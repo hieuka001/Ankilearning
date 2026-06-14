@@ -382,23 +382,25 @@ export default function Study({ user, profile }: StudyProps) {
   }
 
   return (
-    <ReviewCard
-      key={currentCard.id}
-      card={currentCard}
-      isFlipped={isFlipped}
-      currentIndex={currentIndex}
-      totalCards={cards.length}
-      ratingPreviews={ratingPreviews}
-      busy={ratingLockRef.current}
-      onFlip={() => {
-        setIsFlipped((value) => !value);
-        playSound('flip', settings.volume);
-      }}
-      onRate={handleRate}
-      onClose={() => navigate(`/decks/${deckId}`)}
-      onBury={handleBuryCurrentCard}
-      onSuspend={handleSuspendCurrentCard}
-      onSpeak={speak}
-    />
+    <div className="focus-study-active focus-study-shell">
+      <ReviewCard
+        key={currentCard.id}
+        card={currentCard}
+        isFlipped={isFlipped}
+        currentIndex={currentIndex}
+        totalCards={cards.length}
+        ratingPreviews={ratingPreviews}
+        busy={ratingLockRef.current}
+        onFlip={() => {
+          setIsFlipped((value) => !value);
+          playSound('flip', settings.volume);
+        }}
+        onRate={handleRate}
+        onClose={() => navigate(`/decks/${deckId}`)}
+        onBury={handleBuryCurrentCard}
+        onSuspend={handleSuspendCurrentCard}
+        onSpeak={speak}
+      />
+    </div>
   );
 }

@@ -26,7 +26,7 @@ export default function LeaderboardPanel({ entries, currentUserId, currentProfil
             <p className="mb-2 text-xs font-semibold uppercase text-amber-700 dark:text-amber-300">Leaderboard</p>
             <h2 className="text-xl font-semibold text-zinc-950 dark:text-white">Bảng xếp hạng</h2>
           </div>
-          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-amber-500/10 text-amber-700 dark:text-amber-300">
+          <div className="brand-gradient flex h-10 w-10 items-center justify-center rounded-lg text-white shadow-lg shadow-indigo-500/20">
             <Trophy size={19} />
           </div>
         </div>
@@ -51,8 +51,8 @@ export default function LeaderboardPanel({ entries, currentUserId, currentProfil
                   transition={{ delay: index * 0.035, duration: 0.28 }}
                   className={`flex items-center gap-3 rounded-lg border p-3 transition-colors ${
                     isCurrentUser
-                      ? 'border-primary/30 bg-primary/[0.07]'
-                      : 'border-black/[0.07] bg-white/55 dark:border-white/10 dark:bg-white/[0.035]'
+                      ? 'border-primary/30 bg-indigo-500/[0.08] shadow-[0_12px_26px_rgba(99,102,241,0.10)]'
+                      : 'mode-chip'
                   }`}
                 >
                   <RankBadge rank={rank} />
@@ -123,7 +123,7 @@ function buildCurrentUserEntry(userId: string, profile: UserProfile): Leaderboar
 function RankBadge({ rank }: { rank: number }) {
   if (rank === 1) {
     return (
-      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-amber-500 text-white shadow-sm">
+      <div className="brand-gradient flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-white shadow-sm">
         <Crown size={15} />
       </div>
     );
@@ -131,7 +131,7 @@ function RankBadge({ rank }: { rank: number }) {
 
   if (rank <= 3) {
     return (
-      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-zinc-950 text-white dark:bg-white dark:text-zinc-950">
+      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-violet-500 text-white">
         <Medal size={15} />
       </div>
     );

@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { collection, query, where, orderBy, onSnapshot, getDocs } from 'firebase/firestore';
 import { db, auth } from '../firebase';
 import { User } from 'firebase/auth';
-import { Deck } from '../types';
+import { Deck, Flashcard } from '../types';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -21,12 +21,18 @@ import { Link } from 'react-router-dom';
 import { toast } from 'sonner';
 import { useSettings } from '../contexts/SettingsContext';
 import { importAnkiApkg } from '../services/ankiService';
-import { createInitialCardSchedule } from '../lib/spacedRepetition';
+import { createInitialCardSchedule, isCardDue } from '../lib/spacedRepetition';
 import { addDoc } from 'firebase/firestore';
 import { useRef } from 'react';
 
 interface DecksProps {
   user: User | null;
+}
+
+interface DeckStudyStats {
+  learned: number;
+  due: number;
+  lastStudied?: string;
 }
 
 export default function Decks({ user }: DecksProps) {
@@ -36,6 +42,7 @@ export default function Decks({ user }: DecksProps) {
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedTag, setSelectedTag] = useState<string | null>(null);
   const [isImporting, setIsImporting] = useState(false);
+  const [deckStats, setDeckStats] = useState<Record<string, DeckStudyStats>>({});
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -54,6 +61,23 @@ export default function Decks({ user }: DecksProps) {
       decksData.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
       setDecks(decksData);
       setLoading(false);
+
+      Promise.all(
+        decksData.map(async (deck) => {
+          const cardsSnap = await getDocs(collection(db, `decks/${deck.id}/cards`));
+          const cards = cardsSnap.docs.map((cardDoc) => ({ id: cardDoc.id, ...cardDoc.data() } as Flashcard));
+          const learned = cards.filter((card) => (card.reps || card.repetitions || 0) > 0 || card.state === 'review').length;
+          const due = cards.filter((card) => isCardDue(card)).length;
+          const lastStudied = cards
+            .map((card) => typeof card.lastReview === 'string' ? card.lastReview : card.lastReview?.reviewTime)
+            .filter(Boolean)
+            .sort((a, b) => new Date(String(b)).getTime() - new Date(String(a)).getTime())[0];
+
+          return [deck.id, { learned, due, lastStudied }] as const;
+        })
+      )
+        .then((entries) => setDeckStats(Object.fromEntries(entries)))
+        .catch(() => setDeckStats({}));
     }, (error) => {
       console.error("Decks: Error fetching decks:", error);
       toast.error("Không thể tải danh sách bộ thẻ: " + error.message);
@@ -226,9 +250,14 @@ export default function Decks({ user }: DecksProps) {
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
         {filteredDecks.length > 0 ? (
-          filteredDecks.map(deck => (
+          filteredDecks.map(deck => {
+            const stats = deckStats[deck.id] || { learned: 0, due: 0 };
+            const totalCards = Math.max(deck.cardCount || 0, 1);
+            const progress = Math.min(100, Math.round((stats.learned / totalCards) * 100));
+
+            return (
             <Link key={deck.id} to={`/decks/${deck.id}`}>
-              <Card className="hover:shadow-2xl hover:-translate-y-2 transition-all duration-500 border border-slate-200 dark:border-white/5 shadow-xl group overflow-hidden bg-white dark:bg-[#0C0D0E] h-full flex flex-col rounded-[2rem]">
+              <Card className="deck-card-premium hover:shadow-2xl hover:-translate-y-2 transition-all duration-500 border shadow-xl group overflow-hidden h-full flex flex-col rounded-[2rem]">
                 <div className="h-2 w-full opacity-40 group-hover:opacity-100 transition-opacity" style={{ backgroundColor: deck.color || '#4f46e5' }} />
                 <CardHeader className="pb-4 p-8">
                   <div className="flex justify-between items-start">
@@ -267,6 +296,33 @@ export default function Decks({ user }: DecksProps) {
                   <p className="text-slate-500 dark:text-slate-400 font-medium line-clamp-2 mb-8 leading-relaxed">
                     {deck.description || 'Không có mô tả cho bộ thẻ này.'}
                   </p>
+                  <div className="mb-6 space-y-3 rounded-2xl border border-indigo-500/10 bg-indigo-500/[0.035] p-4 dark:border-white/10 dark:bg-white/[0.035]">
+                    <div className="flex items-center justify-between text-xs font-bold text-slate-500 dark:text-slate-400">
+                      <span>Tiến độ học</span>
+                      <span className="font-mono text-primary">{progress}%</span>
+                    </div>
+                    <div className="h-2 overflow-hidden rounded-full bg-slate-200/70 dark:bg-white/10">
+                      <div className="xp-gradient h-full rounded-full" style={{ width: `${progress}%` }} />
+                    </div>
+                    <div className="grid grid-cols-3 gap-2 text-center">
+                      <div className="mode-chip p-2">
+                        <p className="font-mono text-sm font-black text-slate-900 dark:text-white">{stats.learned}</p>
+                        <p className="text-[9px] font-bold uppercase text-slate-400">Đã học</p>
+                      </div>
+                      <div className="mode-chip p-2">
+                        <p className="font-mono text-sm font-black text-slate-900 dark:text-white">{stats.due}</p>
+                        <p className="text-[9px] font-bold uppercase text-slate-400">Đến hạn</p>
+                      </div>
+                      <div className="mode-chip p-2">
+                        <p className="font-mono text-sm font-black text-slate-900 dark:text-white">{deck.cardCount}</p>
+                        <p className="text-[9px] font-bold uppercase text-slate-400">Tổng</p>
+                      </div>
+                    </div>
+                    <p className="truncate text-[10px] font-medium text-slate-400">
+                      {stats.lastStudied ? `Học gần nhất: ${new Date(stats.lastStudied).toLocaleDateString('vi-VN')}` : 'Chưa có phiên học gần đây'}
+                    </p>
+                  </div>
+
                   <div className="flex items-center justify-between pt-6 border-t border-slate-100 dark:border-white/5">
                     <div className="flex flex-col">
                       <span className="text-[9px] font-black text-slate-400 uppercase tracking-[0.2em]">Dung lượng</span>
@@ -284,11 +340,12 @@ export default function Decks({ user }: DecksProps) {
                   </div>
                 </CardContent>
                 <div className="p-5 bg-slate-50 dark:bg-white/5 flex items-center justify-center text-primary font-black text-[10px] uppercase tracking-[0.2em] gap-2 opacity-0 group-hover:opacity-100 transition-all duration-500 translate-y-4 group-hover:translate-y-0">
-                  Bắt đầu học ngay <ArrowRight size={16} />
+                  Học tiếp · Kiểm tra nhanh · Thống kê <ArrowRight size={16} />
                 </div>
               </Card>
             </Link>
-          ))
+            );
+          })
         ) : (
           <div className="col-span-full py-32 text-center bg-white dark:bg-[#0C0D0E] rounded-[3rem] border border-dashed border-slate-200 dark:border-white/10 shadow-sm">
             <div className="flex justify-center mb-6">

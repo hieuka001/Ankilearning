@@ -192,7 +192,7 @@ export default function AIHelper({ user, profile }: AIHelperProps) {
         const deckRef = await addDoc(collection(db, 'decks'), {
           ownerId: user.uid,
           name: deckName,
-          description: `Tạo tự động từ AI Helper dựa trên tài liệu giáo trình.`,
+          description: `Tạo tự động từ Study Copilot dựa trên tài liệu giáo trình.`,
           category: 'Y khoa',
           cardCount: generatedCards.length,
           createdAt: new Date().toISOString(),
@@ -240,16 +240,24 @@ export default function AIHelper({ user, profile }: AIHelperProps) {
         <div className="inline-flex p-4 md:p-6 bg-primary/10 text-primary rounded-[1.5rem] md:rounded-[2rem] mb-2 shadow-2xl shadow-primary/10">
           <BrainCircuit className="w-8 h-8 md:w-12 md:h-12" />
         </div>
-        <h1 className="text-3xl md:text-5xl font-black text-slate-900 dark:text-white tracking-tighter text-balance">AI Helper</h1>
+        <h1 className="text-3xl md:text-5xl font-black text-slate-900 dark:text-white tracking-tighter text-balance">Study Copilot</h1>
         <p className="text-slate-500 dark:text-slate-400 text-lg md:text-xl font-medium leading-relaxed">
-          Tự động hóa việc tạo nội dung học tập với sức mạnh của <span className="text-primary font-bold">AI Assistant (Gemini)</span>.
+          Gia sư học tập cá nhân giúp phân tích tài liệu, tóm tắt kiến thức, tạo flashcards và gợi ý câu hỏi nâng cao bằng <span className="text-primary font-bold">Gemini</span>.
         </p>
+        <div className="mx-auto grid max-w-3xl grid-cols-2 gap-2 text-left md:grid-cols-5">
+          {['Audio', 'Transcript', 'AI Summary', 'Flashcards', 'Quiz'].map((step, index) => (
+            <div key={step} className="workflow-step p-3">
+              <p className="font-mono text-[10px] font-black text-primary">0{index + 1}</p>
+              <p className="mt-1 text-xs font-bold text-slate-700 dark:text-slate-200">{step}</p>
+            </div>
+          ))}
+        </div>
       </header>
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 md:gap-10">
         {/* Input Section */}
         <section className="lg:col-span-7 space-y-6 md:space-y-8">
-          <Card className="border border-slate-200 dark:border-white/5 shadow-2xl overflow-hidden bg-white dark:bg-[#0C0D0E] rounded-3xl md:rounded-[3rem]">
+          <Card className="premium-panel border-0 bg-transparent shadow-2xl overflow-hidden rounded-3xl md:rounded-[3rem]">
             <CardHeader className="p-6 md:p-10 pb-4 md:pb-6 border-b border-slate-100 dark:border-white/5">
               <div className="flex items-center gap-3 md:gap-4">
                 <div className="p-2.5 md:p-3 bg-primary/10 text-primary rounded-xl md:rounded-2xl">
@@ -437,7 +445,7 @@ export default function AIHelper({ user, profile }: AIHelperProps) {
 
         {/* AI Results Section */}
         <section className="lg:col-span-5 space-y-6 md:space-y-8">
-          <Card className="border border-slate-200 dark:border-white/5 shadow-2xl h-full flex flex-col bg-white dark:bg-[#0C0D0E] rounded-3xl md:rounded-[3rem] overflow-hidden min-h-[400px]">
+          <Card className="premium-panel border-0 bg-transparent shadow-2xl h-full flex flex-col rounded-3xl md:rounded-[3rem] overflow-hidden min-h-[400px]">
             <CardHeader className="p-6 md:p-10 pb-4 md:pb-6 bg-slate-900 dark:bg-black text-white">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-3 md:gap-4">

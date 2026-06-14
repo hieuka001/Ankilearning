@@ -7,6 +7,7 @@ import { vi } from 'date-fns/locale';
 import { motion } from 'motion/react';
 import {
   ArrowRight,
+  Award,
   BookOpen,
   BrainCircuit,
   CheckCircle2,
@@ -194,6 +195,12 @@ export default function Dashboard({ user, profile }: DashboardProps) {
   const dueToday = recentDecks.reduce((sum, deck) => sum + deck.dueCount, 0);
   const streakDays = profile?.streakDays ?? profile?.streak ?? 0;
   const cardsReviewed = profile?.totalCardsReviewed ?? profile?.totalCardsLearned ?? 0;
+  const milestoneItems = [
+    { label: '100 thẻ đầu tiên', done: cardsReviewed >= 100, value: Math.min(cardsReviewed, 100), target: 100 },
+    { label: '500 thẻ đầu tiên', done: cardsReviewed >= 500, value: Math.min(cardsReviewed, 500), target: 500 },
+    { label: '7 ngày streak', done: streakDays >= 7, value: Math.min(streakDays, 7), target: 7 },
+    { label: '30 ngày streak', done: streakDays >= 30, value: Math.min(streakDays, 30), target: 30 },
+  ];
 
   const handleGetAiSuggestion = async () => {
     if (!profile) return;
@@ -237,7 +244,7 @@ export default function Dashboard({ user, profile }: DashboardProps) {
       <motion.section
         variants={cardMotion}
         transition={{ duration: 0.42, ease: [0.22, 1, 0.36, 1] }}
-        className="premium-panel overflow-hidden rounded-lg"
+        className="study-hero premium-panel overflow-hidden rounded-lg"
       >
         <div className="grid gap-0 lg:grid-cols-[1.35fr_0.65fr]">
           <div className="border-b border-black/[0.07] p-6 dark:border-white/10 md:p-8 lg:border-b-0 lg:border-r">
@@ -273,14 +280,14 @@ export default function Dashboard({ user, profile }: DashboardProps) {
                     initial={{ width: 0 }}
                     animate={{ width: `${dailyProgress}%` }}
                     transition={{ duration: 0.9, ease: [0.22, 1, 0.36, 1] }}
-                    className="h-full rounded-full bg-zinc-950 dark:bg-white"
+                    className="xp-gradient h-full rounded-full"
                   />
                 </div>
               </div>
 
               <div className="flex gap-2">
                 <Link to="/create-deck">
-                  <Button className="h-10 gap-2 bg-zinc-950 px-4 text-white hover:bg-zinc-800">
+                  <Button className="h-10 gap-2 px-4">
                     <Plus size={16} />
                     Tạo thẻ
                   </Button>
@@ -297,7 +304,7 @@ export default function Dashboard({ user, profile }: DashboardProps) {
 
           <div className="grid grid-cols-2 divide-x divide-y divide-black/[0.07] dark:divide-white/10">
             <StatTile label="Đến hạn" value={dueToday} icon={<Target size={18} />} tone="blue" />
-            <StatTile label="Chuỗi ngày" value={streakDays} icon={<Flame size={18} />} tone="amber" />
+            <StatTile label="Streak" value={streakDays} icon={<Flame size={18} />} tone="amber" />
             <StatTile label="Bộ thẻ" value={totalDeckCount} icon={<Layers3 size={18} />} tone="neutral" />
             <StatTile label="Đã học" value={cardsReviewed} icon={<CheckCircle2 size={18} />} tone="emerald" />
           </div>
@@ -358,6 +365,53 @@ export default function Dashboard({ user, profile }: DashboardProps) {
           </Card>
         </motion.div>
       </div>
+
+      <motion.section variants={cardMotion} transition={{ duration: 0.42, ease: [0.22, 1, 0.36, 1] }}>
+        <Card className="premium-panel overflow-hidden border-0 bg-transparent">
+          <CardContent className="grid gap-6 p-6 xl:grid-cols-[1.15fr_0.85fr]">
+            <div>
+              <div className="mb-5 flex items-start justify-between gap-4">
+                <div>
+                  <p className="mb-2 text-xs font-semibold uppercase text-primary">Study Map</p>
+                  <h2 className="text-xl font-semibold text-zinc-950 dark:text-white">Heatmap 90 ngày gần nhất</h2>
+                </div>
+                <div className="achievement-badge">
+                  <Flame size={14} />
+                  {streakDays} ngày
+                </div>
+              </div>
+              <LearningHeatmap sessions={recentSessions} />
+            </div>
+            <div className="space-y-3">
+              <p className="text-xs font-semibold uppercase text-muted-foreground">Milestones</p>
+              {milestoneItems.map((item) => {
+                const progress = Math.min(100, (item.value / item.target) * 100);
+                return (
+                  <div key={item.label} className="workflow-step p-4">
+                    <div className="mb-2 flex items-center justify-between gap-3">
+                      <div className="flex items-center gap-2">
+                        <Award className={item.done ? 'h-4 w-4 text-violet-600' : 'h-4 w-4 text-muted-foreground'} />
+                        <p className="text-sm font-semibold text-zinc-950 dark:text-white">{item.label}</p>
+                      </div>
+                      <span className={item.done ? 'achievement-badge' : 'text-xs font-semibold text-muted-foreground'}>
+                        {item.done ? 'Đạt' : `${item.value}/${item.target}`}
+                      </span>
+                    </div>
+                    <div className="h-1.5 overflow-hidden rounded-full bg-black/[0.06] dark:bg-white/10">
+                      <motion.div
+                        initial={{ width: 0 }}
+                        animate={{ width: `${progress}%` }}
+                        transition={{ duration: 0.6, ease: [0.22, 1, 0.36, 1] }}
+                        className="xp-gradient h-full rounded-full"
+                      />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </CardContent>
+        </Card>
+      </motion.section>
 
       <div className="grid gap-6 xl:grid-cols-[0.95fr_1.05fr]">
         <motion.div variants={cardMotion} transition={{ duration: 0.42, ease: [0.22, 1, 0.36, 1] }}>
@@ -463,14 +517,14 @@ function StatTile({
   tone: 'blue' | 'amber' | 'emerald' | 'neutral';
 }) {
   const toneClass = {
-    blue: 'bg-blue-500/10 text-blue-700 dark:text-blue-300',
-    amber: 'bg-amber-500/10 text-amber-700 dark:text-amber-300',
-    emerald: 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300',
+    blue: 'bg-indigo-500/10 text-indigo-700 dark:text-indigo-300',
+    amber: 'bg-violet-500/10 text-violet-700 dark:text-violet-300',
+    emerald: 'bg-purple-500/10 text-purple-700 dark:text-purple-300',
     neutral: 'bg-zinc-950/[0.06] text-zinc-700 dark:bg-white/10 dark:text-white',
   }[tone];
 
   return (
-    <div className="min-h-36 p-5">
+    <div className="stat-tile">
       <div className={`mb-5 flex h-9 w-9 items-center justify-center rounded-lg ${toneClass}`}>
         {icon}
       </div>
@@ -601,7 +655,7 @@ function ActivityList({ sessions }: { sessions: StudySession[] }) {
 }
 
 function LearningHeatmap({ sessions, compact = false }: { sessions: StudySession[]; compact?: boolean }) {
-  const days = compact ? 28 : 98;
+  const days = compact ? 28 : 90;
   const today = new Date();
   const calendarDays = Array.from({ length: days }, (_, i) => {
     const date = subDays(today, days - 1 - i);
@@ -620,10 +674,10 @@ function LearningHeatmap({ sessions, compact = false }: { sessions: StudySession
             day.count === 0
               ? 'bg-black/[0.08] dark:bg-white/10'
               : day.count === 1
-                ? 'bg-primary/35'
+                ? 'bg-indigo-400/35'
                 : day.count === 2
-                ? 'bg-primary/[0.65]'
-                  : 'bg-primary'
+                ? 'bg-violet-500/[0.65]'
+                  : 'bg-purple-500'
           }`}
         />
       ))}

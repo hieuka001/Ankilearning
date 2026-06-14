@@ -69,7 +69,7 @@ export default function DailyMissionsPanel({
             <p className="mb-2 text-xs font-semibold uppercase text-primary">Daily Missions</p>
             <h2 className="text-xl font-semibold text-zinc-950 dark:text-white">Nhiệm vụ hôm nay</h2>
           </div>
-          <div className="rounded-lg border border-black/[0.07] bg-white/70 px-3 py-2 text-right dark:border-white/10 dark:bg-white/[0.05]">
+          <div className="mode-chip px-3 py-2 text-right">
             <p className="font-mono text-sm font-semibold text-zinc-950 dark:text-white">{completedCount}/3</p>
             <p className="text-[10px] font-medium text-muted-foreground">{claimedCount} đã nhận</p>
           </div>
@@ -77,10 +77,10 @@ export default function DailyMissionsPanel({
       </div>
 
       <div className="p-5">
-        <div className="mb-5 rounded-lg border border-black/[0.07] bg-white/60 p-4 dark:border-white/10 dark:bg-white/[0.04]">
+        <div className="workflow-step mb-5 p-4">
           <div className="mb-3 flex items-center justify-between gap-3">
             <div className="flex items-center gap-3">
-              <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-zinc-950 text-white dark:bg-white dark:text-zinc-950">
+              <div className="brand-gradient flex h-9 w-9 items-center justify-center rounded-lg text-white shadow-lg shadow-indigo-500/20">
                 <Award size={17} />
               </div>
               <div>
@@ -88,7 +88,7 @@ export default function DailyMissionsPanel({
                 <p className="font-mono text-xs text-muted-foreground">{totalExp.toLocaleString()} EXP</p>
               </div>
             </div>
-            <div className="flex items-center gap-1.5 rounded-full bg-amber-500/10 px-2.5 py-1 text-xs font-semibold text-amber-700 dark:text-amber-300">
+            <div className="achievement-badge">
               <Flame size={13} />
               {profile?.streakDays ?? profile?.streak ?? 0} ngày
             </div>
@@ -98,7 +98,7 @@ export default function DailyMissionsPanel({
               initial={{ width: 0 }}
               animate={{ width: `${levelInfo.progressPercent}%` }}
               transition={{ duration: 0.7, ease: [0.22, 1, 0.36, 1] }}
-              className="h-full rounded-full bg-zinc-950 dark:bg-white"
+              className="xp-gradient h-full rounded-full"
             />
           </div>
           <p className="mt-2 text-xs text-muted-foreground">
@@ -123,13 +123,13 @@ export default function DailyMissionsPanel({
                   initial={{ opacity: 0, y: 8 }}
                   animate={{ opacity: 1, y: 0 }}
                   transition={{ delay: index * 0.04, duration: 0.28 }}
-                  className="rounded-lg border border-black/[0.07] bg-white/55 p-4 shadow-sm dark:border-white/10 dark:bg-white/[0.035]"
+                  className="workflow-step p-4 transition-all hover:-translate-y-0.5 hover:border-primary/25"
                 >
                   <div className="mb-3 flex items-center justify-between gap-3">
                     <div className="flex min-w-0 items-center gap-3">
                       <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg ${
                         mission.completed
-                          ? 'bg-emerald-500/12 text-emerald-700 dark:text-emerald-300'
+                          ? 'bg-violet-500/12 text-violet-700 dark:text-violet-300'
                           : 'bg-primary/10 text-primary'
                       }`}>
                         {mission.completed ? <CheckCircle2 size={17} /> : <Icon size={17} />}
@@ -149,7 +149,7 @@ export default function DailyMissionsPanel({
                       disabled={!canClaim || claimingId === mission.id}
                       className={`h-8 min-w-20 rounded-lg px-3 text-xs font-semibold transition-all ${
                         canClaim
-                          ? 'bg-zinc-950 text-white hover:bg-zinc-800 dark:bg-white dark:text-zinc-950'
+                          ? 'brand-gradient text-white shadow-lg shadow-indigo-500/20'
                           : 'border border-black/[0.07] bg-zinc-950/[0.04] text-zinc-500 opacity-55 hover:bg-zinc-950/[0.04] dark:border-white/10 dark:bg-white/[0.06] dark:text-zinc-400'
                       }`}
                     >
@@ -167,7 +167,7 @@ export default function DailyMissionsPanel({
                       initial={{ width: 0 }}
                       animate={{ width: `${progress}%` }}
                       transition={{ duration: 0.45, ease: [0.22, 1, 0.36, 1] }}
-                      className={`h-full rounded-full ${mission.completed ? 'bg-emerald-500' : 'bg-primary'}`}
+                      className={`h-full rounded-full ${mission.completed ? 'xp-gradient' : 'brand-gradient'}`}
                     />
                   </div>
                 </motion.div>
