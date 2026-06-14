@@ -148,6 +148,7 @@ export default function Settings({ user, profile }: SettingsProps) {
   const avatarPreview = avatarUrl.trim() || savedPhotoURL;
   const googleAvatar = user?.providerData.find((provider) => provider.photoURL)?.photoURL || user?.photoURL || '';
   const profileInitial = (savedDisplayName.trim()[0] || 'U').toUpperCase();
+  const isGifAvatar = /\.gif(?:[?#].*)?$/i.test(avatarPreview);
 
   const handleBackgroundMusicChange = (enabled: boolean) => {
     updateSettings({ backgroundMusic: enabled });
@@ -384,8 +385,8 @@ export default function Settings({ user, profile }: SettingsProps) {
                     {profileInitial}
                   </div>
                 )}
-                <div className="absolute -bottom-2 -right-2 flex h-8 w-8 items-center justify-center rounded-lg border border-white bg-zinc-950 text-white shadow-sm dark:border-zinc-900">
-                  <Camera className="h-4 w-4" />
+                <div className="absolute -bottom-2 -right-2 flex h-8 min-w-8 items-center justify-center rounded-lg border border-white bg-zinc-950 px-2 text-white shadow-sm dark:border-zinc-900">
+                  {isGifAvatar ? <span className="text-[10px] font-bold">GIF</span> : <Camera className="h-4 w-4" />}
                 </div>
               </div>
 
@@ -406,8 +407,11 @@ export default function Settings({ user, profile }: SettingsProps) {
                     value={avatarUrl}
                     onChange={(event) => setAvatarUrl(event.target.value)}
                     className="mt-2 h-11 font-mono text-xs"
-                    placeholder="https://..."
+                    placeholder="https://.../avatar.gif"
                   />
+                  <p className="mt-2 text-xs leading-5 text-zinc-500 dark:text-zinc-400">
+                    Hỗ trợ ảnh động GIF bằng link trực tiếp .gif. GIF sẽ chạy ở preview, sidebar và bảng xếp hạng.
+                  </p>
                 </div>
                 <div className="flex flex-wrap gap-2">
                   <Button type="button" onClick={handleSaveProfile} disabled={isSavingProfile} className="h-9 px-4">
