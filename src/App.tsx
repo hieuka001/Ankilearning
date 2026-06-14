@@ -1,7 +1,7 @@
 import { Component, useEffect, useState, lazy, Suspense, type ErrorInfo, type ReactNode } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate, Link, useLocation } from 'react-router-dom';
 import { onAuthStateChanged, signInWithPopup, GoogleAuthProvider, signOut, User } from 'firebase/auth';
-import { doc, getDoc, setDoc, onSnapshot } from 'firebase/firestore';
+import { collection, doc, getDoc, limit, onSnapshot, orderBy, query, setDoc } from 'firebase/firestore';
 import { auth, db } from './firebase';
 import { UserProfile } from './types';
 import { Button } from '@/components/ui/button';
@@ -60,6 +60,18 @@ function PageLoader() {
   );
 }
 
+function isSameLocalDay(value: unknown, referenceDate = new Date()) {
+  if (!value) return false;
+  const date = new Date(String(value));
+  if (Number.isNaN(date.getTime())) return false;
+
+  return (
+    date.getFullYear() === referenceDate.getFullYear()
+    && date.getMonth() === referenceDate.getMonth()
+    && date.getDate() === referenceDate.getDate()
+  );
+}
+
 class AppErrorBoundary extends Component<
   { children: ReactNode; resetKey: string },
   { hasError: boolean }
@@ -105,11 +117,13 @@ export default function App() {
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState(true);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [cardsReviewedToday, setCardsReviewedToday] = useState(0);
 
   useGamification(user, profile?.settings?.studyReminder?.timezone || 'Asia/Bangkok');
 
   useEffect(() => {
     let unsubscribeProfile: (() => void) | null = null;
+    let unsubscribeSessions: (() => void) | null = null;
 
     const unsubscribeAuth = onAuthStateChanged(auth, async (firebaseUser) => {
       setLoading(true);
@@ -117,6 +131,10 @@ export default function App() {
       if (unsubscribeProfile) {
         unsubscribeProfile();
         unsubscribeProfile = null;
+      }
+      if (unsubscribeSessions) {
+        unsubscribeSessions();
+        unsubscribeSessions = null;
       }
 
       try {
@@ -165,9 +183,32 @@ export default function App() {
           unsubscribeProfile = onSnapshot(userDoc, (snap) => {
             if (snap.exists()) setProfile(snap.data() as UserProfile);
           });
+
+          const sessionsQuery = query(
+            collection(db, `users/${firebaseUser.uid}/sessions`),
+            orderBy('timestamp', 'desc'),
+            limit(120)
+          );
+
+          unsubscribeSessions = onSnapshot(
+            sessionsQuery,
+            (snap) => {
+              const today = new Date();
+              const reviewedToday = snap.docs.reduce((sum, sessionDoc) => {
+                const data = sessionDoc.data();
+                return isSameLocalDay(data.timestamp, today)
+                  ? sum + (typeof data.cardsReviewed === 'number' ? data.cardsReviewed : 0)
+                  : sum;
+              }, 0);
+
+              setCardsReviewedToday(reviewedToday);
+            },
+            () => setCardsReviewedToday(0)
+          );
         } else {
           setUser(null);
           setProfile(null);
+          setCardsReviewedToday(0);
         }
       } catch (error) {
         console.error('Auth/Profile error:', error);
@@ -180,6 +221,7 @@ export default function App() {
     return () => {
       unsubscribeAuth();
       if (unsubscribeProfile) unsubscribeProfile();
+      if (unsubscribeSessions) unsubscribeSessions();
     };
   }, []);
 
@@ -210,6 +252,9 @@ export default function App() {
   if (!user) {
     return <LoginScreen onLogin={handleLogin} />;
   }
+
+  const dailyGoal = Math.max(1, profile?.settings?.dailyGoal || 20);
+  const sidebarDailyProgress = Math.min(100, (cardsReviewedToday / dailyGoal) * 100);
 
   return (
     <SettingsProvider>
@@ -264,11 +309,11 @@ export default function App() {
                 <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-white/10">
                   <div
                     className="h-full rounded-full bg-white"
-                    style={{ width: `${Math.min(100, ((profile?.totalCardsLearned || 0) / Math.max(1, profile?.settings?.dailyGoal || 20)) * 100)}%` }}
+                    style={{ width: `${sidebarDailyProgress}%` }}
                   />
                 </div>
                 <p className="mt-2 text-xs text-white/42">
-                  {profile?.totalCardsLearned || 0}/{profile?.settings?.dailyGoal || 20} thẻ
+                  {cardsReviewedToday}/{dailyGoal} thẻ
                 </p>
               </div>
 
