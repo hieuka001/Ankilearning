@@ -259,6 +259,9 @@ export default function App() {
   const sidebarDailyProgress = Math.min(100, (cardsReviewedToday / dailyGoal) * 100);
   const totalExp = profile?.totalExp ?? profile?.xp ?? 0;
   const sidebarLevelInfo = calculateUserLevel(totalExp);
+  const sidebarDisplayName = profile?.displayName || user.displayName || 'User';
+  const sidebarPhotoURL = profile?.photoURL || user.photoURL || '';
+  const sidebarInitial = (sidebarDisplayName.trim()[0] || 'U').toUpperCase();
 
   return (
     <SettingsProvider>
@@ -287,7 +290,6 @@ export default function App() {
               <Logo className="h-10 w-10" />
               <div className="sidebar-text min-w-0">
                 <p className="truncate text-sm font-semibold text-white">Learning Card</p>
-                <p className="truncate text-xs text-white/48">Gemini study system</p>
               </div>
               <button
                 type="button"
@@ -330,10 +332,21 @@ export default function App() {
               </div>
 
               <div className="sidebar-user-card">
-                <img src={user.photoURL || ''} alt="" className="h-9 w-9 rounded-full border border-white/10 object-cover" />
+                {sidebarPhotoURL ? (
+                  <img
+                    src={sidebarPhotoURL}
+                    alt=""
+                    referrerPolicy="no-referrer"
+                    className="h-9 w-9 rounded-full border border-white/10 object-cover"
+                  />
+                ) : (
+                  <div className="flex h-9 w-9 items-center justify-center rounded-full border border-white/10 bg-white/10 text-sm font-semibold text-white">
+                    {sidebarInitial}
+                  </div>
+                )}
                 <div className="sidebar-expanded-only min-w-0 flex-1">
                   <div className="flex items-center justify-between gap-2">
-                    <p className="truncate text-sm font-semibold text-white">{user.displayName}</p>
+                    <p className="truncate text-sm font-semibold text-white">{sidebarDisplayName}</p>
                     <span className="rounded-md bg-white/10 px-2 py-0.5 text-[10px] font-bold text-violet-100">
                       Lv {sidebarLevelInfo.level}
                     </span>
@@ -361,13 +374,6 @@ export default function App() {
                 <p className="truncate text-xs text-muted-foreground">
                   Học, tạo thẻ và luyện đề trong một không gian tập trung.
                 </p>
-              </div>
-
-              <div className="flex items-center gap-3">
-                <div className="ai-status-pill">
-                  <span className="h-2 w-2 rounded-full bg-emerald-500 shadow-[0_0_0_4px_rgba(16,185,129,0.12)]" />
-                  Gemini 2.5 Flash
-                </div>
               </div>
             </header>
 

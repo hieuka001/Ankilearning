@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
-import { User } from 'firebase/auth';
+import { updateProfile, type User } from 'firebase/auth';
 import { doc, updateDoc } from 'firebase/firestore';
 import { motion } from 'motion/react';
 import {
   BadgeCheck,
   Bell,
+  Camera,
   Clock,
   ExternalLink,
   Flame,
@@ -14,12 +15,14 @@ import {
   Moon,
   Music,
   Play,
+  RefreshCw,
   Save,
   ShieldCheck,
   SlidersHorizontal,
   Sparkles,
   Sun,
   Trophy,
+  Trash2,
   User as UserIcon,
   Volume2
 } from 'lucide-react';
@@ -74,6 +77,9 @@ export default function Settings({ user, profile }: SettingsProps) {
   const [geminiApiKey, setGeminiApiKey] = useState(profile?.settings?.geminiApiKey || profile?.settings?.aiApiKey || '');
   const [isSaving, setIsSaving] = useState(false);
   const [isSavingReminder, setIsSavingReminder] = useState(false);
+  const [isSavingProfile, setIsSavingProfile] = useState(false);
+  const [profileName, setProfileName] = useState(profile?.displayName || user?.displayName || '');
+  const [avatarUrl, setAvatarUrl] = useState(profile?.photoURL || user?.photoURL || '');
   const reminderSettings = profile?.settings?.studyReminder || settings.studyReminder || {
     enabled: false,
     time: '21:00',
@@ -106,6 +112,11 @@ export default function Settings({ user, profile }: SettingsProps) {
   }, [profile?.settings?.geminiApiKey, profile?.settings?.aiApiKey]);
 
   useEffect(() => {
+    setProfileName(profile?.displayName || user?.displayName || '');
+    setAvatarUrl(profile?.photoURL || user?.photoURL || '');
+  }, [profile?.displayName, profile?.photoURL, user?.displayName, user?.photoURL]);
+
+  useEffect(() => {
     setReminderDraft({
       enabled: reminderSettings.enabled,
       time: reminderSettings.time || '21:00',
@@ -132,6 +143,11 @@ export default function Settings({ user, profile }: SettingsProps) {
   }, [schedulerConfig]);
 
   const volumePercent = useMemo(() => Math.round((settings.volume ?? 0.5) * 100), [settings.volume]);
+  const savedDisplayName = profile?.displayName || user?.displayName || 'Người dùng';
+  const savedPhotoURL = profile?.photoURL || user?.photoURL || '';
+  const avatarPreview = avatarUrl.trim() || savedPhotoURL;
+  const googleAvatar = user?.providerData.find((provider) => provider.photoURL)?.photoURL || user?.photoURL || '';
+  const profileInitial = (savedDisplayName.trim()[0] || 'U').toUpperCase();
 
   const handleBackgroundMusicChange = (enabled: boolean) => {
     updateSettings({ backgroundMusic: enabled });
@@ -141,6 +157,54 @@ export default function Settings({ user, profile }: SettingsProps) {
         volume: settings.volume ?? 0.5
       }
     }));
+  };
+
+  const handleSaveProfile = async () => {
+    if (!user) return;
+
+    const nextDisplayName = profileName.trim();
+    const nextPhotoURL = avatarUrl.trim();
+
+    if (!nextDisplayName) {
+      toast.error('Tên hiển thị không được để trống.');
+      return;
+    }
+
+    if (nextDisplayName.length > 80) {
+      toast.error('Tên hiển thị nên dưới 80 ký tự.');
+      return;
+    }
+
+    if (nextPhotoURL && !/^https?:\/\//i.test(nextPhotoURL)) {
+      toast.error('Avatar cần là link ảnh bắt đầu bằng http:// hoặc https://.');
+      return;
+    }
+
+    setIsSavingProfile(true);
+    try {
+      await updateProfile(user, {
+        displayName: nextDisplayName,
+        photoURL: nextPhotoURL || null,
+      });
+
+      await updateDoc(doc(db, 'users', user.uid), {
+        displayName: nextDisplayName,
+        photoURL: nextPhotoURL,
+        updatedAt: new Date().toISOString(),
+      });
+
+      updateDoc(doc(db, 'leaderboards', 'global', 'users', user.uid), {
+        username: nextDisplayName,
+        avatar: nextPhotoURL,
+      }).catch(() => undefined);
+
+      toast.success('Đã cập nhật tên và avatar.');
+    } catch (error) {
+      console.error(error);
+      toast.error('Không thể cập nhật hồ sơ.');
+    } finally {
+      setIsSavingProfile(false);
+    }
   };
 
   const handleSaveKeys = async () => {
@@ -287,14 +351,81 @@ export default function Settings({ user, profile }: SettingsProps) {
           </div>
 
           <div className="mt-7 flex items-center gap-4">
-            <img
-              src={profile?.photoURL || ''}
-              alt=""
-              className="h-16 w-16 rounded-lg border border-zinc-200 bg-zinc-100 object-cover shadow-sm dark:border-white/10 dark:bg-white/10"
-            />
+            {savedPhotoURL ? (
+              <img
+                src={savedPhotoURL}
+                alt=""
+                referrerPolicy="no-referrer"
+                className="h-16 w-16 rounded-lg border border-zinc-200 bg-zinc-100 object-cover shadow-sm dark:border-white/10 dark:bg-white/10"
+              />
+            ) : (
+              <div className="flex h-16 w-16 items-center justify-center rounded-lg border border-zinc-200 bg-zinc-100 text-xl font-semibold text-zinc-500 shadow-sm dark:border-white/10 dark:bg-white/10 dark:text-zinc-300">
+                {profileInitial}
+              </div>
+            )}
             <div className="min-w-0">
-              <p className="truncate text-xl font-semibold text-zinc-950 dark:text-white">{profile?.displayName || 'Người dùng'}</p>
+              <p className="truncate text-xl font-semibold text-zinc-950 dark:text-white">{savedDisplayName}</p>
               <p className="truncate text-sm text-zinc-500 dark:text-zinc-400">{profile?.email || user?.email}</p>
+            </div>
+          </div>
+
+          <div className="mt-6 rounded-lg border border-zinc-200 bg-zinc-50/80 p-4 dark:border-white/10 dark:bg-white/[0.04]">
+            <div className="flex flex-col gap-4 sm:flex-row sm:items-start">
+              <div className="relative shrink-0">
+                {avatarPreview ? (
+                  <img
+                    src={avatarPreview}
+                    alt=""
+                    referrerPolicy="no-referrer"
+                    className="h-20 w-20 rounded-lg border border-zinc-200 bg-white object-cover shadow-sm dark:border-white/10 dark:bg-white/10"
+                  />
+                ) : (
+                  <div className="flex h-20 w-20 items-center justify-center rounded-lg border border-zinc-200 bg-white text-2xl font-semibold text-zinc-500 shadow-sm dark:border-white/10 dark:bg-white/10 dark:text-zinc-300">
+                    {profileInitial}
+                  </div>
+                )}
+                <div className="absolute -bottom-2 -right-2 flex h-8 w-8 items-center justify-center rounded-lg border border-white bg-zinc-950 text-white shadow-sm dark:border-zinc-900">
+                  <Camera className="h-4 w-4" />
+                </div>
+              </div>
+
+              <div className="min-w-0 flex-1 space-y-3">
+                <div>
+                  <label className="text-xs font-semibold uppercase text-zinc-500 dark:text-zinc-400">Tên hiển thị</label>
+                  <Input
+                    value={profileName}
+                    onChange={(event) => setProfileName(event.target.value)}
+                    className="mt-2 h-11"
+                    placeholder="Nhập tên muốn hiển thị"
+                    maxLength={80}
+                  />
+                </div>
+                <div>
+                  <label className="text-xs font-semibold uppercase text-zinc-500 dark:text-zinc-400">Link avatar</label>
+                  <Input
+                    value={avatarUrl}
+                    onChange={(event) => setAvatarUrl(event.target.value)}
+                    className="mt-2 h-11 font-mono text-xs"
+                    placeholder="https://..."
+                  />
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <Button type="button" onClick={handleSaveProfile} disabled={isSavingProfile} className="h-9 px-4">
+                    {isSavingProfile ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+                    Lưu hồ sơ
+                  </Button>
+                  {googleAvatar ? (
+                    <Button type="button" variant="outline" onClick={() => setAvatarUrl(googleAvatar)} disabled={isSavingProfile} className="h-9 px-3">
+                      <RefreshCw className="h-4 w-4" />
+                      Ảnh Google
+                    </Button>
+                  ) : null}
+                  <Button type="button" variant="ghost" onClick={() => setAvatarUrl('')} disabled={isSavingProfile} className="h-9 px-3">
+                    <Trash2 className="h-4 w-4" />
+                    Xóa ảnh
+                  </Button>
+                </div>
+              </div>
             </div>
           </div>
 
@@ -302,8 +433,8 @@ export default function Settings({ user, profile }: SettingsProps) {
             <SettingRow
               icon={<UserIcon className="h-4 w-4" />}
               title="Tên hiển thị"
-              description={profile?.displayName || 'Chưa cập nhật'}
-              action={<span className="text-sm font-medium text-zinc-500">Google</span>}
+              description={savedDisplayName}
+              action={<span className="text-sm font-medium text-primary">Có thể chỉnh sửa</span>}
             />
             <SettingRow
               icon={<Mail className="h-4 w-4" />}
