@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type ChangeEvent, type ReactNode } from 'react';
 import { updateProfile, type User } from 'firebase/auth';
 import { doc, updateDoc } from 'firebase/firestore';
 import { motion } from 'motion/react';
@@ -23,6 +23,7 @@ import {
   Sun,
   Trophy,
   Trash2,
+  Upload,
   User as UserIcon,
   Volume2
 } from 'lucide-react';
@@ -55,6 +56,89 @@ interface SettingRowProps {
   action: ReactNode;
 }
 
+const AVATAR_CANVAS_SIZE = 320;
+const MAX_STATIC_AVATAR_DATA_URL_LENGTH = 420_000;
+const MAX_GIF_AVATAR_FILE_SIZE = 640 * 1024;
+const MAX_AVATAR_DATA_URL_LENGTH = 900_000;
+const SUPPORTED_AVATAR_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'];
+
+function readFileAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ''));
+    reader.onerror = () => reject(new Error('Không thể đọc file ảnh.'));
+    reader.readAsDataURL(file);
+  });
+}
+
+function loadImage(src: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error('Không thể xử lý ảnh này.'));
+    image.src = src;
+  });
+}
+
+async function fileToAvatarDataUrl(file: File): Promise<string> {
+  if (!SUPPORTED_AVATAR_TYPES.includes(file.type)) {
+    throw new Error('Chỉ hỗ trợ PNG, JPG, WEBP hoặc GIF.');
+  }
+
+  if (file.type === 'image/gif') {
+    if (file.size > MAX_GIF_AVATAR_FILE_SIZE) {
+      throw new Error('GIF upload cần dưới 640KB để lưu trực tiếp. Với GIF lớn hơn, hãy dùng link ảnh.');
+    }
+
+    const gifDataUrl = await readFileAsDataUrl(file);
+    if (gifDataUrl.length > MAX_AVATAR_DATA_URL_LENGTH) {
+      throw new Error('GIF quá lớn để lưu trực tiếp. Hãy dùng link ảnh.');
+    }
+    return gifDataUrl;
+  }
+
+  const originalDataUrl = await readFileAsDataUrl(file);
+  const image = await loadImage(originalDataUrl);
+  const canvas = document.createElement('canvas');
+  const context = canvas.getContext('2d');
+
+  if (!context) {
+    throw new Error('Trình duyệt không hỗ trợ xử lý ảnh.');
+  }
+
+  const sourceWidth = image.naturalWidth || image.width;
+  const sourceHeight = image.naturalHeight || image.height;
+  const cropSize = Math.min(sourceWidth, sourceHeight);
+  const sourceX = Math.max(0, (sourceWidth - cropSize) / 2);
+  const sourceY = Math.max(0, (sourceHeight - cropSize) / 2);
+
+  canvas.width = AVATAR_CANVAS_SIZE;
+  canvas.height = AVATAR_CANVAS_SIZE;
+  context.imageSmoothingQuality = 'high';
+  context.drawImage(
+    image,
+    sourceX,
+    sourceY,
+    cropSize,
+    cropSize,
+    0,
+    0,
+    AVATAR_CANVAS_SIZE,
+    AVATAR_CANVAS_SIZE
+  );
+
+  let output = canvas.toDataURL('image/webp', 0.82);
+  if (output.length > MAX_STATIC_AVATAR_DATA_URL_LENGTH) {
+    output = canvas.toDataURL('image/webp', 0.68);
+  }
+
+  if (output.length > MAX_STATIC_AVATAR_DATA_URL_LENGTH) {
+    throw new Error('Ảnh quá lớn để lưu trực tiếp. Hãy chọn ảnh nhẹ hơn hoặc dùng link ảnh.');
+  }
+
+  return output;
+}
+
 function SettingRow({ icon, title, description, action }: SettingRowProps) {
   return (
     <div className="flex flex-col gap-4 py-5 sm:flex-row sm:items-center sm:justify-between">
@@ -80,6 +164,7 @@ export default function Settings({ user, profile }: SettingsProps) {
   const [isSavingProfile, setIsSavingProfile] = useState(false);
   const [profileName, setProfileName] = useState(profile?.displayName || user?.displayName || '');
   const [avatarUrl, setAvatarUrl] = useState(profile?.photoURL || user?.photoURL || '');
+  const avatarFileInputRef = useRef<HTMLInputElement>(null);
   const reminderSettings = profile?.settings?.studyReminder || settings.studyReminder || {
     enabled: false,
     time: '21:00',
@@ -148,7 +233,8 @@ export default function Settings({ user, profile }: SettingsProps) {
   const avatarPreview = avatarUrl.trim() || savedPhotoURL;
   const googleAvatar = user?.providerData.find((provider) => provider.photoURL)?.photoURL || user?.photoURL || '';
   const profileInitial = (savedDisplayName.trim()[0] || 'U').toUpperCase();
-  const isGifAvatar = /\.gif(?:[?#].*)?$/i.test(avatarPreview);
+  const isLocalAvatarDraft = /^data:image\//i.test(avatarUrl.trim());
+  const isGifAvatar = /^data:image\/gif/i.test(avatarPreview) || /\.gif(?:[?#].*)?$/i.test(avatarPreview);
 
   const handleBackgroundMusicChange = (enabled: boolean) => {
     updateSettings({ backgroundMusic: enabled });
@@ -158,6 +244,22 @@ export default function Settings({ user, profile }: SettingsProps) {
         volume: settings.volume ?? 0.5
       }
     }));
+  };
+
+  const handleAvatarFileChange = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+
+    if (!file) return;
+
+    try {
+      const dataUrl = await fileToAvatarDataUrl(file);
+      setAvatarUrl(dataUrl);
+      toast.success(file.type === 'image/gif' ? 'Đã chọn GIF động từ máy.' : 'Đã chọn ảnh từ máy.');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Không thể dùng file ảnh này.';
+      toast.error(message);
+    }
   };
 
   const handleSaveProfile = async () => {
@@ -176,8 +278,15 @@ export default function Settings({ user, profile }: SettingsProps) {
       return;
     }
 
-    if (nextPhotoURL && !/^https?:\/\//i.test(nextPhotoURL)) {
-      toast.error('Avatar cần là link ảnh bắt đầu bằng http:// hoặc https://.');
+    const isUploadedAvatar = /^data:image\/(png|jpe?g|webp|gif);base64,/i.test(nextPhotoURL);
+
+    if (isUploadedAvatar && nextPhotoURL.length > MAX_AVATAR_DATA_URL_LENGTH) {
+      toast.error('Avatar từ máy quá lớn để lưu. Hãy dùng link ảnh.');
+      return;
+    }
+
+    if (nextPhotoURL && !/^https?:\/\//i.test(nextPhotoURL) && !isUploadedAvatar) {
+      toast.error('Avatar cần là link ảnh http/https hoặc file ảnh upload từ máy.');
       return;
     }
 
@@ -185,7 +294,7 @@ export default function Settings({ user, profile }: SettingsProps) {
     try {
       await updateProfile(user, {
         displayName: nextDisplayName,
-        photoURL: nextPhotoURL || null,
+        photoURL: isUploadedAvatar ? (user.photoURL || null) : (nextPhotoURL || null),
       });
 
       await updateDoc(doc(db, 'users', user.uid), {
@@ -402,18 +511,36 @@ export default function Settings({ user, profile }: SettingsProps) {
                   />
                 </div>
                 <div>
-                  <label className="text-xs font-semibold uppercase text-zinc-500 dark:text-zinc-400">Link avatar</label>
+                  <label className="text-xs font-semibold uppercase text-zinc-500 dark:text-zinc-400">Avatar</label>
                   <Input
-                    value={avatarUrl}
+                    value={isLocalAvatarDraft ? 'Ảnh/GIF từ máy đã chọn' : avatarUrl}
                     onChange={(event) => setAvatarUrl(event.target.value)}
                     className="mt-2 h-11 font-mono text-xs"
-                    placeholder="https://.../avatar.gif"
+                    placeholder="Dán link https://... hoặc tải file bên dưới"
+                    readOnly={isLocalAvatarDraft}
                   />
                   <p className="mt-2 text-xs leading-5 text-zinc-500 dark:text-zinc-400">
-                    Hỗ trợ ảnh động GIF bằng link trực tiếp .gif. GIF sẽ chạy ở preview, sidebar và bảng xếp hạng.
+                    Hỗ trợ PNG, JPG, WEBP, GIF từ máy hoặc link ảnh trực tiếp. GIF upload giữ nguyên chuyển động nếu file dưới 640KB.
                   </p>
                 </div>
                 <div className="flex flex-wrap gap-2">
+                  <input
+                    ref={avatarFileInputRef}
+                    type="file"
+                    accept="image/png,image/jpeg,image/webp,image/gif"
+                    className="hidden"
+                    onChange={handleAvatarFileChange}
+                  />
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => avatarFileInputRef.current?.click()}
+                    disabled={isSavingProfile}
+                    className="h-9 px-3"
+                  >
+                    <Upload className="h-4 w-4" />
+                    Tải ảnh/GIF
+                  </Button>
                   <Button type="button" onClick={handleSaveProfile} disabled={isSavingProfile} className="h-9 px-4">
                     {isSavingProfile ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
                     Lưu hồ sơ
