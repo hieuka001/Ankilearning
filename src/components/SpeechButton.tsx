@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Volume2, VolumeX, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { speechLanguageForText } from '../lib/language';
 
 interface SpeechButtonProps {
   text: string;
@@ -30,7 +31,7 @@ const SpeechButton: React.FC<SpeechButtonProps> = ({ text, className, size = 'ic
       
       // Auto-detect language: Check if text contains Vietnamese specific characters
       const containsVietnamese = /[àáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđ]/i.test(cleanText);
-      utterance.lang = containsVietnamese ? 'vi-VN' : 'en-US';
+      utterance.lang = speechLanguageForText(cleanText, 'vi');
 
       utterance.onstart = () => setIsPlaying(true);
       utterance.onend = () => setIsPlaying(false);

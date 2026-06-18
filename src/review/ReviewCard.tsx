@@ -10,6 +10,7 @@ import {
 } from '../lib/spacedRepetition';
 import { Button } from '@/components/ui/button';
 import { useGestureSwipe } from './useGestureSwipe';
+import AudioButton from '../components/AudioButton';
 
 interface RatingPreview {
   rating: SchedulerRating;
@@ -188,6 +189,12 @@ function contentForSide(card: Flashcard, isFlipped: boolean) {
     : content.replace(/\{\{c\d+::(.*?)\}\}/g, '<span class="rounded-md bg-zinc-200 px-2 py-1 text-zinc-500 dark:bg-white/10">[...]</span>');
 }
 
+function audioForSide(card: Flashcard, isBackSide: boolean) {
+  const sideAudio = isBackSide ? card.backAudio : card.frontAudio;
+  if (sideAudio?.length) return sideAudio;
+  return isBackSide ? [] : (card.audioUrls || []);
+}
+
 function ReviewImage({
   src,
   alt,
@@ -341,6 +348,7 @@ export const ReviewCard = memo(function ReviewCard({
             {(['front', 'back'] as const).map((side) => {
               const sideFlipped = side === 'back';
               const visible = isFlipped === sideFlipped;
+              const audioSources = audioForSide(card, sideFlipped);
               return (
                 <div
                   key={side}
@@ -356,22 +364,32 @@ export const ReviewCard = memo(function ReviewCard({
                         {schedule.state} · S {schedule.stability.toFixed(1)} · D {schedule.difficulty.toFixed(1)}
                       </p>
                     </div>
-                    {onSpeak && (
-                      <Button
-                        type="button"
-                        data-no-card-swipe="true"
-                        variant="ghost"
-                        size="icon"
-                        className="h-10 w-10 rounded-xl"
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          onSpeak(sideFlipped ? card.back : card.front);
-                        }}
-                        aria-label="Read card aloud"
-                      >
-                        <Volume2 className="h-4 w-4" />
-                      </Button>
-                    )}
+                    <div className="flex items-center gap-1">
+                      {audioSources.map((src, index) => (
+                        <AudioButton
+                          key={`${side}-${index}`}
+                          src={src}
+                          label={`Phát audio ${index + 1}`}
+                          className="h-10 w-10 rounded-xl"
+                        />
+                      ))}
+                      {onSpeak && (
+                        <Button
+                          type="button"
+                          data-no-card-swipe="true"
+                          variant="ghost"
+                          size="icon"
+                          className="h-10 w-10 rounded-xl"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            onSpeak(sideFlipped ? card.back : card.front);
+                          }}
+                          aria-label="Read card aloud"
+                        >
+                          <Volume2 className="h-4 w-4" />
+                        </Button>
+                      )}
+                    </div>
                   </div>
 
                   <div

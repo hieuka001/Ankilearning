@@ -29,6 +29,8 @@ import { UserProfile, Deck } from '../types';
 import { useNavigate } from 'react-router-dom';
 import ReactMarkdown from 'react-markdown';
 import { createInitialCardSchedule } from '../lib/spacedRepetition';
+import { useSettings } from '../contexts/SettingsContext';
+import { speechRecognitionLanguage } from '../lib/language';
 
 interface VoiceToCardProps {
   user: User | null;
@@ -43,6 +45,7 @@ declare global {
 }
 
 export default function VoiceToCard({ user, profile }: VoiceToCardProps) {
+  const { settings } = useSettings();
   const [isListening, setIsListening] = useState(false);
   const [transcript, setTranscript] = useState('');
   const [interimTranscript, setInterimTranscript] = useState('');
@@ -60,6 +63,7 @@ export default function VoiceToCard({ user, profile }: VoiceToCardProps) {
   
   const recognitionRef = useRef<any>(null);
   const navigate = useNavigate();
+  const recognitionLang = speechRecognitionLanguage(profile?.settings?.language || settings.language);
 
   useEffect(() => {
     // Check browser support for SpeechRecognition
@@ -70,7 +74,7 @@ export default function VoiceToCard({ user, profile }: VoiceToCardProps) {
       recognitionRef.current = new SpeechRecognition();
       recognitionRef.current.continuous = true;
       recognitionRef.current.interimResults = true;
-      recognitionRef.current.lang = 'vi-VN';
+      recognitionRef.current.lang = recognitionLang;
 
       recognitionRef.current.onresult = (event: any) => {
         let finalTranscript = '';
@@ -108,7 +112,7 @@ export default function VoiceToCard({ user, profile }: VoiceToCardProps) {
         recognitionRef.current.stop();
       }
     };
-  }, [user]);
+  }, [recognitionLang, user]);
 
   const toggleListening = () => {
     if (!recognitionRef.current) {
@@ -399,7 +403,7 @@ export default function VoiceToCard({ user, profile }: VoiceToCardProps) {
 
               <Button 
                 onClick={handleGenerate}
-                disabled={!(transcript + interimTranscript).trim() || isGenerating || isListening}
+                disabled={(!(transcript + interimTranscript).trim() && !fileBase64) || isGenerating || isListening}
                 className="w-full bg-slate-900 dark:bg-white dark:text-slate-900 hover:bg-slate-800 dark:hover:bg-slate-100 h-16 md:h-20 rounded-2xl md:rounded-[2rem] font-black text-base md:text-xl shadow-2xl transition-all active:scale-95 gap-3"
               >
                 {isGenerating ? <Loader2 className="animate-spin w-6 h-6" /> : <Zap className="w-6 h-6" />}

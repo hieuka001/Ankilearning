@@ -24,6 +24,7 @@ import { ReviewCard } from '../review/ReviewCard';
 import { enqueueReviewSync, flushReviewQueue, progressDocId } from '../review/firebaseSync';
 import { cacheCards, getCachedCards, upsertCachedCard } from '../review/localDB';
 import { useScheduler } from '../review/useScheduler';
+import { speechLanguageForText } from '../lib/language';
 
 interface StudyProps {
   user: User | null;
@@ -317,8 +318,11 @@ export default function Study({ user, profile }: StudyProps) {
   const speak = useCallback((text: string) => {
     if (!('speechSynthesis' in window)) return;
     window.speechSynthesis.cancel();
-    window.speechSynthesis.speak(new SpeechSynthesisUtterance(stripHtml(text)));
-  }, []);
+    const cleanText = stripHtml(text);
+    const utterance = new SpeechSynthesisUtterance(cleanText);
+    utterance.lang = speechLanguageForText(cleanText, profile?.settings?.language || settings.language);
+    window.speechSynthesis.speak(utterance);
+  }, [profile?.settings?.language, settings.language]);
 
   if (loading) return (
     <div className="flex min-h-[60vh] flex-col items-center justify-center space-y-4">

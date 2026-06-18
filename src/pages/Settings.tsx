@@ -10,6 +10,7 @@ import {
   ExternalLink,
   Flame,
   Key,
+  Languages,
   Loader2,
   Mail,
   Moon,
@@ -43,6 +44,7 @@ import {
   parseSchedulerSteps,
   serializeSchedulerSteps,
 } from '../lib/spacedRepetition';
+import { normalizeLanguage, SUPPORTED_LANGUAGES } from '../lib/language';
 
 interface SettingsProps {
   user: User | null;
@@ -235,6 +237,7 @@ export default function Settings({ user, profile }: SettingsProps) {
   const profileInitial = (savedDisplayName.trim()[0] || 'U').toUpperCase();
   const isLocalAvatarDraft = /^data:image\//i.test(avatarUrl.trim());
   const isGifAvatar = /^data:image\/gif/i.test(avatarPreview) || /\.gif(?:[?#].*)?$/i.test(avatarPreview);
+  const currentLanguage = normalizeLanguage(profile?.settings?.language || settings.language);
 
   const handleBackgroundMusicChange = (enabled: boolean) => {
     updateSettings({ backgroundMusic: enabled });
@@ -259,6 +262,22 @@ export default function Settings({ user, profile }: SettingsProps) {
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Không thể dùng file ảnh này.';
       toast.error(message);
+    }
+  };
+
+  const handleLanguageChange = async (value: string) => {
+    const nextLanguage = normalizeLanguage(value);
+    updateSettings({ language: nextLanguage });
+
+    if (!user) return;
+
+    try {
+      await updateDoc(doc(db, 'users', user.uid), {
+        'settings.language': nextLanguage,
+      });
+      toast.success('Đã cập nhật ngôn ngữ học tập.');
+    } catch {
+      toast.error('Không thể lưu ngôn ngữ học tập.');
     }
   };
 
@@ -604,6 +623,24 @@ export default function Settings({ user, profile }: SettingsProps) {
               title="Chế độ tối"
               description="Nền graphite, ít chói và hợp khi học lâu vào buổi tối."
               action={<Switch checked={settings.darkMode} onCheckedChange={toggleDarkMode} />}
+            />
+            <SettingRow
+              icon={<Languages className="h-4 w-4" />}
+              title="Ngôn ngữ học tập"
+              description="Dùng cho ghi âm, phát âm văn bản và trải nghiệm học. Hỗ trợ thêm tiếng Trung."
+              action={
+                <select
+                  value={currentLanguage}
+                  onChange={(event) => handleLanguageChange(event.target.value)}
+                  className="h-10 min-w-40 rounded-lg border border-zinc-200 bg-white px-3 text-sm font-semibold text-zinc-900 outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/20 dark:border-white/10 dark:bg-white/5 dark:text-white"
+                >
+                  {SUPPORTED_LANGUAGES.map((language) => (
+                    <option key={language.value} value={language.value}>
+                      {language.label}
+                    </option>
+                  ))}
+                </select>
+              }
             />
             <SettingRow
               icon={<Volume2 className="h-4 w-4" />}

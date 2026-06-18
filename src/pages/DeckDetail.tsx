@@ -39,6 +39,7 @@ import ReactMarkdown from 'react-markdown';
 import { Switch } from '@/components/ui/switch';
 import { generateFlashcardsFromText, generateMindmap } from '../services/aiService';
 import { exportAnkiApkg } from '../services/ankiService';
+import AudioButton from '../components/AudioButton';
 import {
   createInitialCardSchedule,
   isCardDue,
@@ -417,6 +418,9 @@ export default function DeckDetail({ user, profile }: DeckDetailProps) {
           back: card.back,
           imageUrl: card.imageUrl || '',
           backImageUrl: card.backImageUrl || '',
+          frontAudio: card.frontAudio || [],
+          backAudio: card.backAudio || [],
+          audioUrls: card.audioUrls || [...(card.frontAudio || []), ...(card.backAudio || [])],
           customStyles: card.customStyles || {},
           tags: card.tags || [],
           ...createInitialCardSchedule(),
@@ -717,6 +721,8 @@ export default function DeckDetail({ user, profile }: DeckDetailProps) {
                 : due
                   ? 'bg-orange-100 dark:bg-orange-900/30 text-orange-600 dark:text-orange-400'
                   : 'bg-emerald-100 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400';
+            const frontAudio = card.frontAudio?.length ? card.frontAudio : (card.audioUrls || []);
+            const backAudio = card.backAudio || [];
 
             return (
             <Card key={card.id} className="border-none shadow-xl hover:shadow-2xl transition-all duration-500 group overflow-hidden bg-white dark:bg-slate-900 rounded-[2rem]">
@@ -733,7 +739,19 @@ export default function DeckDetail({ user, profile }: DeckDetailProps) {
                       {!card.imageUrl && <div className="w-24 h-24 rounded-2xl bg-slate-50 dark:bg-slate-800 border-2 border-dashed border-slate-100 dark:border-slate-800 flex items-center justify-center text-slate-300 dark:text-slate-700"><ImageIcon size={28} /></div>}
                     </div>
                     <div className="flex-1">
-                      <span className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] block mb-2">Mặt trước</span>
+                      <div className="mb-2 flex items-center gap-2">
+                        <span className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em]">Mặt trước</span>
+                        {frontAudio.map((src, index) => (
+                          <AudioButton
+                            key={`front-${card.id}-${index}`}
+                            src={src}
+                            size="icon-sm"
+                            variant="outline"
+                            className="h-7 w-7 rounded-lg"
+                            label={`Phát audio mặt trước ${index + 1}`}
+                          />
+                        ))}
+                      </div>
                       <div className="text-lg font-bold text-slate-900 dark:text-white prose prose-sm prose-slate dark:prose-invert leading-relaxed">
                         <ReactMarkdown>{card.front}</ReactMarkdown>
                       </div>
@@ -749,7 +767,19 @@ export default function DeckDetail({ user, profile }: DeckDetailProps) {
                         )}
                       </div>
                       <div className="flex-1">
-                        <span className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] block mb-2">Mặt sau</span>
+                        <div className="mb-2 flex items-center gap-2">
+                          <span className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em]">Mặt sau</span>
+                          {backAudio.map((src, index) => (
+                            <AudioButton
+                              key={`back-${card.id}-${index}`}
+                              src={src}
+                              size="icon-sm"
+                              variant="outline"
+                              className="h-7 w-7 rounded-lg"
+                              label={`Phát audio mặt sau ${index + 1}`}
+                            />
+                          ))}
+                        </div>
                         <div className="text-base font-medium text-slate-600 dark:text-slate-400 prose prose-sm prose-slate dark:prose-invert leading-relaxed">
                           <ReactMarkdown>{card.back}</ReactMarkdown>
                         </div>

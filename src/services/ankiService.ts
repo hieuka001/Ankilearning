@@ -9,7 +9,19 @@ export interface AnkiCard {
   back: string;
   frontImage?: string;
   backImage?: string;
+  frontAudio?: string[];
+  backAudio?: string[];
+  audioUrls?: string[];
   tags?: string[];
+}
+
+const MAX_EMBEDDED_MEDIA_BYTES = 512 * 1024;
+const soundPattern = /\[sound:([^\]]+)\]/gi;
+const imagePattern = /<img[^>]+src=["']([^"']+)["'][^>]*>/gi;
+
+function decodeHtmlEntities(value: string): string {
+  const entities: Record<string, string> = { '&nbsp;': ' ', '&lt;': '<', '&gt;': '>', '&amp;': '&', '&quot;': '"', '&apos;': "'" };
+  return value.replace(/&[a-z]+;/gi, (m) => entities[m] || m);
 }
 
 function cleanAnkiHtml(html: string): string {
@@ -18,18 +30,125 @@ function cleanAnkiHtml(html: string): string {
     .replace(/<img.*?src=["'](.*?)["'].*?>/gi, '![]($1)')
     .replace(/<(br|div|p)\s*\/?>/gi, '\n').replace(/<\/(div|p)>/gi, '\n')
     .replace(/<[^>]*>/g, '').replace(/\[sound:.*?\]/g, '');
-  const entities: any = { '&nbsp;': ' ', '&lt;': '<', '&gt;': '>', '&amp;': '&', '&quot;': '"', '&apos;': "'" };
-  return text.replace(/&[a-z]+;/gi, (m) => entities[m] || m).replace(/\n\s*\n/g, '\n\n').trim();
+  return decodeHtmlEntities(text).replace(/\n\s*\n/g, '\n\n').trim();
 }
 
 export interface AnkiDeck {
   name: string;
   cards: AnkiCard[];
+  importedAudioCount?: number;
+  skippedAudioCount?: number;
+}
+
+function normalizeMediaName(value: string) {
+  const cleaned = decodeHtmlEntities(value).split(/[?#]/)[0].replace(/^file:\/\//i, '').trim();
+  try {
+    return decodeURIComponent(cleaned);
+  } catch {
+    return cleaned;
+  }
+}
+
+function basename(value: string) {
+  return normalizeMediaName(value).split(/[\\/]/).filter(Boolean).pop() || normalizeMediaName(value);
+}
+
+function getMimeType(filename: string) {
+  const clean = filename.toLowerCase();
+  if (/\.(mp3|mpeg|mpga)$/.test(clean)) return 'audio/mpeg';
+  if (/\.m4a$/.test(clean)) return 'audio/mp4';
+  if (/\.aac$/.test(clean)) return 'audio/aac';
+  if (/\.wav$/.test(clean)) return 'audio/wav';
+  if (/\.ogg$/.test(clean)) return 'audio/ogg';
+  if (/\.flac$/.test(clean)) return 'audio/flac';
+  if (/\.webm$/.test(clean)) return 'audio/webm';
+  if (/\.png$/.test(clean)) return 'image/png';
+  if (/\.(jpg|jpeg)$/.test(clean)) return 'image/jpeg';
+  if (/\.gif$/.test(clean)) return 'image/gif';
+  if (/\.webp$/.test(clean)) return 'image/webp';
+  if (/\.svg$/.test(clean)) return 'image/svg+xml';
+  return 'application/octet-stream';
+}
+
+function extractMediaReferences(html: string, pattern: RegExp) {
+  const matches: string[] = [];
+  html.replace(pattern, (match, filename) => {
+    const clean = normalizeMediaName(String(filename || ''));
+    if (clean) matches.push(clean);
+    return match;
+  });
+  return Array.from(new Set(matches));
+}
+
+async function hydrateMediaLookup(contents: JSZip) {
+  const lookup = new Map<string, string>();
+  const addAlias = (sourceName: string, zipName: string) => {
+    const normalized = normalizeMediaName(sourceName);
+    [sourceName, normalized, basename(normalized)].filter(Boolean).forEach((alias) => lookup.set(alias, zipName));
+  };
+
+  const mediaFile = contents.file('media');
+  if (mediaFile) {
+    try {
+      const mediaMap = JSON.parse(await mediaFile.async('text')) as Record<string, string>;
+      Object.entries(mediaMap).forEach(([zipName, originalName]) => {
+        addAlias(originalName, zipName);
+        addAlias(zipName, zipName);
+      });
+    } catch {
+      // Decks can still be imported through direct zip filenames.
+    }
+  }
+
+  contents.forEach((relativePath, zipEntry) => {
+    if (!zipEntry.dir) addAlias(relativePath, relativePath);
+  });
+
+  return lookup;
+}
+
+async function resolveEmbeddedMedia(
+  contents: JSZip,
+  mediaLookup: Map<string, string>,
+  filename: string,
+  mediaCache: Map<string, Promise<string | undefined>>,
+) {
+  const normalized = normalizeMediaName(filename);
+  const zipPath = mediaLookup.get(normalized) || mediaLookup.get(basename(normalized)) || normalized;
+  if (mediaCache.has(zipPath)) return mediaCache.get(zipPath)!;
+
+  const promise = (async () => {
+    const file = contents.file(zipPath) || contents.file(normalized) || contents.file(basename(normalized));
+    if (!file) return undefined;
+
+    const data = await file.async('uint8array');
+    if (data.byteLength > MAX_EMBEDDED_MEDIA_BYTES) return undefined;
+
+    const base64 = await file.async('base64');
+    return `data:${getMimeType(normalized)};base64,${base64}`;
+  })();
+
+  mediaCache.set(zipPath, promise);
+  return promise;
+}
+
+async function resolveMediaList(
+  contents: JSZip,
+  mediaLookup: Map<string, string>,
+  filenames: string[],
+  mediaCache: Map<string, Promise<string | undefined>>,
+) {
+  const resolved = await Promise.all(
+    filenames.map((filename) => resolveEmbeddedMedia(contents, mediaLookup, filename, mediaCache))
+  );
+  return resolved.filter(Boolean) as string[];
 }
 
 export async function importAnkiApkg(file: File): Promise<AnkiDeck[]> {
   const zip = new JSZip();
   const contents = await zip.loadAsync(file);
+  const mediaLookup = await hydrateMediaLookup(contents);
+  const mediaCache = new Map<string, Promise<string | undefined>>();
   const dbFile = contents.file('collection.anki21') || contents.file('collection.anki2');
   if (!dbFile) throw new Error('Không tìm thấy tệp dữ liệu Anki');
   
@@ -49,21 +168,49 @@ export async function importAnkiApkg(file: File): Promise<AnkiDeck[]> {
   const res = db.exec("SELECT DISTINCT n.flds, n.tags, c.did FROM notes n JOIN cards c ON n.id = c.nid");
   if (res.length === 0) { db.close(); return []; }
   
-  const decksResult: any = {};
-  res[0].values.forEach((row: any) => {
+  const decksResult: Record<string, AnkiCard[]> = {};
+  const deckAudioStats: Record<string, { imported: number; skipped: number }> = {};
+
+  for (const row of res[0].values as any[]) {
     const fields = (row[0] as string).split('\x1f');
     const deckName = deckMap[String(row[2])] || "Anki Import";
+    const frontRaw = fields[0] || '';
+    const backRaw = fields[1] || '';
+    const frontAudioRefs = extractMediaReferences(frontRaw, soundPattern);
+    const backAudioRefs = extractMediaReferences(backRaw, soundPattern);
+    const frontImageRefs = extractMediaReferences(frontRaw, imagePattern);
+    const backImageRefs = extractMediaReferences(backRaw, imagePattern);
+    const frontAudio = await resolveMediaList(contents, mediaLookup, frontAudioRefs, mediaCache);
+    const backAudio = await resolveMediaList(contents, mediaLookup, backAudioRefs, mediaCache);
+    const frontImages = await resolveMediaList(contents, mediaLookup, frontImageRefs, mediaCache);
+    const backImages = await resolveMediaList(contents, mediaLookup, backImageRefs, mediaCache);
+    const requestedAudio = frontAudioRefs.length + backAudioRefs.length;
+    const importedAudio = frontAudio.length + backAudio.length;
+
     const card: AnkiCard = {
-      front: cleanAnkiHtml(fields[0] || ''),
-      back: cleanAnkiHtml(fields[1] || ''),
+      front: cleanAnkiHtml(frontRaw),
+      back: cleanAnkiHtml(backRaw),
+      frontImage: frontImages[0] || '',
+      backImage: backImages[0] || '',
+      frontAudio,
+      backAudio,
+      audioUrls: [...frontAudio, ...backAudio],
       tags: row[1] ? (row[1] as string).trim().split(' ') : []
     };
     if (!decksResult[deckName]) decksResult[deckName] = [];
+    if (!deckAudioStats[deckName]) deckAudioStats[deckName] = { imported: 0, skipped: 0 };
+    deckAudioStats[deckName].imported += importedAudio;
+    deckAudioStats[deckName].skipped += Math.max(0, requestedAudio - importedAudio);
     decksResult[deckName].push(card);
-  });
+  }
   
   db.close();
-  return Object.keys(decksResult).map(name => ({ name, cards: decksResult[name] }));
+  return Object.keys(decksResult).map(name => ({
+    name,
+    cards: decksResult[name],
+    importedAudioCount: deckAudioStats[name]?.imported || 0,
+    skippedAudioCount: deckAudioStats[name]?.skipped || 0,
+  }));
 }
 
 export async function exportAnkiApkg(deckName: string, cards: AnkiCard[]): Promise<Blob> {

@@ -141,6 +141,9 @@ export default function Decks({ user }: DecksProps) {
             back: card.back,
             imageUrl: card.frontImage || '',
             backImageUrl: card.backImage || '',
+            frontAudio: card.frontAudio || [],
+            backAudio: card.backAudio || [],
+            audioUrls: card.audioUrls || [...(card.frontAudio || []), ...(card.backAudio || [])],
             tags: card.tags || [],
             ...createInitialCardSchedule(),
             createdAt: new Date().toISOString()
@@ -151,6 +154,11 @@ export default function Decks({ user }: DecksProps) {
       }
 
       toast.success(`Đã nhập thành công ${ankiDecks.length} bộ thẻ từ Anki.`, { id: toastId });
+      const importedAudioCount = ankiDecks.reduce((sum, deck) => sum + (deck.importedAudioCount || 0), 0);
+      const skippedAudioCount = ankiDecks.reduce((sum, deck) => sum + (deck.skippedAudioCount || 0), 0);
+      if (importedAudioCount > 0 || skippedAudioCount > 0) {
+        toast.info(`Audio Anki: ${importedAudioCount} file Ä‘Ã£ Ä‘á»“ng bá»™, ${skippedAudioCount} file quÃ¡ lá»›n Ä‘Ã£ bá» qua.`);
+      }
       handleRefresh();
     } catch (error: any) {
       console.error("Anki Import Error:", error);

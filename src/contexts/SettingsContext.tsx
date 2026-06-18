@@ -10,6 +10,7 @@ interface Settings {
   soundEffects: boolean;
   backgroundMusic: boolean;
   volume: number;
+  language: string;
   geminiApiKey: string;
   aiApiKey?: string;
   studyReminder: {
@@ -32,6 +33,7 @@ const defaultSettings: Settings = {
   soundEffects: true,
   backgroundMusic: false,
   volume: 0.5,
+  language: 'vi',
   geminiApiKey: '',
   aiApiKey: '',
   studyReminder: {
