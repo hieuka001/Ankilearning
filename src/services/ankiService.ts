@@ -146,10 +146,36 @@ async function resolveMediaList(
   return resolved.filter(Boolean) as string[];
 }
 
+function getCollectionCandidates(contents: JSZip) {
+  const candidates = new Map<string, JSZip.JSZipObject>();
+  const addCandidate = (name: string) => {
+    const file = contents.file(name);
+    if (file) candidates.set(name, file);
+  };
+
+  ANKI_COLLECTION_CANDIDATES.forEach(addCandidate);
+  contents.forEach((relativePath, zipEntry) => {
+    const fileName = basename(relativePath).toLowerCase();
+    if (!zipEntry.dir && fileName.startsWith('collection.anki')) {
+      candidates.set(relativePath, zipEntry);
+    }
+  });
+
+  const priority = (name: string) => {
+    const fileName = basename(name).toLowerCase();
+    if (fileName === 'collection.anki21b') return 0;
+    if (fileName === 'collection.anki21') return 1;
+    if (fileName === 'collection.anki2') return 3;
+    return 2;
+  };
+
+  return Array.from(candidates.entries())
+    .map(([name, file]) => ({ name, file }))
+    .sort((a, b) => priority(a.name) - priority(b.name) || a.name.localeCompare(b.name));
+}
+
 async function openBestCollectionDatabase(contents: JSZip, SQL: any) {
-  const candidates = ANKI_COLLECTION_CANDIDATES
-    .map((name) => ({ name, file: contents.file(name) }))
-    .filter((candidate): candidate is { name: string; file: JSZip.JSZipObject } => Boolean(candidate.file));
+  const candidates = getCollectionCandidates(contents);
 
   if (candidates.length === 0) {
     throw new Error('Không tìm thấy tệp dữ liệu Anki');
@@ -162,7 +188,7 @@ async function openBestCollectionDatabase(contents: JSZip, SQL: any) {
     try {
       const dbData = await candidate.file.async('uint8array');
       const db = new SQL.Database(dbData);
-      const cardCheck = db.exec("SELECT n.flds FROM notes n JOIN cards c ON n.id = c.nid LIMIT 3");
+      const cardCheck = db.exec("SELECT n.flds FROM notes n JOIN cards c ON n.id = c.nid LIMIT 25");
       const fields = cardCheck[0]?.values?.map((row: unknown[]) => String(row[0] || '')) || [];
       const hasRealCards = fields.some((field: string) => field.trim() && !field.includes(ANKI_UPDATE_PLACEHOLDER));
 
@@ -184,7 +210,8 @@ async function openBestCollectionDatabase(contents: JSZip, SQL: any) {
 
   if (fallbackDb) {
     fallbackDb.close();
-    throw new Error(`Tệp ${fallbackName} chỉ chứa thẻ cảnh báo của Anki. Hãy xuất lại deck bằng Anki mới hoặc gửi file có collection.anki21/anki21b.`);
+    const candidateNames = candidates.map((candidate) => candidate.name).join(', ');
+    throw new Error(`File APKG này chỉ có ${candidateNames || fallbackName} và không chứa dữ liệu thẻ thật, chỉ có thẻ cảnh báo của Anki. Hãy mở file bằng Anki bản mới nhất rồi export lại deck ở định dạng APKG có dữ liệu đầy đủ.`);
   }
 
   throw new Error('Không đọc được dữ liệu trong tệp Anki');

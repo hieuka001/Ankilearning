@@ -1,21 +1,29 @@
 import { initializeApp } from 'firebase/app';
 import { getAuth } from 'firebase/auth';
-import { enableIndexedDbPersistence, getFirestore } from 'firebase/firestore';
+import { initializeFirestore, memoryLocalCache, persistentLocalCache, persistentMultipleTabManager } from 'firebase/firestore';
 import firebaseConfig from '../firebase-applet-config.json';
 
 const app = initializeApp(firebaseConfig);
 export const auth = getAuth(app);
 
-// Use default database if id is (default), otherwise specify the id
-export const db = firebaseConfig.firestoreDatabaseId === '(default)' 
-  ? getFirestore(app) 
-  : getFirestore(app, firebaseConfig.firestoreDatabaseId);
+function createFirestore() {
+  const initialize = (settings: Parameters<typeof initializeFirestore>[1]) => (
+    firebaseConfig.firestoreDatabaseId === '(default)'
+      ? initializeFirestore(app, settings)
+      : initializeFirestore(app, settings, firebaseConfig.firestoreDatabaseId)
+  );
 
-if (typeof window !== 'undefined') {
-  enableIndexedDbPersistence(db).catch(() => {
-    // Offline mode is best-effort. Multi-tab or private browsing can disable it.
-  });
+  try {
+    return initialize({
+      localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() }),
+    });
+  } catch {
+    return initialize({ localCache: memoryLocalCache() });
+  }
 }
+
+// Use default database if id is (default), otherwise specify the id.
+export const db = createFirestore();
 
 export enum OperationType {
   CREATE = 'create',
