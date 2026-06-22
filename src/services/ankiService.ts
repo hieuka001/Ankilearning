@@ -16,6 +16,8 @@ export interface AnkiCard {
 }
 
 const MAX_EMBEDDED_MEDIA_BYTES = 512 * 1024;
+const ANKI_COLLECTION_CANDIDATES = ['collection.anki21b', 'collection.anki21', 'collection.anki2'];
+const ANKI_UPDATE_PLACEHOLDER = 'Please update to the latest Anki version';
 const soundPattern = /\[sound:([^\]]+)\]/gi;
 const imagePattern = /<img[^>]+src=["']([^"']+)["'][^>]*>/gi;
 
@@ -144,17 +146,57 @@ async function resolveMediaList(
   return resolved.filter(Boolean) as string[];
 }
 
+async function openBestCollectionDatabase(contents: JSZip, SQL: any) {
+  const candidates = ANKI_COLLECTION_CANDIDATES
+    .map((name) => ({ name, file: contents.file(name) }))
+    .filter((candidate): candidate is { name: string; file: JSZip.JSZipObject } => Boolean(candidate.file));
+
+  if (candidates.length === 0) {
+    throw new Error('Không tìm thấy tệp dữ liệu Anki');
+  }
+
+  let fallbackDb: any;
+  let fallbackName = '';
+
+  for (const candidate of candidates) {
+    try {
+      const dbData = await candidate.file.async('uint8array');
+      const db = new SQL.Database(dbData);
+      const cardCheck = db.exec("SELECT n.flds FROM notes n JOIN cards c ON n.id = c.nid LIMIT 3");
+      const fields = cardCheck[0]?.values?.map((row: unknown[]) => String(row[0] || '')) || [];
+      const hasRealCards = fields.some((field: string) => field.trim() && !field.includes(ANKI_UPDATE_PLACEHOLDER));
+
+      if (hasRealCards) {
+        fallbackDb?.close();
+        return db;
+      }
+
+      if (!fallbackDb) {
+        fallbackDb = db;
+        fallbackName = candidate.name;
+      } else {
+        db.close();
+      }
+    } catch {
+      // Modern APKG files can contain several collection variants. Try the next one.
+    }
+  }
+
+  if (fallbackDb) {
+    fallbackDb.close();
+    throw new Error(`Tệp ${fallbackName} chỉ chứa thẻ cảnh báo của Anki. Hãy xuất lại deck bằng Anki mới hoặc gửi file có collection.anki21/anki21b.`);
+  }
+
+  throw new Error('Không đọc được dữ liệu trong tệp Anki');
+}
+
 export async function importAnkiApkg(file: File): Promise<AnkiDeck[]> {
   const zip = new JSZip();
   const contents = await zip.loadAsync(file);
   const mediaLookup = await hydrateMediaLookup(contents);
   const mediaCache = new Map<string, Promise<string | undefined>>();
-  const dbFile = contents.file('collection.anki21') || contents.file('collection.anki2');
-  if (!dbFile) throw new Error('Không tìm thấy tệp dữ liệu Anki');
-  
-  const dbData = await dbFile.async('uint8array');
   const SQL = await initSqlJs({ locateFile: () => SQL_WASM_URL });
-  const db = new SQL.Database(dbData);
+  const db = await openBestCollectionDatabase(contents, SQL);
   
   let deckMap: any = {};
   const colRes = db.exec("SELECT decks FROM col");
@@ -176,6 +218,7 @@ export async function importAnkiApkg(file: File): Promise<AnkiDeck[]> {
     const deckName = deckMap[String(row[2])] || "Anki Import";
     const frontRaw = fields[0] || '';
     const backRaw = fields[1] || '';
+    if (frontRaw.includes(ANKI_UPDATE_PLACEHOLDER) || backRaw.includes(ANKI_UPDATE_PLACEHOLDER)) continue;
     const frontAudioRefs = extractMediaReferences(frontRaw, soundPattern);
     const backAudioRefs = extractMediaReferences(backRaw, soundPattern);
     const frontImageRefs = extractMediaReferences(frontRaw, imagePattern);
