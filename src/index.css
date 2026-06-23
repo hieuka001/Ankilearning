@@ -1015,6 +1015,181 @@
     margin-bottom: 0.35rem;
   }
 
+  .review-card-html .chinese-card {
+    --chinese-fs-xl: clamp(2.75rem, 12vw, 4.25rem);
+    --chinese-fs-lg: clamp(2rem, 8vw, 2.75rem);
+    --chinese-fs-md: 1.125rem;
+    --chinese-fs-sm: 0.95rem;
+    --chinese-border: color-mix(in oklab, var(--border), transparent 8%);
+    max-width: 100%;
+    margin-inline: auto;
+    text-align: center;
+  }
+
+  .review-card-html .chinese-card--front {
+    display: flex;
+    min-height: 100%;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0.75rem;
+    padding-block: 1rem;
+  }
+
+  .review-card-html .chinese-card__hero {
+    display: grid;
+    gap: 0.35rem;
+    justify-items: center;
+  }
+
+  .review-card-html .chinese-card__hanzi {
+    font-family: "Noto Serif SC", "Source Han Serif CN", "PingFang SC", "Microsoft YaHei", ui-serif, Georgia, serif;
+    font-size: var(--chinese-fs-xl);
+    line-height: 1.15;
+    letter-spacing: 0.04em;
+  }
+
+  .review-card-html .chinese-card--back .chinese-card__hanzi {
+    font-size: var(--chinese-fs-lg);
+  }
+
+  .review-card-html .chinese-card__traditional {
+    font-family: "Noto Serif TC", "Source Han Serif TW", "PingFang TC", "Microsoft JhengHei", ui-serif, Georgia, serif;
+    font-size: 1.35rem;
+    color: color-mix(in oklab, var(--foreground), transparent 28%);
+  }
+
+  .review-card-html .chinese-card__pinyin {
+    font-size: 1.2rem;
+    font-weight: 600;
+    letter-spacing: 0.03em;
+    color: color-mix(in oklab, var(--foreground), transparent 12%);
+  }
+
+  .review-card-html .chinese-card__hint {
+    font-size: 0.9rem;
+    color: color-mix(in oklab, var(--foreground), transparent 35%);
+  }
+
+  .review-card-html .chinese-card__section {
+    margin-top: 1rem;
+    border: 1px solid var(--chinese-border);
+    border-radius: 14px;
+    padding: 0.9rem 1rem;
+    background: color-mix(in oklab, var(--card), transparent 4%);
+    text-align: left;
+  }
+
+  .review-card-html .chinese-card__section--meaning {
+    text-align: center;
+  }
+
+  .review-card-html .chinese-card__label {
+    margin-bottom: 0.55rem;
+    font-size: 0.68rem;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: color-mix(in oklab, var(--foreground), transparent 42%);
+    text-align: center;
+  }
+
+  .review-card-html .chinese-card__meaning-vi {
+    font-size: var(--chinese-fs-md);
+    font-weight: 600;
+    line-height: 1.55;
+    text-align: center;
+  }
+
+  .review-card-html .chinese-card__meaning-en {
+    margin-top: 0.45rem;
+    font-size: 0.95rem;
+    font-style: italic;
+    color: color-mix(in oklab, var(--foreground), transparent 30%);
+    text-align: center;
+  }
+
+  .review-card-html .chinese-card__meaning-en::before {
+    content: "(";
+  }
+
+  .review-card-html .chinese-card__meaning-en::after {
+    content: ")";
+  }
+
+  .review-card-html .chinese-card__example + .chinese-card__example {
+    margin-top: 0.85rem;
+    padding-top: 0.85rem;
+    border-top: 1px dashed var(--chinese-border);
+  }
+
+  .review-card-html .chinese-card__example-zh {
+    font-family: "Noto Serif SC", "PingFang SC", "Microsoft YaHei", ui-serif, Georgia, serif;
+    font-size: var(--chinese-fs-sm);
+    line-height: 1.6;
+    text-align: justify;
+  }
+
+  .review-card-html .chinese-card__example-vi {
+    margin-top: 0.3rem;
+    font-size: 0.85rem;
+    line-height: 1.5;
+    color: color-mix(in oklab, var(--foreground), transparent 34%);
+    text-align: justify;
+  }
+
+  .review-card-html .chinese-card__measure {
+    text-align: center;
+    font-size: 1rem;
+  }
+
+  .review-card-html .chinese-card__image {
+    display: flex;
+    justify-content: center;
+  }
+
+  .review-card-html .chinese-card__def-main,
+  .review-card-html .chinese-card__def-more {
+    font-family: "Noto Serif SC", "PingFang SC", "Microsoft YaHei", ui-serif, Georgia, serif;
+    font-size: 0.92rem;
+    line-height: 1.65;
+    text-align: justify;
+  }
+
+  .review-card-html .chinese-card__def-main + .chinese-card__def-details {
+    margin-top: 0.75rem;
+  }
+
+  .review-card-html .chinese-card__def-details summary {
+    cursor: pointer;
+    list-style: none;
+    text-align: center;
+    font-size: 0.95rem;
+    color: color-mix(in oklab, var(--foreground), transparent 18%);
+  }
+
+  .review-card-html .chinese-card__def-details summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .review-card-html .chinese-card__def-details[open] .chinese-card__def-more {
+    margin-top: 0.65rem;
+  }
+
+  .review-card-html .tone1 { color: #dc143c; }
+  .review-card-html .tone2 { color: #ff8c00; }
+  .review-card-html .tone3 { color: #32cd32; }
+  .review-card-html .tone4 { color: #1e90ff; }
+  .review-card-html .tone5 { color: #808080; }
+
+  .dark .review-card-html .tone5 {
+    color: #c0c0c0;
+  }
+
+  .review-card-html .chinese-card__audio-source {
+    display: none !important;
+  }
+
   .dark [class*="dark:bg-[#0C0D0E]"],
   .dark [class*="dark:bg-\\[\\#0C0D0E\\]"] {
     background-color: #111827 !important;

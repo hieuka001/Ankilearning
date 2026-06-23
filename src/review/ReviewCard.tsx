@@ -11,6 +11,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { useGestureSwipe } from './useGestureSwipe';
 import AudioButton from '../components/AudioButton';
+import { resolveChineseVocabContent } from '../lib/chineseCardLayout';
 
 interface RatingPreview {
   rating: SchedulerRating;
@@ -129,13 +130,13 @@ function renderMarkdownImagesInHtml(rawContent: string) {
 }
 
 const allowedTags = new Set([
-  'A', 'B', 'BLOCKQUOTE', 'BR', 'CODE', 'DIV', 'EM', 'FIGURE', 'FIGCAPTION',
+  'A', 'ARTICLE', 'B', 'BLOCKQUOTE', 'BR', 'CODE', 'DETAILS', 'DIV', 'EM', 'FIGURE', 'FIGCAPTION',
   'H1', 'H2', 'H3', 'H4', 'HR', 'I', 'IMG', 'LI', 'MARK', 'OL', 'P', 'PRE',
-  'RP', 'RT', 'RUBY', 'SMALL', 'SPAN', 'STRONG', 'SUB', 'SUP', 'TABLE', 'TBODY', 'TD', 'TH',
+  'RP', 'RT', 'RUBY', 'SMALL', 'SPAN', 'STRONG', 'SUB', 'SUMMARY', 'SUP', 'TABLE', 'TBODY', 'TD', 'TH',
   'THEAD', 'TR', 'U', 'UL',
 ]);
 
-const allowedAttributes = new Set(['alt', 'aria-label', 'class', 'colspan', 'href', 'rowspan', 'src', 'title']);
+const allowedAttributes = new Set(['alt', 'aria-label', 'class', 'colspan', 'hidden', 'href', 'lang', 'rowspan', 'src', 'title']);
 
 function sanitizeReviewHtml(rawContent: string) {
   const htmlReadyContent = renderMarkdownImagesInHtml(rawContent);
@@ -186,7 +187,16 @@ function sanitizeReviewHtml(rawContent: string) {
 }
 
 function contentForSide(card: Flashcard, isFlipped: boolean) {
-  const content = isFlipped ? card.back : card.front;
+  const isBackSide = isFlipped;
+  const rawContent = isBackSide ? card.back : card.front;
+  const resolved = resolveChineseVocabContent(
+    card.noteType,
+    card.extraFields,
+    card.front,
+    card.back,
+    isBackSide,
+  );
+  const content = resolved || rawContent;
   if (card.type !== 'cloze') return content;
   return isFlipped
     ? content.replace(/\{\{c\d+::(.*?)\}\}/g, '<mark>$1</mark>')
@@ -397,7 +407,7 @@ export const ReviewCard = memo(function ReviewCard({
                   </div>
 
                   <div
-                    className="review-card-scroll review-card-html flex-1 overflow-y-auto overflow-x-hidden px-5 py-5 text-center"
+                    className="review-card-scroll review-card-html flex-1 overflow-y-auto overflow-x-hidden px-5 py-5 text-center chinese-review"
                     onClick={handleHtmlClick}
                   >
                     <ReviewImage src={sideFlipped ? card.backImageUrl : card.imageUrl} alt={contentLabel} onZoom={setZoomImage} />

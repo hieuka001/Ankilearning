@@ -1,6 +1,11 @@
 import JSZip from 'jszip';
 import initSqlJs from 'sql.js';
 import { decompress } from 'fzstd';
+import {
+  formatChineseVocabBack,
+  formatChineseVocabFront,
+  isChineseVocabNoteType,
+} from '../lib/chineseCardLayout';
 
 const SQL_WASM_URL = 'https://sql.js.org/dist/sql-wasm.wasm';
 
@@ -289,21 +294,44 @@ async function openBestCollectionDatabase(contents: JSZip, SQL: any) {
     throw new Error('Không tìm thấy tệp dữ liệu Anki');
   }
 
+  let legacyDb: any;
+  const openCandidate = async (candidate: { name: string; file: JSZip.JSZipObject }) => {
+    const rawData = await candidate.file.async('uint8array');
+    const dbData = decompressCollectionData(candidate.name, rawData);
+    return new SQL.Database(dbData);
+  };
+
+  for (const candidate of candidates) {
+    if (!candidate.name.toLowerCase().endsWith('collection.anki2')) continue;
+    try {
+      const db = await openCandidate(candidate);
+      const cardCheck = db.exec('SELECT n.flds FROM notes n JOIN cards c ON n.id = c.nid LIMIT 25');
+      const fields = cardCheck[0]?.values?.map((row: unknown[]) => String(row[0] || '')) || [];
+      const hasRealCards = fields.some((field: string) => field.trim() && !field.includes(ANKI_UPDATE_PLACEHOLDER));
+      if (hasRealCards) {
+        legacyDb = db;
+        break;
+      }
+      db.close();
+    } catch {
+      // Ignore unreadable legacy collection.
+    }
+  }
+
   let fallbackDb: any;
   let fallbackName = '';
 
   for (const candidate of candidates) {
+    if (candidate.name.toLowerCase().endsWith('collection.anki2')) continue;
     try {
-      const rawData = await candidate.file.async('uint8array');
-      const dbData = decompressCollectionData(candidate.name, rawData);
-      const db = new SQL.Database(dbData);
+      const db = await openCandidate(candidate);
       const cardCheck = db.exec('SELECT n.flds FROM notes n JOIN cards c ON n.id = c.nid LIMIT 25');
       const fields = cardCheck[0]?.values?.map((row: unknown[]) => String(row[0] || '')) || [];
       const hasRealCards = fields.some((field: string) => field.trim() && !field.includes(ANKI_UPDATE_PLACEHOLDER));
 
       if (hasRealCards) {
         fallbackDb?.close();
-        return db;
+        return { db, legacyDb };
       }
 
       if (!fallbackDb) {
@@ -328,7 +356,48 @@ async function openBestCollectionDatabase(contents: JSZip, SQL: any) {
   throw new Error('Không đọc được dữ liệu trong tệp Anki');
 }
 
-function parseModels(db: any): Map<number, AnkiModel> {
+function decodeAnkiConfigBlob(value: unknown): string {
+  if (!value) return '';
+  const bytes = value instanceof Uint8Array ? value : new Uint8Array(value as ArrayBuffer);
+  try {
+    return new TextDecoder().decode(decompress(bytes));
+  } catch {
+    return new TextDecoder().decode(bytes);
+  }
+}
+
+function stripAnkiConfigNoise(value: string) {
+  return value
+    .replace(/[\x00-\x08\x0e-\x1f]/g, '')
+    .replace(/\\documentclass[\s\S]*$/i, '')
+    .trim();
+}
+
+function parseTemplateConfigBlob(value: unknown): { qfmt: string; afmt: string } {
+  const raw = stripAnkiConfigNoise(decodeAnkiConfigBlob(value));
+  const backMarker = raw.search(/<!--\s*=+\s*Back/i);
+  if (backMarker > 0) {
+    const htmlStart = raw.search(/<!--|<div|<span|<p|<ruby|<table/i);
+    const qfmt = stripAnkiConfigNoise(raw.slice(htmlStart >= 0 ? htmlStart : 0, backMarker));
+    const afmt = stripAnkiConfigNoise(raw.slice(backMarker));
+    if (qfmt || afmt) return { qfmt, afmt };
+  }
+
+  const htmlBlocks = raw.match(/(?:<!--[\s\S]*?-->[\s\S]*?|<(?:div|span|p|ruby|table)[\s\S]*?>[\s\S]*?<\/(?:div|span|p|ruby|table)>)/gi) || [];
+  return {
+    qfmt: htmlBlocks[0] || '{{Front}}',
+    afmt: htmlBlocks[1] || '{{FrontSide}}<hr id=answer>{{Back}}',
+  };
+}
+
+function parseNotetypeCssBlob(value: unknown): string {
+  const raw = stripAnkiConfigNoise(decodeAnkiConfigBlob(value));
+  const cssStart = raw.indexOf('.card');
+  if (cssStart < 0) return '';
+  return raw.slice(cssStart);
+}
+
+function parseLegacyModels(db: any): Map<number, AnkiModel> {
   const models = new Map<number, AnkiModel>();
   const colRes = db.exec('SELECT models FROM col');
   if (colRes.length === 0) return models;
@@ -354,10 +423,82 @@ function parseModels(db: any): Map<number, AnkiModel> {
       });
     });
   } catch {
-    // Fall back to basic 2-field mapping.
+    // Fall back to modern schema tables.
   }
 
   return models;
+}
+
+function parseModernModels(db: any): Map<number, AnkiModel> {
+  const models = new Map<number, AnkiModel>();
+  let notetypes: any[] = [];
+  let fields: any[] = [];
+  let templates: any[] = [];
+
+  try {
+    notetypes = db.exec('SELECT id, name, config FROM notetypes')?.[0]?.values || [];
+    fields = db.exec('SELECT ntid, ord, name FROM fields ORDER BY ntid, ord')?.[0]?.values || [];
+    templates = db.exec('SELECT ntid, ord, name, config FROM templates ORDER BY ntid, ord')?.[0]?.values || [];
+  } catch {
+    return models;
+  }
+
+  if (notetypes.length === 0) return models;
+
+  const fieldsByNotetype = new Map<number, AnkiFieldDef[]>();
+  fields.forEach((row) => {
+    const ntid = Number(row[0]);
+    const list = fieldsByNotetype.get(ntid) || [];
+    list.push({ name: String(row[2] || `Field ${row[1]}`), ord: Number(row[1] || list.length) });
+    fieldsByNotetype.set(ntid, list);
+  });
+
+  const templatesByNotetype = new Map<number, AnkiTemplate[]>();
+  templates.forEach((row) => {
+    const ntid = Number(row[0]);
+    const list = templatesByNotetype.get(ntid) || [];
+    const parsed = parseTemplateConfigBlob(row[3]);
+    list.push({
+      name: String(row[2] || `Card ${row[1]}`),
+      ord: Number(row[1] || list.length),
+      qfmt: parsed.qfmt,
+      afmt: parsed.afmt,
+    });
+    templatesByNotetype.set(ntid, list);
+  });
+
+  notetypes.forEach((row) => {
+    const id = Number(row[0]);
+    const flds = (fieldsByNotetype.get(id) || []).sort((a, b) => a.ord - b.ord);
+    const tmpls = (templatesByNotetype.get(id) || []).sort((a, b) => a.ord - b.ord);
+    if (flds.length === 0) return;
+
+    models.set(id, {
+      id,
+      name: String(row[1] || 'Basic'),
+      type: 0,
+      flds,
+      tmpls: tmpls.length > 0 ? tmpls : [{
+        name: 'Card 1',
+        ord: 0,
+        qfmt: `{{${flds[0]?.name || 'Front'}}}`,
+        afmt: `{{FrontSide}}<hr id=answer>{{${flds[1]?.name || 'Back'}}}`,
+      }],
+      css: parseNotetypeCssBlob(row[2]),
+    });
+  });
+
+  return models;
+}
+
+function parseModels(db: any, legacyDb?: any): Map<number, AnkiModel> {
+  const modern = parseModernModels(db);
+  if (modern.size > 0) return modern;
+
+  const legacy = parseLegacyModels(legacyDb || db);
+  if (legacy.size > 0) return legacy;
+
+  return parseLegacyModels(db);
 }
 
 function buildFieldMap(fieldNames: string[], fieldValues: string[]): Record<string, string> {
@@ -476,13 +617,19 @@ function getTemplate(model: AnkiModel, ord: number): AnkiTemplate {
 }
 
 function buildExtraFields(fieldNames: string[], fieldValues: string[]): Record<string, string> | undefined {
-  if (fieldNames.length <= 2) return undefined;
   const extra: Record<string, string> = {};
-  fieldNames.slice(2).forEach((name, index) => {
-    const value = fieldValues[index + 2];
+  fieldNames.forEach((name, index) => {
+    const value = fieldValues[index];
     if (value?.trim()) extra[name] = value;
   });
   return Object.keys(extra).length > 0 ? extra : undefined;
+}
+
+function buildChineseVocabCard(fieldMap: Record<string, string>) {
+  return {
+    front: formatChineseVocabFront(fieldMap),
+    back: formatChineseVocabBack(fieldMap),
+  };
 }
 
 function combineBackFields(fieldValues: string[], fieldNames: string[]): string {
@@ -504,8 +651,8 @@ export async function importAnkiApkg(file: File, options: AnkiImportOptions = {}
   const mediaLookup = await hydrateMediaLookup(contents);
   const mediaCache = new Map<string, Promise<string | undefined>>();
   const SQL = await initSqlJs({ locateFile: () => SQL_WASM_URL });
-  const db = await openBestCollectionDatabase(contents, SQL);
-  const models = parseModels(db);
+  const { db, legacyDb } = await openBestCollectionDatabase(contents, SQL);
+  const models = parseModels(db, legacyDb);
 
   const deckMap: Record<string, string> = {};
   const colRes = db.exec('SELECT decks FROM col');
@@ -553,11 +700,16 @@ export async function importAnkiApkg(file: File, options: AnkiImportOptions = {}
 
     const fieldMap = buildFieldMap(fieldNames, fieldValues);
     const template = getTemplate(model, templateOrd);
+    const useChineseLayout = isChineseVocabNoteType(model.name);
 
     let frontRaw: string;
     let backRaw: string;
 
-    if (models.size > 0) {
+    if (useChineseLayout) {
+      const chineseCard = buildChineseVocabCard(fieldMap);
+      frontRaw = chineseCard.front;
+      backRaw = chineseCard.back;
+    } else if (models.size > 0) {
       frontRaw = renderAnkiTemplate(template.qfmt, fieldMap);
       backRaw = renderAnkiTemplate(template.afmt, fieldMap, frontRaw);
     } else if (fieldValues.length > 2) {
@@ -609,6 +761,7 @@ export async function importAnkiApkg(file: File, options: AnkiImportOptions = {}
   }
 
   db.close();
+  legacyDb?.close?.();
 
   return Object.keys(decksResult).map((name) => ({
     name,
