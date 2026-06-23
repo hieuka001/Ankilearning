@@ -1,7 +1,7 @@
-import { lazy, Suspense, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import { User } from 'firebase/auth';
-import { collection, doc, getDocs, limit, onSnapshot, orderBy, query, updateDoc, where } from 'firebase/firestore';
+import { collection, doc, onSnapshot, query, updateDoc, where } from 'firebase/firestore';
 import { addDays, format, startOfDay, subDays } from 'date-fns';
 import { vi } from 'date-fns/locale';
 import { motion } from 'motion/react';
@@ -25,13 +25,15 @@ import { Button } from '@/components/ui/button';
 import { db } from '../firebase';
 import { Deck, StudySession, UserProfile } from '../types';
 import { suggestStudyPath } from '../services/aiService';
-import { getCardDueDate, isCardDue } from '../lib/spacedRepetition';
+import { fetchMultipleDeckInsights, mergeForecastCounts } from '../lib/deckAnalytics';
+import { buildSessionCountByDay } from '../lib/studySessions';
 
 const DashboardChart = lazy(() => import('../components/charts/DashboardChart'));
 
 interface DashboardProps {
   user: User | null;
   profile: UserProfile | null;
+  recentSessions: StudySession[];
 }
 
 interface DayPoint {
@@ -45,18 +47,18 @@ const cardMotion = {
   animate: { opacity: 1, y: 0 },
 };
 
-export default function Dashboard({ user, profile }: DashboardProps) {
+export default function Dashboard({ user, profile, recentSessions }: DashboardProps) {
   const userId = user?.uid;
   const [recentDecks, setRecentDecks] = useState<(Deck & { dueCount: number })[]>([]);
   const [totalDeckCount, setTotalDeckCount] = useState(0);
-  const [recentSessions, setRecentSessions] = useState<StudySession[]>([]);
   const [loading, setLoading] = useState(true);
   const [aiSuggestion, setAiSuggestion] = useState<string | null>(null);
   const [isGeneratingSuggestion, setIsGeneratingSuggestion] = useState(false);
-  const [chartData, setChartData] = useState<DayPoint[]>([]);
-  const [forecastData, setForecastData] = useState<DayPoint[]>([]);
+  const [forecastData, setForecastData] = useState<DayPoint[]>(() => buildForecastShell());
+  const deckInsightsRequestRef = useRef(0);
+  const hasAnimatedRef = useRef(false);
 
-  useEffect(() => {
+  const chartData = useMemo(() => {
     const last7Days = Array.from({ length: 7 }, (_, i) => {
       const date = subDays(new Date(), 6 - i);
       return {
@@ -72,45 +74,13 @@ export default function Dashboard({ user, profile }: DashboardProps) {
       if (dayMatch) dayMatch.count += session.cardsReviewed;
     });
 
-    setChartData(last7Days);
+    return last7Days;
   }, [recentSessions]);
 
-  useEffect(() => {
-    if (!userId || recentDecks.length === 0) {
-      setForecastData(buildForecastShell());
-      return;
-    }
-
-    let cancelled = false;
-
-    const calculateForecast = async () => {
-      const next7Days = buildForecastShell();
-
-      try {
-        for (const deck of recentDecks) {
-          const cardsSnap = await getDocs(collection(db, `decks/${deck.id}/cards`));
-          cardsSnap.docs.forEach((cardDoc) => {
-            const data = cardDoc.data();
-            if (!data.dueDate && !data.nextReview) return;
-
-            const reviewDate = startOfDay(new Date(getCardDueDate(data)));
-            const dayMatch = next7Days.find((day) => day.fullDate.getTime() === reviewDate.getTime());
-            if (dayMatch) dayMatch.count += 1;
-          });
-        }
-      } catch {
-        // Keep the empty forecast shell if Firestore rejects the optional query.
-      }
-
-      if (!cancelled) setForecastData(next7Days);
-    };
-
-    calculateForecast();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [userId, recentDecks]);
+  const sessionCountByDay = useMemo(
+    () => buildSessionCountByDay(recentSessions),
+    [recentSessions],
+  );
 
   useEffect(() => {
     if (!userId || !profile?.lastStudyDate) return;
@@ -129,8 +99,8 @@ export default function Dashboard({ user, profile }: DashboardProps) {
   useEffect(() => {
     if (!userId) {
       setRecentDecks([]);
-      setRecentSessions([]);
       setTotalDeckCount(0);
+      setForecastData(buildForecastShell());
       setLoading(false);
       return;
     }
@@ -141,35 +111,63 @@ export default function Dashboard({ user, profile }: DashboardProps) {
     const unsubscribeDecks = onSnapshot(
       decksQuery,
       async (snap) => {
+        const requestId = deckInsightsRequestRef.current + 1;
+        deckInsightsRequestRef.current = requestId;
+
         setTotalDeckCount(snap.size);
         const decksData = snap.docs.map((deckDoc) => ({ id: deckDoc.id, ...deckDoc.data() } as Deck));
         decksData.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
         const topDecks = decksData.slice(0, 4);
-        const decksWithDue = await Promise.all(
-          topDecks.map(async (deck) => {
-            const cardsSnap = await getDocs(collection(db, `decks/${deck.id}/cards`));
-            const dueCount = cardsSnap.docs.filter((cardDoc) => isCardDue(cardDoc.data())).length;
-            return { ...deck, dueCount };
-          })
-        );
+        const forecastShell = buildForecastShell();
+        const forecastDayKeys = new Set(forecastShell.map((day) => day.fullDate.getTime()));
 
-        setRecentDecks(decksWithDue);
-        setLoading(false);
+        if (topDecks.length === 0) {
+          setRecentDecks([]);
+          setForecastData(forecastShell);
+          setLoading(false);
+          return;
+        }
+
+        try {
+          const insightsByDeck = await fetchMultipleDeckInsights(
+            topDecks.map((deck) => deck.id),
+            forecastDayKeys,
+          );
+
+          if (deckInsightsRequestRef.current !== requestId) return;
+
+          const decksWithDue = topDecks.map((deck) => ({
+            ...deck,
+            dueCount: insightsByDeck.get(deck.id)?.dueCount || 0,
+          }));
+          const forecastCounts = mergeForecastCounts(
+            insightsByDeck.values(),
+            forecastShell.map((day) => day.fullDate.getTime()),
+          );
+
+          setRecentDecks(decksWithDue);
+          setForecastData(
+            forecastShell.map((day, index) => ({
+              ...day,
+              count: forecastCounts[index] || 0,
+            })),
+          );
+        } catch {
+          if (deckInsightsRequestRef.current !== requestId) return;
+          setRecentDecks(topDecks.map((deck) => ({ ...deck, dueCount: 0 })));
+          setForecastData(forecastShell);
+        } finally {
+          if (deckInsightsRequestRef.current === requestId) {
+            setLoading(false);
+          }
+        }
       },
-      () => setLoading(false)
+      () => setLoading(false),
     );
-
-    const sessionsQuery = query(collection(db, `users/${userId}/sessions`), orderBy('timestamp', 'desc'), limit(200));
-    const unsubscribeSessions = onSnapshot(sessionsQuery, (snap) => {
-      const sessionsData = snap.docs.map((sessionDoc) => ({ id: sessionDoc.id, ...sessionDoc.data() } as StudySession));
-      sessionsData.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
-      setRecentSessions(sessionsData);
-    });
 
     return () => {
       unsubscribeDecks();
-      unsubscribeSessions();
     };
   }, [userId]);
 
@@ -227,8 +225,11 @@ export default function Dashboard({ user, profile }: DashboardProps) {
 
   return (
     <motion.div
-      initial="initial"
+      initial={hasAnimatedRef.current ? false : 'initial'}
       animate="animate"
+      onAnimationComplete={() => {
+        hasAnimatedRef.current = true;
+      }}
       transition={{ staggerChildren: 0.045 }}
       className="space-y-6"
     >
@@ -353,7 +354,7 @@ export default function Dashboard({ user, profile }: DashboardProps) {
                   {streakDays} ngày
                 </div>
               </div>
-              <LearningHeatmap sessions={recentSessions} />
+              <LearningHeatmap sessionCountByDay={sessionCountByDay} />
             </div>
             <div className="space-y-3">
               <p className="text-xs font-semibold uppercase text-muted-foreground">Milestones</p>
@@ -415,7 +416,7 @@ export default function Dashboard({ user, profile }: DashboardProps) {
                 <CardTitle className="text-xl font-semibold">Hoạt động học</CardTitle>
               </div>
               <div className="hidden items-center gap-1 sm:flex">
-                <LearningHeatmap sessions={recentSessions} compact />
+                <LearningHeatmap sessionCountByDay={sessionCountByDay} compact />
               </div>
             </CardHeader>
             <CardContent className="p-4 pt-0 md:p-6 md:pt-0">
@@ -627,15 +628,26 @@ function ActivityList({ sessions }: { sessions: StudySession[] }) {
   );
 }
 
-function LearningHeatmap({ sessions, compact = false }: { sessions: StudySession[]; compact?: boolean }) {
+function LearningHeatmap({
+  sessionCountByDay,
+  compact = false,
+}: {
+  sessionCountByDay: Map<string, number>;
+  compact?: boolean;
+}) {
   const days = compact ? 28 : 90;
-  const today = new Date();
-  const calendarDays = Array.from({ length: days }, (_, i) => {
-    const date = subDays(today, days - 1 - i);
-    const dateStr = format(date, 'yyyy-MM-dd');
-    const sessionCount = sessions.filter((session) => format(new Date(session.timestamp), 'yyyy-MM-dd') === dateStr).length;
-    return { dateStr, count: sessionCount };
-  });
+  const todayKey = format(new Date(), 'yyyy-MM-dd');
+  const calendarDays = useMemo(
+    () => {
+      const today = new Date();
+      return Array.from({ length: days }, (_, i) => {
+        const date = subDays(today, days - 1 - i);
+        const dateStr = format(date, 'yyyy-MM-dd');
+        return { dateStr, count: sessionCountByDay.get(dateStr) || 0 };
+      });
+    },
+    [days, sessionCountByDay, todayKey],
+  );
 
   return (
     <div className={`flex flex-wrap justify-end gap-1 ${compact ? 'max-w-40' : ''}`}>

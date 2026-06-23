@@ -3,6 +3,7 @@ import { db } from '../firebase';
 import type { Flashcard, ReviewLog } from '../types';
 import { trackReviewActivity } from '../services/gamificationService';
 import {
+  countPendingReviewResults,
   getPendingReviewResults,
   markReviewResultsFailed,
   markReviewResultsSynced,
@@ -56,18 +57,20 @@ export async function enqueueReviewSync(input: ReviewSyncInput) {
     createdAt: input.historyEntry.reviewTime,
   };
 
-  await saveReviewResult(record);
-  await upsertCachedCard(input.userId, input.deckId, {
-    ...input.card,
-    ...input.schedulerUpdate,
-    reviewHistory: [
-      ...(Array.isArray(input.card.reviewHistory) ? input.card.reviewHistory : []),
-      input.historyEntry,
-    ],
-  });
+  await Promise.all([
+    saveReviewResult(record),
+    upsertCachedCard(input.userId, input.deckId, {
+      ...input.card,
+      ...input.schedulerUpdate,
+      reviewHistory: [
+        ...(Array.isArray(input.card.reviewHistory) ? input.card.reviewHistory : []),
+        input.historyEntry,
+      ],
+    }),
+  ]);
 
-  const pending = await getPendingReviewResults();
-  if (pending.length >= FLUSH_SIZE) {
+  const pendingCount = await countPendingReviewResults();
+  if (pendingCount >= FLUSH_SIZE) {
     flushReviewQueue().catch((error) => console.warn('Review queue sync failed.', error));
     return;
   }

@@ -1,4 +1,12 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import {
   DEFAULT_SCHEDULER_CONFIG,
   normalizeSchedulerConfig,
@@ -70,36 +78,56 @@ const readSavedSettings = (): Settings => {
 
 export const SettingsProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [settings, setSettings] = useState<Settings>(readSavedSettings);
+  const persistTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
-    try {
-      localStorage.setItem('anki_settings', JSON.stringify(settings));
-    } catch {
-      // Keep the app usable even when storage is blocked.
-    }
-
     if (settings.darkMode) {
       document.documentElement.classList.add('dark');
     } else {
       document.documentElement.classList.remove('dark');
     }
+  }, [settings.darkMode]);
+
+  useEffect(() => {
+    if (persistTimerRef.current !== null) {
+      window.clearTimeout(persistTimerRef.current);
+    }
+
+    persistTimerRef.current = window.setTimeout(() => {
+      try {
+        localStorage.setItem('anki_settings', JSON.stringify(settings));
+      } catch {
+        // Keep the app usable even when storage is blocked.
+      }
+    }, 250);
+
+    return () => {
+      if (persistTimerRef.current !== null) {
+        window.clearTimeout(persistTimerRef.current);
+      }
+    };
   }, [settings]);
 
-  const updateSettings = (newSettings: Partial<Settings>) => {
-    setSettings(prev => ({
+  const updateSettings = useCallback((newSettings: Partial<Settings>) => {
+    setSettings((prev) => ({
       ...prev,
       ...newSettings,
       volume: newSettings.volume === undefined ? prev.volume : Math.min(Math.max(newSettings.volume, 0), 1),
       scheduler: newSettings.scheduler === undefined ? prev.scheduler : normalizeSchedulerConfig(newSettings.scheduler),
     }));
-  };
+  }, []);
 
-  const toggleDarkMode = () => {
-    setSettings(prev => ({ ...prev, darkMode: !prev.darkMode }));
-  };
+  const toggleDarkMode = useCallback(() => {
+    setSettings((prev) => ({ ...prev, darkMode: !prev.darkMode }));
+  }, []);
+
+  const value = useMemo(
+    () => ({ settings, updateSettings, toggleDarkMode }),
+    [settings, toggleDarkMode, updateSettings],
+  );
 
   return (
-    <SettingsContext.Provider value={{ settings, updateSettings, toggleDarkMode }}>
+    <SettingsContext.Provider value={value}>
       {children}
     </SettingsContext.Provider>
   );

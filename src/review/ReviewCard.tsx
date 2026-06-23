@@ -284,7 +284,8 @@ export const ReviewCard = memo(function ReviewCard({
 }: ReviewCardProps) {
   const [zoomImage, setZoomImage] = useState<string | null>(null);
   const schedule = useMemo(() => normalizeCardSchedule(card), [card]);
-  const safeHtml = useMemo(() => sanitizeReviewHtml(contentForSide(card, isFlipped)), [card, isFlipped]);
+  const frontHtml = useMemo(() => sanitizeReviewHtml(contentForSide(card, false)), [card]);
+  const backHtml = useMemo(() => sanitizeReviewHtml(contentForSide(card, true)), [card]);
   const imageUrl = isFlipped ? card.backImageUrl : card.imageUrl;
   const contentLabel = isFlipped ? 'Answer' : 'Question';
 
@@ -413,7 +414,7 @@ export const ReviewCard = memo(function ReviewCard({
                     <ReviewImage src={sideFlipped ? card.backImageUrl : card.imageUrl} alt={contentLabel} onZoom={setZoomImage} />
                     <div
                       className="mt-4 text-lg font-semibold leading-8"
-                      dangerouslySetInnerHTML={{ __html: sideFlipped === isFlipped ? safeHtml : sanitizeReviewHtml(contentForSide(card, sideFlipped)) }}
+                      dangerouslySetInnerHTML={{ __html: sideFlipped ? backHtml : frontHtml }}
                     />
                   </div>
                 </div>

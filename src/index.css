@@ -301,6 +301,10 @@
     animation: canvasDrift 26s ease-in-out infinite alternate;
   }
 
+  .app-shell-paused {
+    animation-play-state: paused;
+  }
+
   .dark .app-shell {
     background:
       linear-gradient(112deg, rgba(129, 140, 248, 0.2) 0%, rgba(129, 140, 248, 0) 35%),

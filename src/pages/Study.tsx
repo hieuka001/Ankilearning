@@ -67,9 +67,10 @@ export default function Study({ user, profile }: StudyProps) {
   };
 
   useEffect(() => {
+    if (!isFlipped) return;
     const timer = window.setInterval(() => setNow(new Date()), 15000);
     return () => window.clearInterval(timer);
-  }, []);
+  }, [isFlipped]);
 
   useEffect(() => {
     return () => {

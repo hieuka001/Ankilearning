@@ -3,7 +3,8 @@ import { BrowserRouter as Router, Routes, Route, Navigate, Link, useLocation } f
 import { onAuthStateChanged, signInWithPopup, GoogleAuthProvider, signOut, User } from 'firebase/auth';
 import { collection, doc, getDoc, limit, onSnapshot, orderBy, query, setDoc } from 'firebase/firestore';
 import { auth, db } from './firebase';
-import { UserProfile } from './types';
+import { StudySession, UserProfile } from './types';
+import { countCardsReviewedToday } from './lib/studySessions';
 import { Button } from '@/components/ui/button';
 import { Toaster } from '@/components/ui/sonner';
 import { toast } from 'sonner';
@@ -60,18 +61,6 @@ function PageLoader() {
   );
 }
 
-function isSameLocalDay(value: unknown, referenceDate = new Date()) {
-  if (!value) return false;
-  const date = new Date(String(value));
-  if (Number.isNaN(date.getTime())) return false;
-
-  return (
-    date.getFullYear() === referenceDate.getFullYear()
-    && date.getMonth() === referenceDate.getMonth()
-    && date.getDate() === referenceDate.getDate()
-  );
-}
-
 class AppErrorBoundary extends Component<
   { children: ReactNode; resetKey: string },
   { hasError: boolean }
@@ -119,11 +108,25 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [cardsReviewedToday, setCardsReviewedToday] = useState(0);
+  const [recentSessions, setRecentSessions] = useState<StudySession[]>([]);
 
   useEffect(() => {
     if (!user?.uid) return;
     flushGamificationQueue().catch((error) => console.warn('Gamification queue sync failed.', error));
   }, [user?.uid]);
+
+  useEffect(() => {
+    const shell = document.querySelector('.app-shell');
+    if (!shell) return;
+
+    const syncAnimationState = () => {
+      shell.classList.toggle('app-shell-paused', document.hidden);
+    };
+
+    syncAnimationState();
+    document.addEventListener('visibilitychange', syncAnimationState);
+    return () => document.removeEventListener('visibilitychange', syncAnimationState);
+  }, []);
 
   useEffect(() => {
     let unsubscribeProfile: (() => void) | null = null;
@@ -186,28 +189,29 @@ export default function App() {
           const sessionsQuery = query(
             collection(db, `users/${firebaseUser.uid}/sessions`),
             orderBy('timestamp', 'desc'),
-            limit(120)
+            limit(200)
           );
 
           unsubscribeSessions = onSnapshot(
             sessionsQuery,
             (snap) => {
-              const today = new Date();
-              const reviewedToday = snap.docs.reduce((sum, sessionDoc) => {
-                const data = sessionDoc.data();
-                return isSameLocalDay(data.timestamp, today)
-                  ? sum + (typeof data.cardsReviewed === 'number' ? data.cardsReviewed : 0)
-                  : sum;
-              }, 0);
-
-              setCardsReviewedToday(reviewedToday);
+              const sessions = snap.docs.map((sessionDoc) => ({
+                id: sessionDoc.id,
+                ...sessionDoc.data(),
+              } as StudySession));
+              setRecentSessions(sessions);
+              setCardsReviewedToday(countCardsReviewedToday(sessions));
             },
-            () => setCardsReviewedToday(0)
+            () => {
+              setRecentSessions([]);
+              setCardsReviewedToday(0);
+            }
           );
         } else {
           setUser(null);
           setProfile(null);
           setCardsReviewedToday(0);
+          setRecentSessions([]);
         }
       } catch (error) {
         console.error('Auth/Profile error:', error);
@@ -364,7 +368,7 @@ export default function App() {
             <div className="smooth-scroll min-w-0 flex-1 overflow-y-auto">
               <div className="page-shell">
                 <Suspense fallback={<PageLoader />}>
-                  <AnimatedRoutes user={user} profile={profile} />
+                  <AnimatedRoutes user={user} profile={profile} recentSessions={recentSessions} />
                 </Suspense>
               </div>
             </div>
@@ -476,7 +480,15 @@ function PreviewStat({ icon, label, value }: { icon: ReactNode; label: string; v
   );
 }
 
-function AnimatedRoutes({ user, profile }: { user: User; profile: UserProfile | null }) {
+function AnimatedRoutes({
+  user,
+  profile,
+  recentSessions,
+}: {
+  user: User;
+  profile: UserProfile | null;
+  recentSessions: StudySession[];
+}) {
   const location = useLocation();
 
   return (
@@ -484,14 +496,14 @@ function AnimatedRoutes({ user, profile }: { user: User; profile: UserProfile | 
       <AnimatePresence mode="wait">
         <motion.div
           key={location.pathname}
-          initial={{ opacity: 0, y: 18, scale: 0.992, filter: 'blur(8px)' }}
-          animate={{ opacity: 1, y: 0, scale: 1, filter: 'blur(0px)' }}
-          exit={{ opacity: 0, y: -10, scale: 0.996, filter: 'blur(5px)' }}
-          transition={{ duration: 0.34, ease: [0.22, 1, 0.36, 1] }}
+          initial={{ opacity: 0, y: 12 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0, y: -8 }}
+          transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
           className="route-layer"
         >
           <Routes location={location}>
-            <Route path="/" element={<Dashboard user={user} profile={profile} />} />
+            <Route path="/" element={<Dashboard user={user} profile={profile} recentSessions={recentSessions} />} />
             <Route path="/decks" element={<Decks user={user} />} />
             <Route path="/decks/:deckId" element={<DeckDetail user={user} profile={profile} />} />
             <Route path="/study/:deckId" element={<Study user={user} profile={profile} />} />

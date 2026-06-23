@@ -99,6 +99,10 @@ export async function getPendingReviewResults() {
   return localDB.reviewResults.where('status').equals('pending').sortBy('createdAt');
 }
 
+export async function countPendingReviewResults() {
+  return localDB.reviewResults.where('status').equals('pending').count();
+}
+
 export async function markReviewResultsSynced(ids: string[]) {
   const syncedAt = new Date().toISOString();
   await localDB.transaction('rw', localDB.reviewResults, async () => {

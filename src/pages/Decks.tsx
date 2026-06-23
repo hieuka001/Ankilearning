@@ -45,6 +45,7 @@ export default function Decks({ user }: DecksProps) {
   const [isImporting, setIsImporting] = useState(false);
   const [deckStats, setDeckStats] = useState<Record<string, DeckStudyStats>>({});
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const deckStatsRequestRef = useRef(0);
 
   useEffect(() => {
     if (!user) {
@@ -58,6 +59,9 @@ export default function Decks({ user }: DecksProps) {
     );
 
     const unsubscribe = onSnapshot(q, (snap) => {
+      const requestId = deckStatsRequestRef.current + 1;
+      deckStatsRequestRef.current = requestId;
+
       const decksData = snap.docs.map(doc => ({ id: doc.id, ...doc.data() } as Deck));
       decksData.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
       setDecks(decksData);
@@ -77,8 +81,14 @@ export default function Decks({ user }: DecksProps) {
           return [deck.id, { learned, due, lastStudied }] as const;
         })
       )
-        .then((entries) => setDeckStats(Object.fromEntries(entries)))
-        .catch(() => setDeckStats({}));
+        .then((entries) => {
+          if (deckStatsRequestRef.current !== requestId) return;
+          setDeckStats(Object.fromEntries(entries));
+        })
+        .catch(() => {
+          if (deckStatsRequestRef.current !== requestId) return;
+          setDeckStats({});
+        });
     }, (error) => {
       console.error("Decks: Error fetching decks:", error);
       toast.error("Không thể tải danh sách bộ thẻ: " + error.message);
