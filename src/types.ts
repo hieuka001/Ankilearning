@@ -144,9 +144,13 @@ export interface Flashcard {
   type?: 'basic' | 'cloze';
   imageUrl?: string;
   backImageUrl?: string;
+  frontImages?: string[];
+  backImages?: string[];
   frontAudio?: string[];
   backAudio?: string[];
   audioUrls?: string[];
+  extraFields?: Record<string, string>;
+  noteType?: string;
   tags: string[];
   interval: number;
   easeFactor: number;

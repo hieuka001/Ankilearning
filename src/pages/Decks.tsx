@@ -21,6 +21,7 @@ import { Link } from 'react-router-dom';
 import { toast } from 'sonner';
 import { useSettings } from '../contexts/SettingsContext';
 import { importAnkiApkg } from '../services/ankiService';
+import { uploadAnkiMedia } from '../services/ankiMediaStorage';
 import { createInitialCardSchedule, isCardDue } from '../lib/spacedRepetition';
 import { addDoc } from 'firebase/firestore';
 import { useRef } from 'react';
@@ -113,34 +114,47 @@ export default function Decks({ user }: DecksProps) {
     const toastId = toast.loading("Đang nhập dữ liệu từ Anki...");
 
     try {
-      const ankiDecks = await importAnkiApkg(file);
+      const ankiDecks = await importAnkiApkg(file, {
+        onLargeMedia: async (filename, data, mimeType) => {
+          try {
+            return await uploadAnkiMedia(user.uid, filename, data, mimeType);
+          } catch (error) {
+            console.warn('Không thể tải media lên Storage:', filename, error);
+            return undefined;
+          }
+        },
+      });
       if (ankiDecks.length === 0) {
         toast.error("Không tìm thấy thẻ nào trong tệp Anki.", { id: toastId });
         return;
       }
 
       for (const ankiDeck of ankiDecks) {
-        // Create new deck
         const deckRef = await addDoc(collection(db, 'decks'), {
           ownerId: user.uid,
           authorName: user.displayName || 'User',
           name: ankiDeck.name,
           description: `Nhập từ Anki (${ankiDeck.cards.length} thẻ)`,
-          category: "Y khoa",
+          category: "Tiếng Trung",
           cardCount: ankiDeck.cards.length,
           createdAt: new Date().toISOString(),
           isPublic: false
         });
 
-        // Add cards in batches
-        const cardPromises = ankiDeck.cards.map(card => 
+        const cardPromises = ankiDeck.cards.map(card =>
           addDoc(collection(db, `decks/${deckRef.id}/cards`), {
             deckId: deckRef.id,
             ownerId: user.uid,
             front: card.front,
             back: card.back,
+            type: card.type || 'basic',
+            noteType: card.noteType || '',
+            noteId: card.noteId || '',
+            extraFields: card.extraFields || {},
             imageUrl: card.frontImage || '',
             backImageUrl: card.backImage || '',
+            frontImages: card.frontImages || [],
+            backImages: card.backImages || [],
             frontAudio: card.frontAudio || [],
             backAudio: card.backAudio || [],
             audioUrls: card.audioUrls || [...(card.frontAudio || []), ...(card.backAudio || [])],
@@ -156,8 +170,13 @@ export default function Decks({ user }: DecksProps) {
       toast.success(`Đã nhập thành công ${ankiDecks.length} bộ thẻ từ Anki.`, { id: toastId });
       const importedAudioCount = ankiDecks.reduce((sum, deck) => sum + (deck.importedAudioCount || 0), 0);
       const skippedAudioCount = ankiDecks.reduce((sum, deck) => sum + (deck.skippedAudioCount || 0), 0);
-      if (importedAudioCount > 0 || skippedAudioCount > 0) {
-        toast.info(`Audio Anki: ${importedAudioCount} file Ä‘Ã£ Ä‘á»“ng bá»™, ${skippedAudioCount} file quÃ¡ lá»›n Ä‘Ã£ bá» qua.`);
+      const importedImageCount = ankiDecks.reduce((sum, deck) => sum + (deck.importedImageCount || 0), 0);
+      const skippedImageCount = ankiDecks.reduce((sum, deck) => sum + (deck.skippedImageCount || 0), 0);
+      if (importedAudioCount > 0 || skippedAudioCount > 0 || importedImageCount > 0 || skippedImageCount > 0) {
+        toast.info(
+          `Media Anki: ${importedAudioCount} audio, ${importedImageCount} ảnh đã đồng bộ` +
+          (skippedAudioCount + skippedImageCount > 0 ? `; ${skippedAudioCount + skippedImageCount} file quá lớn đã bỏ qua.` : '.')
+        );
       }
       handleRefresh();
     } catch (error: any) {

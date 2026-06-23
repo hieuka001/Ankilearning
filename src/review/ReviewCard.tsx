@@ -131,7 +131,7 @@ function renderMarkdownImagesInHtml(rawContent: string) {
 const allowedTags = new Set([
   'A', 'B', 'BLOCKQUOTE', 'BR', 'CODE', 'DIV', 'EM', 'FIGURE', 'FIGCAPTION',
   'H1', 'H2', 'H3', 'H4', 'HR', 'I', 'IMG', 'LI', 'MARK', 'OL', 'P', 'PRE',
-  'SMALL', 'SPAN', 'STRONG', 'SUB', 'SUP', 'TABLE', 'TBODY', 'TD', 'TH',
+  'RP', 'RT', 'RUBY', 'SMALL', 'SPAN', 'STRONG', 'SUB', 'SUP', 'TABLE', 'TBODY', 'TD', 'TH',
   'THEAD', 'TR', 'U', 'UL',
 ]);
 
@@ -161,6 +161,10 @@ function sanitizeReviewHtml(rawContent: string) {
         return;
       }
       if ((name === 'href' || name === 'src') && /^(javascript|data:text\/html)/i.test(value)) {
+        element.removeAttribute(attribute.name);
+        return;
+      }
+      if (name === 'src' && /^data:(?!image\/)/i.test(value)) {
         element.removeAttribute(attribute.name);
       }
     });

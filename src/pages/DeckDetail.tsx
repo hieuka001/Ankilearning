@@ -344,7 +344,15 @@ export default function DeckDetail({ user, profile }: DeckDetailProps) {
       const ankiCards = cards.map(c => ({
         front: c.front,
         back: c.back,
-        tags: c.tags
+        type: c.type,
+        tags: c.tags,
+        frontImage: c.imageUrl,
+        backImage: c.backImageUrl,
+        frontImages: c.frontImages,
+        backImages: c.backImages,
+        frontAudio: c.frontAudio,
+        backAudio: c.backAudio,
+        audioUrls: c.audioUrls,
       }));
 
       const blob = await exportAnkiApkg(deck.name, ankiCards);
@@ -416,8 +424,14 @@ export default function DeckDetail({ user, profile }: DeckDetailProps) {
           ownerId: user.uid,
           front: card.front,
           back: card.back,
+          type: card.type || 'basic',
+          noteType: card.noteType || '',
+          noteId: card.noteId || '',
+          extraFields: card.extraFields || {},
           imageUrl: card.imageUrl || '',
           backImageUrl: card.backImageUrl || '',
+          frontImages: card.frontImages || [],
+          backImages: card.backImages || [],
           frontAudio: card.frontAudio || [],
           backAudio: card.backAudio || [],
           audioUrls: card.audioUrls || [...(card.frontAudio || []), ...(card.backAudio || [])],

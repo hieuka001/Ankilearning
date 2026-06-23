@@ -7,14 +7,14 @@
 @custom-variant dark (&:is(.dark *));
 
 @theme {
-  --font-sans: "Geist Variable", "Inter", "Segoe UI", Arial, sans-serif;
-  --font-serif: "Geist Variable", "Inter", "Segoe UI", Arial, sans-serif;
+  --font-sans: "Geist Variable", "Noto Sans SC", "Inter", "Segoe UI", "PingFang SC", "Microsoft YaHei", Arial, sans-serif;
+  --font-serif: "Geist Variable", "Noto Sans SC", "Inter", "Segoe UI", "PingFang SC", "Microsoft YaHei", Arial, sans-serif;
 }
 
 @theme inline {
-  --font-heading: "Geist Variable", "Inter", "Segoe UI", Arial, sans-serif;
-  --font-sans: "Geist Variable", "Inter", "Segoe UI", Arial, sans-serif;
-  --font-serif: "Geist Variable", "Inter", "Segoe UI", Arial, sans-serif;
+  --font-heading: "Geist Variable", "Noto Sans SC", "Inter", "Segoe UI", "PingFang SC", "Microsoft YaHei", Arial, sans-serif;
+  --font-sans: "Geist Variable", "Noto Sans SC", "Inter", "Segoe UI", "PingFang SC", "Microsoft YaHei", Arial, sans-serif;
+  --font-serif: "Geist Variable", "Noto Sans SC", "Inter", "Segoe UI", "PingFang SC", "Microsoft YaHei", Arial, sans-serif;
   --font-mono: "SFMono-Regular", "Cascadia Code", "Consolas", monospace;
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-border: var(--sidebar-border);
@@ -989,6 +989,30 @@
   .review-card-html code {
     white-space: pre-wrap;
     word-break: break-word;
+  }
+
+  .review-card-html ruby {
+    ruby-align: center;
+  }
+
+  .review-card-html rt {
+    font-size: 0.55em;
+    color: color-mix(in oklab, var(--foreground), transparent 35%);
+    letter-spacing: 0.02em;
+  }
+
+  .review-card-html .anki-extra-field {
+    margin-top: 0.75rem;
+    text-align: left;
+  }
+
+  .review-card-html .anki-extra-field strong {
+    display: block;
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: color-mix(in oklab, var(--foreground), transparent 40%);
+    margin-bottom: 0.35rem;
   }
 
   .dark [class*="dark:bg-[#0C0D0E]"],

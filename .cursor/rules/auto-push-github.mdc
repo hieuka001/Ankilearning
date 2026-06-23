@@ -1,0 +1,15 @@
+---
+description: Tự commit và push lên GitHub sau mỗi lần sửa code
+alwaysApply: true
+---
+
+# Auto push GitHub
+
+Sau khi hoàn thành mọi thay đổi code trong session:
+
+1. Chạy `git status` và `git diff` để xem thay đổi.
+2. Commit tất cả thay đổi liên quan (không commit `.env`, credentials).
+3. Push lên `origin` nhánh hiện tại: `git push` (hoặc `git push -u origin HEAD` nếu chưa có upstream).
+4. Báo cho user URL repo hoặc xác nhận push thành công.
+
+Hook `.cursor/hooks/auto-push.mjs` cũng tự chạy khi agent kết thúc — vẫn commit/push thủ công nếu hook thất bại (mạng, auth).
