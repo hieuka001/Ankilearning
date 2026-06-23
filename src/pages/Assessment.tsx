@@ -325,21 +325,16 @@ export default function Assessment({ user, profile }: AssessmentProps) {
     quizLoggedRef.current = true;
 
     try {
-      const result = await trackQuizCompletion(user.uid, {
+      await trackQuizCompletion(user.uid, {
         score: finalScore,
         totalQuestions,
         durationSeconds: finalDuration,
         mode,
         deckIds: selectedDeckIds,
       });
-
-      if (result.awardedExp > 0) {
-        toast.success(`+${result.awardedExp} EXP đã được ghi nhận.`);
-      }
     } catch (error) {
       quizLoggedRef.current = false;
-      console.warn('Quiz gamification tracking failed.', error);
-      toast.error('Chưa đồng bộ được EXP bài kiểm tra. Vui lòng thử lại sau.');
+      console.warn('Quiz activity tracking failed.', error);
     }
   };
 

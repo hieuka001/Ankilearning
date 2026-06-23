@@ -27,7 +27,7 @@ export interface ReviewQueueRecord {
 export interface GamificationQueueRecord {
   id: string;
   userId: string;
-  kind: 'review' | 'quiz' | 'active_time';
+  kind: 'review' | 'quiz';
   payload: Record<string, unknown>;
   timezone: string;
   status: 'pending' | 'synced';

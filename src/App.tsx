@@ -28,8 +28,7 @@ import { SettingsProvider } from './contexts/SettingsContext';
 import BackgroundMusic from './components/BackgroundMusic';
 import Logo from './components/Logo';
 import NotificationCenter from './components/NotificationCenter';
-import { useGamification } from './hooks/useGamification';
-import { calculateUserLevel } from './lib/gamification';
+import { flushGamificationQueue } from './services/gamificationService';
 
 const Dashboard = lazy(() => import('./pages/Dashboard'));
 const Decks = lazy(() => import('./pages/Decks'));
@@ -121,7 +120,10 @@ export default function App() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [cardsReviewedToday, setCardsReviewedToday] = useState(0);
 
-  useGamification(user, profile?.settings?.studyReminder?.timezone || 'Asia/Bangkok');
+  useEffect(() => {
+    if (!user?.uid) return;
+    flushGamificationQueue().catch((error) => console.warn('Gamification queue sync failed.', error));
+  }, [user?.uid]);
 
   useEffect(() => {
     let unsubscribeProfile: (() => void) | null = null;
@@ -154,14 +156,9 @@ export default function App() {
               photoURL: firebaseUser.photoURL || '',
               totalCardsLearned: 0,
               streak: 0,
-              totalExp: 0,
-              xp: 0,
-              level: 1,
-              streakDays: 0,
               totalCardsReviewed: 0,
               totalQuizzesCompleted: 0,
               totalStudyTimeMinutes: 0,
-              rankScore: 0,
               lastStudyDate: new Date().toISOString(),
               settings: {
                 dailyGoal: 20,
@@ -257,8 +254,6 @@ export default function App() {
 
   const dailyGoal = Math.max(1, profile?.settings?.dailyGoal || 20);
   const sidebarDailyProgress = Math.min(100, (cardsReviewedToday / dailyGoal) * 100);
-  const totalExp = profile?.totalExp ?? profile?.xp ?? 0;
-  const sidebarLevelInfo = calculateUserLevel(totalExp);
   const sidebarDisplayName = profile?.displayName || user.displayName || 'User';
   const sidebarPhotoURL = profile?.photoURL || user.photoURL || '';
   const sidebarInitial = (sidebarDisplayName.trim()[0] || 'U').toUpperCase();
@@ -345,18 +340,7 @@ export default function App() {
                   </div>
                 )}
                 <div className="sidebar-expanded-only min-w-0 flex-1">
-                  <div className="flex items-center justify-between gap-2">
-                    <p className="truncate text-sm font-semibold text-white">{sidebarDisplayName}</p>
-                    <span className="rounded-md bg-white/10 px-2 py-0.5 text-[10px] font-bold text-violet-100">
-                      Lv {sidebarLevelInfo.level}
-                    </span>
-                  </div>
-                  <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-white/10">
-                    <div className="xp-gradient h-full rounded-full" style={{ width: `${sidebarLevelInfo.progressPercent}%` }} />
-                  </div>
-                  <p className="mt-1 font-mono text-[10px] text-white/42">
-                    {totalExp.toLocaleString()} XP / {sidebarLevelInfo.expForNextLevel.toLocaleString()}
-                  </p>
+                  <p className="truncate text-sm font-semibold text-white">{sidebarDisplayName}</p>
                 </div>
               </div>
 
