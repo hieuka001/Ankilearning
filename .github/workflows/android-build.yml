@@ -92,11 +92,24 @@ jobs:
         run: |
           set -euo pipefail
           yes | sdkmanager --licenses >/dev/null 2>&1 || true
-          sdkmanager \
-            "platforms;android-37" \
+          # API 37 ships ONLY as the minor-versioned package
+          # "platforms;android-37.0" — plain "android-37" does not exist
+          # and sdkmanager exits 1 with just a "Failed to find package"
+          # warning (run 41826767804). Older cmdline-tools also cannot
+          # resolve API 37 packages at all, so bootstrap the newest
+          # cmdline-tools first and use its sdkmanager for the rest.
+          sdkmanager "cmdline-tools;latest"
+          SDKM="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKM" --licenses >/dev/null 2>&1 || true
+          "$SDKM" \
+            "platforms;android-37.0" \
             "build-tools;37.0.0" \
             "platform-tools" \
             "ndk;27.2.12479018"
+          # AGP resolves the platform by the bare "android-37" hash
+          # while the package installs as android-37.0: symlink it.
+          ln -sfn android-37.0 "$ANDROID_HOME/platforms/android-37"
+          ls "$ANDROID_HOME/platforms/android-37/android.jar" >/dev/null
           echo "NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018" >> "$GITHUB_ENV"
           echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018" >> "$GITHUB_ENV"
           ls "$ANDROID_HOME/ndk/27.2.12479018" >/dev/null
