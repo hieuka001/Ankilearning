@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>AnkiLearning</title>
+<style>
+  html, body { height: 100%; margin: 0; }
+  body {
+    font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+    background: #0c1210; color: #e7f2ec;
+    display: flex; align-items: center; justify-content: center; text-align: center;
+  }
+  .box { max-width: 420px; padding: 24px; }
+  .logo { width: 84px; height: 84px; border-radius: 20px; margin-bottom: 16px; }
+  h1 { font-size: 20px; margin: 0 0 8px; }
+  p { color: #9db8ab; font-size: 14px; line-height: 1.55; margin: 0 0 14px; }
+  .spinner {
+    width: 26px; height: 26px; margin: 10px auto 0; border-radius: 50%;
+    border: 3px solid rgba(16,185,129,.25); border-top-color: #10b981;
+    animation: spin 0.9s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  #offline { display: none; }
+  button {
+    background: #10b981; color: #04120c; border: 0; border-radius: 10px;
+    padding: 10px 18px; font-weight: 600; cursor: pointer; font-size: 14px;
+  }
+</style>
+</head>
+<body>
+  <div class="box">
+    <img class="logo" src="icon.png" alt="AnkiLearning" />
+    <h1>AnkiLearning</h1>
+    <div id="loading">
+      <p>Đang kết nối tới AnkiLearning…</p>
+      <div class="spinner"></div>
+    </div>
+    <div id="offline">
+      <p>Không có kết nối mạng. AnkiLearning trên máy tính chạy trực tuyến — kiểm tra mạng rồi thử lại.</p>
+      <button onclick="go()">Thử lại</button>
+    </div>
+  </div>
+<script>
+  var APP_URL = "https://learning-with-trunghieu.vercel.app";
+  var timer = setTimeout(showOffline, 12000);
+  function showOffline() {
+    document.getElementById("loading").style.display = "none";
+    document.getElementById("offline").style.display = "block";
+  }
+  function go() {
+    document.getElementById("offline").style.display = "none";
+    document.getElementById("loading").style.display = "block";
+    clearTimeout(timer);
+    timer = setTimeout(showOffline, 12000);
+    window.location.replace(APP_URL);
+  }
+  window.addEventListener("online", function () { clearTimeout(timer); go(); });
+  go();
+</script>
+</body>
+</html>

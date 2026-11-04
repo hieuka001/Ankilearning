@@ -19,6 +19,7 @@ import {
   Menu,
   Mic,
   PlusCircle,
+  RefreshCw,
   Search as SearchIcon,
   Settings as SettingsIcon,
   ShieldCheck,
@@ -30,6 +31,7 @@ import BackgroundMusic from './components/BackgroundMusic';
 import Logo from './components/Logo';
 import NotificationCenter from './components/NotificationCenter';
 import { BADGES, getXpProgress, type BadgeUnlock } from './lib/gamification';
+import { useServiceWorkerUpdate } from './lib/swUpdate';
 
 // Same string as BADGE_UNLOCKED_EVENT in services/gamificationService — kept
 // as a local literal so this shell does not statically import the sync stack
@@ -457,6 +459,8 @@ export default function App() {
 
           <BottomNav />
 
+          <SwUpdateBanner />
+
           <Toaster position="top-center" richColors />
         </div>
       </Router>
@@ -474,6 +478,45 @@ function TopbarHeading() {
       <p className="hidden truncate text-xs text-muted-foreground sm:block">
         {meta.description}
       </p>
+    </div>
+  );
+}
+
+function SwUpdateBanner() {
+  const { updateAvailable, applyUpdate, dismiss } = useServiceWorkerUpdate();
+
+  if (!updateAvailable) return null;
+
+  return (
+    <div
+      role="status"
+      className="fixed inset-x-3 bottom-24 z-50 flex items-center gap-3 rounded-2xl border border-emerald-200 bg-white/95 p-3.5 shadow-xl shadow-emerald-950/10 backdrop-blur-md animate-page-in dark:border-emerald-500/30 dark:bg-zinc-900/95 md:inset-x-auto md:right-6 md:bottom-6 md:w-96"
+    >
+      <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300">
+        <RefreshCw size={19} />
+      </span>
+      <div className="min-w-0 flex-1">
+        <p className="text-sm font-semibold text-zinc-950 dark:text-white">
+          Có phiên bản mới của AnkiLearning
+        </p>
+        <p className="mt-0.5 text-xs leading-relaxed text-zinc-500 dark:text-zinc-400">
+          Tải lại để dùng các tính năng và bản sửa lỗi mới nhất.
+        </p>
+        <button
+          onClick={applyUpdate}
+          className="mt-2.5 inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-emerald-500 active:scale-[0.98]"
+        >
+          <RefreshCw size={13} />
+          Tải lại ngay
+        </button>
+      </div>
+      <button
+        onClick={dismiss}
+        aria-label="Để sau"
+        className="shrink-0 self-start rounded-lg p-1.5 text-zinc-400 transition hover:bg-zinc-100 hover:text-zinc-600 dark:hover:bg-zinc-800 dark:hover:text-zinc-300"
+      >
+        <X size={16} />
+      </button>
     </div>
   );
 }

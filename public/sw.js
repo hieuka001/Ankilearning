@@ -3,7 +3,7 @@
  * Only same-origin GET requests are handled; Firestore / Google API traffic
  * is never intercepted or cached.
  */
-const CACHE_VERSION = 'ankilearning-v4';
+const CACHE_VERSION = 'ankilearning-v5';
 const STATIC_CACHE = `${CACHE_VERSION}-static`;
 const APP_SHELL = ['/', '/index.html', '/manifest.webmanifest', '/icon.svg'];
 /* Upper bound for runtime-cached assets (hashed JS/CSS, fonts, images,
@@ -32,13 +32,22 @@ async function trimCache(cacheName, maxEntries) {
 }
 
 self.addEventListener('install', (event) => {
+  // NOTE: no skipWaiting() here on purpose. A freshly installed worker stays
+  // in the "waiting" state so the page can show the "Có phiên bản mới — Tải
+  // lại ngay" prompt first; the page then posts {type: 'SKIP_WAITING'} (see
+  // the message listener below) to activate it on the user's confirmation.
   event.waitUntil(
     caches
       .open(STATIC_CACHE)
       .then((cache) => cache.addAll(APP_SHELL))
-      .then(() => self.skipWaiting())
       .catch(() => undefined),
   );
+});
+
+self.addEventListener('message', (event) => {
+  if (event.data && event.data.type === 'SKIP_WAITING') {
+    self.skipWaiting();
+  }
 });
 
 self.addEventListener('activate', (event) => {

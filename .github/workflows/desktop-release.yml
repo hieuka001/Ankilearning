@@ -1,0 +1,63 @@
+name: Desktop Release
+
+# Builds the Tauri desktop shell (Windows .exe/.msi, macOS .dmg, Linux
+# .deb/.AppImage) and publishes them to a GitHub Release together with the
+# updater manifest (latest.json) that installed shells check on startup.
+#
+# Run it manually (Actions tab -> Desktop Release -> Run workflow) or push a
+# tag like `desktop-v1.0.1`. Bump "version" in desktop/src-tauri/tauri.conf.json
+# before each release so the updater can tell versions apart.
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'desktop-v*'
+
+jobs:
+  build:
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-latest
+          - platform: macos-latest
+          - platform: ubuntu-22.04
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux build dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libsoup-3.0-dev libjavascriptcoregtk-4.1-dev
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri
+
+      - name: Install desktop shell dependencies
+        working-directory: desktop
+        run: npm ci
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          projectPath: desktop
+          tagName: desktop-v__VERSION__
+          releaseName: 'AnkiLearning Desktop v__VERSION__'
+          releaseBody: 'Bản AnkiLearning cho máy tính. Tải file phù hợp với máy của bạn: Windows (.exe), macOS (.dmg), Linux (.deb/.AppImage). App chạy trực tuyến và đồng bộ cùng tài khoản với bản web/điện thoại.'
+          releaseDraft: true
+          prerelease: false

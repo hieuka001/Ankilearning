@@ -1,0 +1,67 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "app": {
+    "security": {
+      "csp": null
+    },
+    "windows": [
+      {
+        "center": true,
+        "fullscreen": false,
+        "height": 820,
+        "label": "main",
+        "minHeight": 560,
+        "minWidth": 380,
+        "resizable": true,
+        "title": "AnkiLearning",
+        "width": 1280
+      }
+    ]
+  },
+  "build": {
+    "beforeBuildCommand": "",
+    "beforeDevCommand": "",
+    "frontendDist": "../dist-fallback"
+  },
+  "bundle": {
+    "active": true,
+    "createUpdaterArtifacts": true,
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "longDescription": "Ứng dụng học bằng thẻ ghi nhớ (flashcards) với thuật toán lặp lại ngắt quãng FSRS, AI Gemini, đồng bộ đám mây. Bản máy tính chạy trực tuyến cùng dữ liệu với bản web và điện thoại.",
+    "shortDescription": "AnkiLearning — học bằng thẻ ghi nhớ với thuật toán FSRS",
+    "targets": [
+      "nsis",
+      "msi",
+      "dmg",
+      "app",
+      "deb",
+      "appimage"
+    ],
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "languages": [
+          "Vietnamese",
+          "English"
+        ]
+      }
+    }
+  },
+  "identifier": "com.hieuka001.ankilearning",
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/hieuka001/Ankilearning/releases/latest/download/latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEMzQzg0OEQ5MjU3MkU1MzgKUldRNDVYSWwyVWpJdzl3UjRzR2dYODFZcWZJVWdOSzJGbXVKMjNPdnVMMHdHeW1WUy9uY3FNYksK"
+    }
+  },
+  "productName": "AnkiLearning",
+  "version": "1.0.0"
+}
