@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import { doc, getDoc, collection, getDocs, deleteDoc, query, orderBy, updateDoc, onSnapshot, addDoc, increment } from 'firebase/firestore';
 import { db } from '../firebase';
@@ -30,16 +30,17 @@ import {
   Loader2,
   FileText,
   Save,
-  FileDown
+  FileDown,
+  Search,
+  RotateCcw
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
 import { vi } from 'date-fns/locale';
 import ReactMarkdown from 'react-markdown';
 import { Switch } from '@/components/ui/switch';
-import { generateFlashcardsFromText, generateMindmap } from '../services/aiService';
-import { exportAnkiApkgDetailed } from '../services/ankiService';
 import { ConfirmDialog } from '../components/ConfirmDialog';
+import { useSettings } from '../contexts/SettingsContext';
 import AudioButton from '../components/AudioButton';
 import {
   createInitialCardSchedule,
@@ -65,12 +66,153 @@ const STATE_LABELS: Record<string, string> = {
 
 const CARDS_PAGE_SIZE = 50;
 
+type CardFilter = 'all' | 'due' | 'hard' | 'suspended';
+
+const CARD_FILTERS: Array<{ key: CardFilter; label: string }> = [
+  { key: 'all', label: 'Tất cả' },
+  { key: 'due', label: 'Đến hạn' },
+  { key: 'hard', label: 'Thẻ khó' },
+  { key: 'suspended', label: 'Đã tạm dừng' },
+];
+
+interface DeckCardRowProps {
+  card: Flashcard;
+  isOwner: boolean;
+  onEdit: (card: Flashcard) => void;
+  onDelete: (cardId: string) => void;
+  onBury: (card: Flashcard) => void;
+  onToggleSuspend: (card: Flashcard) => void;
+}
+
+/**
+ * One card row of the deck's card list. Memoized: with stable callbacks the
+ * row only re-renders when its own card object changes, so typing in the
+ * deck edit form or the card search box no longer re-renders every row.
+ */
+const DeckCardRow = memo(function DeckCardRow({
+  card,
+  isOwner,
+  onEdit,
+  onDelete,
+  onBury,
+  onToggleSuspend,
+}: DeckCardRowProps) {
+  const schedule = normalizeCardSchedule(card);
+  const due = isCardDue(card);
+  const buried = isCardBuried(card);
+  const statusLabel = schedule.suspended ? 'Đã tạm dừng' : buried ? 'Hoãn hôm nay' : due ? 'Cần ôn ngay' : (STATE_LABELS[schedule.state] || schedule.state);
+  const statusClass = schedule.suspended
+    ? 'bg-zinc-200 text-zinc-700 dark:bg-white/10 dark:text-zinc-300'
+    : buried
+      ? 'bg-sky-100 text-sky-700 dark:bg-sky-900/30 dark:text-sky-300'
+      : due
+        ? 'bg-orange-100 dark:bg-orange-900/30 text-orange-600 dark:text-orange-400'
+        : 'bg-emerald-100 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400';
+  const frontAudio = card.frontAudio?.length ? card.frontAudio : (card.audioUrls || []);
+  const backAudio = card.backAudio || [];
+
+  return (
+    <Card className="cv-auto border-none shadow-xl hover:shadow-2xl transition-all duration-500 group overflow-hidden bg-white dark:bg-zinc-900 rounded-[2rem]">
+      <CardContent className="p-0 flex items-stretch">
+        <div className="w-2 bg-emerald-100 dark:bg-emerald-900 group-hover:bg-emerald-600 transition-all duration-500" />
+        <div className="flex-1 p-6 grid grid-cols-1 md:grid-cols-2 gap-8">
+          <div className="flex gap-6">
+            <div className="flex flex-col gap-2">
+              {card.imageUrl && (
+                <div className="w-24 h-24 rounded-2xl overflow-hidden flex-shrink-0 border-2 border-zinc-50 dark:border-zinc-800 shadow-md">
+                  <img src={card.imageUrl} alt="" loading="lazy" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                </div>
+              )}
+              {!card.imageUrl && <div className="w-24 h-24 rounded-2xl bg-zinc-50 dark:bg-zinc-800 border-2 border-dashed border-zinc-100 dark:border-zinc-800 flex items-center justify-center text-zinc-300 dark:text-zinc-700"><ImageIcon size={28} /></div>}
+            </div>
+            <div className="flex-1">
+              <div className="mb-2 flex items-center gap-2">
+                <span className="text-[10px] font-extrabold text-zinc-400 uppercase tracking-[0.2em]">Mặt trước</span>
+                {frontAudio.map((src, index) => (
+                  <AudioButton
+                    key={`front-${card.id}-${index}`}
+                    src={src}
+                    size="icon-sm"
+                    variant="outline"
+                    className="h-7 w-7 rounded-lg"
+                    label={`Phát audio mặt trước ${index + 1}`}
+                  />
+                ))}
+              </div>
+              <div className="text-lg font-bold text-zinc-900 dark:text-white prose prose-sm prose-zinc dark:prose-invert leading-relaxed">
+                <ReactMarkdown>{card.front}</ReactMarkdown>
+              </div>
+            </div>
+          </div>
+          <div className="flex justify-between items-start gap-6">
+            <div className="flex gap-6 flex-1">
+              <div className="flex flex-col gap-2">
+                {card.backImageUrl && (
+                  <div className="w-24 h-24 rounded-2xl overflow-hidden flex-shrink-0 border-2 border-zinc-50 dark:border-zinc-800 shadow-md">
+                    <img src={card.backImageUrl} alt="" loading="lazy" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                  </div>
+                )}
+              </div>
+              <div className="flex-1">
+                <div className="mb-2 flex items-center gap-2">
+                  <span className="text-[10px] font-extrabold text-zinc-400 uppercase tracking-[0.2em]">Mặt sau</span>
+                  {backAudio.map((src, index) => (
+                    <AudioButton
+                      key={`back-${card.id}-${index}`}
+                      src={src}
+                      size="icon-sm"
+                      variant="outline"
+                      className="h-7 w-7 rounded-lg"
+                      label={`Phát audio mặt sau ${index + 1}`}
+                    />
+                  ))}
+                </div>
+                <div className="text-base font-medium text-zinc-600 dark:text-zinc-400 prose prose-sm prose-zinc dark:prose-invert leading-relaxed">
+                  <ReactMarkdown>{card.back}</ReactMarkdown>
+                </div>
+              </div>
+            </div>
+            <div className="flex flex-col items-end gap-4">
+              {isOwner && (
+                <div className="flex items-center gap-1 bg-zinc-50 dark:bg-zinc-800/50 p-1 rounded-xl">
+                  <Button variant="ghost" size="icon" title="Sửa thẻ" aria-label="Sửa thẻ" className="h-9 w-9 text-zinc-400 hover:text-emerald-600 dark:hover:text-emerald-400 rounded-lg transition-colors" onClick={() => onEdit(card)}>
+                    <Edit2 size={16} />
+                  </Button>
+                  <Button variant="ghost" size="icon" title="Hoãn hôm nay" aria-label="Hoãn hôm nay" className="h-9 w-9 text-zinc-400 hover:text-sky-600 dark:hover:text-sky-400 rounded-lg transition-colors" onClick={() => onBury(card)}>
+                    <Calendar size={16} />
+                  </Button>
+                  <Button variant="ghost" size="icon" title="Tạm dừng thẻ" aria-label="Tạm dừng thẻ" className="h-9 w-9 text-zinc-400 hover:text-amber-600 dark:hover:text-amber-400 rounded-lg transition-colors" onClick={() => onToggleSuspend(card)}>
+                    <Lock size={16} />
+                  </Button>
+                  <Button variant="ghost" size="icon" title="Xóa thẻ" aria-label="Xóa thẻ" className="h-9 w-9 text-zinc-400 hover:text-red-500 rounded-lg transition-colors" onClick={() => onDelete(card.id)}>
+                    <Trash2 size={16} />
+                  </Button>
+                </div>
+              )}
+              <span className={`text-[10px] px-3 py-1 rounded-full font-extrabold uppercase tracking-widest ${statusClass}`}>
+                {statusLabel}
+              </span>
+            </div>
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  );
+});
+
 export default function DeckDetail({ user, profile }: DeckDetailProps) {
   const { deckId } = useParams();
   const navigate = useNavigate();
+  const { settings } = useSettings();
+  // SettingsContext's scheduler mirrors the profile's scheduler config.
+  const leechThreshold = settings.scheduler?.leechThreshold ?? 8;
   const [deck, setDeck] = useState<Deck | null>(null);
   const [cards, setCards] = useState<Flashcard[]>([]);
   const [loading, setLoading] = useState(true);
+  const [deckError, setDeckError] = useState<string | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
+  const [cardSearch, setCardSearch] = useState('');
+  const [cardFilter, setCardFilter] = useState<CardFilter>('all');
   const [editingCard, setEditingCard] = useState<Flashcard | null>(null);
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [newCard, setNewCard] = useState({ 
@@ -99,6 +241,9 @@ export default function DeckDetail({ user, profile }: DeckDetailProps) {
   const [isExporting, setIsExporting] = useState(false);
   const [isEditingDeck, setIsEditingDeck] = useState(false);
   const [editedDeck, setEditedDeck] = useState({ name: '', category: '', color: '', tags: '' });
+  // Deck snapshots must not clobber the edit form while the user is typing in it.
+  const isEditingDeckRef = useRef(false);
+  useEffect(() => { isEditingDeckRef.current = isEditingDeck; }, [isEditingDeck]);
   const [isUpdatingDeck, setIsUpdatingDeck] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
 
@@ -106,28 +251,37 @@ export default function DeckDetail({ user, profile }: DeckDetailProps) {
     if (!deckId || !user) return;
 
     setLoading(true);
+    setDeckError(null);
     setVisibleCardCount(CARDS_PAGE_SIZE);
-    
+
     // Listen to deck changes
     const deckRef = doc(db, 'decks', deckId);
     const unsubscribeDeck = onSnapshot(deckRef, (snap) => {
       if (snap.exists()) {
         const deckData = { id: snap.id, ...snap.data() } as DeckWithAiMindmap;
         setDeck(deckData);
+        setDeckError(null);
         setMindmap(deckData.mindmap || '');
         setAiMindmap(deckData.aiMindmap || '');
-        setEditedDeck({ 
-          name: deckData.name, 
-          category: deckData.category, 
-          color: deckData.color || '#4f46e5',
-          tags: deckData.tags?.join(', ') || ''
-        });
+        if (!isEditingDeckRef.current) {
+          setEditedDeck({
+            name: deckData.name,
+            category: deckData.category,
+            color: deckData.color || '#10b981',
+            tags: deckData.tags?.join(', ') || ''
+          });
+        }
       } else {
-        toast.error("Không tìm thấy bộ thẻ.");
-        navigate('/decks');
+        // Missing/deleted deck: show a friendly error screen (below)
+        // instead of a blank page or an abrupt redirect.
+        setDeck(null);
+        setDeckError('Không tìm thấy bộ thẻ này. Bộ thẻ có thể đã bị xóa hoặc bạn không có quyền truy cập.');
+        setLoading(false);
       }
     }, (error) => {
       console.error(error);
+      setDeckError('Không tải được bộ thẻ. Kiểm tra kết nối mạng rồi thử lại.');
+      setLoading(false);
     });
 
     // Listen to cards changes
@@ -147,7 +301,12 @@ export default function DeckDetail({ user, profile }: DeckDetailProps) {
       unsubscribeDeck();
       unsubscribeCards();
     };
-  }, [deckId, user, navigate]);
+  }, [deckId, user, navigate, reloadKey]);
+
+  // Changing the card search/filter restarts pagination from the first page.
+  useEffect(() => {
+    setVisibleCardCount(CARDS_PAGE_SIZE);
+  }, [cardSearch, cardFilter]);
 
   const handleDelete = () => {
     if (!deckId) return;
@@ -203,10 +362,14 @@ export default function DeckDetail({ user, profile }: DeckDetailProps) {
     }
   };
 
-  const handleDeleteCard = (cardId: string) => {
+  const handleDeleteCard = useCallback((cardId: string) => {
     if (!deckId) return;
     setConfirmAction({ kind: 'card', cardId });
-  };
+  }, [deckId]);
+
+  const handleEditCard = useCallback((card: Flashcard) => {
+    setEditingCard(card);
+  }, []);
 
   const performDeleteCard = async (cardId: string) => {
     if (!deckId) return;
@@ -233,7 +396,7 @@ export default function DeckDetail({ user, profile }: DeckDetailProps) {
     }
   };
 
-  const handleToggleSuspendCard = async (card: Flashcard) => {
+  const handleToggleSuspendCard = useCallback(async (card: Flashcard) => {
     if (!deckId) return;
     const schedule = normalizeCardSchedule(card);
     await updateDoc(doc(db, `decks/${deckId}/cards`, card.id), {
@@ -241,9 +404,9 @@ export default function DeckDetail({ user, profile }: DeckDetailProps) {
       buriedUntil: schedule.suspended ? '' : card.buriedUntil || '',
     });
     toast.success(schedule.suspended ? 'Đã bỏ tạm dừng thẻ.' : 'Đã tạm dừng thẻ.');
-  };
+  }, [deckId]);
 
-  const handleBuryCard = async (card: Flashcard) => {
+  const handleBuryCard = useCallback(async (card: Flashcard) => {
     if (!deckId) return;
     const currentlyBuried = isCardBuried(card);
     const tomorrow = new Date();
@@ -253,7 +416,7 @@ export default function DeckDetail({ user, profile }: DeckDetailProps) {
       buriedUntil: currentlyBuried ? '' : tomorrow.toISOString(),
     });
     toast.success(currentlyBuried ? 'Đã bỏ hoãn thẻ.' : 'Đã hoãn thẻ đến ngày mai.');
-  };
+  }, [deckId]);
 
   const handleAddCard = async () => {
     if (!deckId || !user || !newCard.front.trim() || !newCard.back.trim()) {
@@ -307,6 +470,7 @@ export default function DeckDetail({ user, profile }: DeckDetailProps) {
     if (!aiText.trim() || !deckId || !user) return;
     setIsGenerating(true);
     try {
+      const { generateFlashcardsFromText } = await import('../services/aiService');
       const generated = await generateFlashcardsFromText(aiText, 5, "", { geminiApiKey: profile?.settings?.geminiApiKey || profile?.settings?.aiApiKey });
       if (generated && generated.length > 0) {
         const batch = generated.map(card => 
@@ -346,6 +510,7 @@ export default function DeckDetail({ user, profile }: DeckDetailProps) {
 
     setIsGeneratingMindmap(true);
     try {
+      const { generateMindmap } = await import('../services/aiService');
       const context = mindmap.trim() || aiMindmap.trim() || cards.map(c => `${c.front}: ${c.back}`).join('\n');
       const generated = await generateMindmap(context, { geminiApiKey: profile?.settings?.geminiApiKey || profile?.settings?.aiApiKey });
       // Mindmap AI lưu ở field riêng (aiMindmap) — ghi chú gốc của người dùng giữ nguyên.
@@ -388,6 +553,7 @@ export default function DeckDetail({ user, profile }: DeckDetailProps) {
     const toastId = toast.loading("Đang chuẩn bị tệp Anki...");
 
     try {
+      const { exportAnkiApkgDetailed } = await import('../services/ankiService');
       const ankiCards = cards.map(c => ({
         front: c.front,
         back: c.back,
@@ -462,7 +628,7 @@ export default function DeckDetail({ user, profile }: DeckDetailProps) {
         cardCount: deck.cardCount,
         mindmap: deck.mindmap || '',
         aiMindmap: (deck as DeckWithAiMindmap).aiMindmap || '',
-        color: deck.color || '#4f46e5',
+        color: deck.color || '#10b981',
         tags: deck.tags || [],
         createdAt: new Date().toISOString(),
         isPublic: false
@@ -504,32 +670,105 @@ export default function DeckDetail({ user, profile }: DeckDetailProps) {
     }
   };
 
+  // Deck stats in one memoized pass over the cards (previously several
+  // full-array filters ran on every render of this 1.200-line page).
+  const deckStats = useMemo(() => {
+    const now = new Date();
+    let due = 0;
+    let paused = 0;
+    let hard = 0;
+    for (const card of cards) {
+      const schedule = normalizeCardSchedule(card, now);
+      if (isCardDue(card)) due += 1;
+      if (schedule.suspended || isCardBuried(card, now)) paused += 1;
+      if ((card.lapses || 0) >= leechThreshold) hard += 1;
+    }
+    return { due, paused, hard };
+  }, [cards, leechThreshold]);
+
+  // Client-side search + status filter over the already-loaded cards.
+  // "Thẻ khó" follows the scheduler's leech rule: lapses >= leechThreshold.
+  const filteredCards = useMemo(() => {
+    const term = cardSearch.trim().toLowerCase();
+    const now = new Date();
+    return cards.filter((card) => {
+      if (term && !`${card.front} ${card.back}`.toLowerCase().includes(term)) return false;
+      switch (cardFilter) {
+        case 'due':
+          return isCardDue(card);
+        case 'hard':
+          return (card.lapses || 0) >= leechThreshold;
+        case 'suspended': {
+          const schedule = normalizeCardSchedule(card, now);
+          return schedule.suspended || isCardBuried(card, now);
+        }
+        default:
+          return true;
+      }
+    });
+  }, [cards, cardSearch, cardFilter, leechThreshold]);
+
+  const filterCounts: Record<CardFilter, number> = {
+    all: cards.length,
+    due: deckStats.due,
+    hard: deckStats.hard,
+    suspended: deckStats.paused,
+  };
+
   if (loading) {
     return (
       <div className="space-y-8" aria-busy="true">
         <div className="flex items-center gap-4">
-          <div className="skeleton-block animate-pulse h-12 w-12 rounded-2xl bg-slate-200/70 dark:bg-white/10" />
+          <div className="skeleton-block animate-pulse h-12 w-12 rounded-2xl bg-zinc-200/70 dark:bg-white/10" />
           <div className="space-y-2 flex-1">
-            <div className="skeleton-block animate-pulse h-8 w-72 max-w-full rounded-xl bg-slate-200/70 dark:bg-white/10" />
-            <div className="skeleton-block animate-pulse h-4 w-48 rounded-lg bg-slate-200/50 dark:bg-white/5" />
+            <div className="skeleton-block animate-pulse h-8 w-72 max-w-full rounded-xl bg-zinc-200/70 dark:bg-white/10" />
+            <div className="skeleton-block animate-pulse h-4 w-48 rounded-lg bg-zinc-200/50 dark:bg-white/5" />
           </div>
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 md:gap-8">
           {[0, 1, 2].map((i) => (
-            <div key={i} className="skeleton-block animate-pulse h-36 rounded-[2rem] bg-slate-200/50 dark:bg-white/5" />
+            <div key={i} className="skeleton-block animate-pulse h-36 rounded-[2rem] bg-zinc-200/50 dark:bg-white/5" />
           ))}
         </div>
         <div className="space-y-5">
           {[0, 1].map((i) => (
-            <div key={i} className="skeleton-block animate-pulse h-44 rounded-[2rem] bg-slate-200/50 dark:bg-white/5" />
+            <div key={i} className="skeleton-block animate-pulse h-44 rounded-[2rem] bg-zinc-200/50 dark:bg-white/5" />
           ))}
         </div>
       </div>
     );
   }
-  if (!deck) return null;
+  if (deckError || !deck) {
+    return (
+      <div className="flex min-h-[60vh] flex-col items-center justify-center space-y-6 text-center">
+        <div className="rounded-full bg-rose-100 p-6 dark:bg-rose-500/10">
+          <BookOpen className="h-12 w-12 text-rose-500" />
+        </div>
+        <h2 className="text-2xl font-bold text-zinc-950 dark:text-white">Không mở được bộ thẻ</h2>
+        <p className="max-w-sm text-zinc-500">
+          {deckError || 'Không tìm thấy bộ thẻ này. Bộ thẻ có thể đã bị xóa hoặc bạn không có quyền truy cập.'}
+        </p>
+        <div className="flex flex-wrap items-center justify-center gap-3">
+          <Button
+            onClick={() => {
+              setDeckError(null);
+              setLoading(true);
+              setReloadKey((key) => key + 1);
+            }}
+            className="gap-2"
+          >
+            <RotateCcw className="h-4 w-4" />
+            Thử lại
+          </Button>
+          <Link to="/decks">
+            <Button variant="outline">Về danh sách bộ thẻ</Button>
+          </Link>
+        </div>
+      </div>
+    );
+  }
 
-  const dueCards = cards.filter(card => isCardDue(card)).length;
+  const dueCards = deckStats.due;
 
   return (
     <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
@@ -546,14 +785,14 @@ export default function DeckDetail({ user, profile }: DeckDetailProps) {
       <header className="flex flex-col md:flex-row md:items-center justify-between gap-6 px-1">
         <div className="flex items-start md:items-center gap-4 md:gap-5">
           <Link to="/decks" className="mt-1 md:mt-0">
-            <Button variant="ghost" size="icon" className="h-10 w-10 md:h-12 md:w-12 rounded-xl md:rounded-2xl hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors">
-              <ArrowLeft className="w-5 h-5 md:w-6 md:h-6 text-slate-600 dark:text-slate-400" />
+            <Button variant="ghost" size="icon" className="h-10 w-10 md:h-12 md:w-12 rounded-xl md:rounded-2xl hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors">
+              <ArrowLeft className="w-5 h-5 md:w-6 md:h-6 text-zinc-600 dark:text-zinc-400" />
             </Button>
           </Link>
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2 group">
-              <h1 className="text-2xl md:text-4xl font-black text-slate-900 dark:text-white tracking-tight truncate flex items-center gap-3">
-                <span className="w-3 h-8 rounded-full" style={{ backgroundColor: deck.color || '#4f46e5' }} />
+              <h1 className="text-2xl md:text-4xl font-extrabold text-zinc-900 dark:text-white tracking-tight truncate flex items-center gap-3">
+                <span className="w-3 h-8 rounded-full" style={{ backgroundColor: deck.color || '#10b981' }} />
                 {deck.name}
               </h1>
               {deck.ownerId === user?.uid && (
@@ -563,22 +802,22 @@ export default function DeckDetail({ user, profile }: DeckDetailProps) {
                   className="h-8 w-8 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity"
                   onClick={() => setIsEditingDeck(true)}
                 >
-                  <Edit2 size={16} className="text-slate-400" />
+                  <Edit2 size={16} className="text-zinc-400" />
                 </Button>
               )}
             </div>
-            <div className="flex flex-wrap items-center gap-3 md:gap-4 text-slate-500 dark:text-slate-400 mt-1 md:mt-2">
+            <div className="flex flex-wrap items-center gap-3 md:gap-4 text-zinc-500 dark:text-zinc-400 mt-1 md:mt-2">
               <div 
-                className="flex items-center gap-2 px-2 py-0.5 md:px-3 md:py-1 rounded-lg md:rounded-xl font-black text-[9px] md:text-[10px] uppercase tracking-widest"
-                style={{ backgroundColor: `${deck.color || '#4f46e5'}15`, color: deck.color || '#4f46e5' }}
+                className="flex items-center gap-2 px-2 py-0.5 md:px-3 md:py-1 rounded-lg md:rounded-xl font-extrabold text-[9px] md:text-[10px] uppercase tracking-widest"
+                style={{ backgroundColor: `${deck.color || '#10b981'}15`, color: deck.color || '#10b981' }}
               >
                 {deck.category}
               </div>
               <span className="text-[10px] md:text-xs font-bold uppercase tracking-widest">{deck.cardCount} thẻ</span>
               {deck.ownerId === user?.uid && (
-                <div className="flex items-center gap-2 md:gap-3 px-2 py-0.5 md:px-3 md:py-1 bg-slate-100 dark:bg-slate-800/50 rounded-xl md:rounded-2xl border border-slate-200/50 dark:border-slate-700/50">
-              {deck.isPublic ? <Globe className="w-3 h-3 md:w-3.5 md:h-3.5 text-emerald-600" /> : <Lock className="w-3 h-3 md:w-3.5 md:h-3.5 text-slate-400" />}
-                  <span className="text-[9px] md:text-[10px] font-black uppercase tracking-widest">{deck.isPublic ? 'Công khai' : 'Riêng tư'}</span>
+                <div className="flex items-center gap-2 md:gap-3 px-2 py-0.5 md:px-3 md:py-1 bg-zinc-100 dark:bg-zinc-800/50 rounded-xl md:rounded-2xl border border-zinc-200/50 dark:border-zinc-700/50">
+              {deck.isPublic ? <Globe className="w-3 h-3 md:w-3.5 md:h-3.5 text-emerald-600" /> : <Lock className="w-3 h-3 md:w-3.5 md:h-3.5 text-zinc-400" />}
+                  <span className="text-[9px] md:text-[10px] font-extrabold uppercase tracking-widest">{deck.isPublic ? 'Công khai' : 'Riêng tư'}</span>
                   <Switch 
                     checked={deck.isPublic} 
                     onCheckedChange={togglePublic}
@@ -594,32 +833,32 @@ export default function DeckDetail({ user, profile }: DeckDetailProps) {
             <Button 
               variant="outline" 
               size="icon" 
-              className="h-10 w-10 md:h-12 md:w-12 rounded-xl md:rounded-2xl border-slate-200 dark:border-slate-800 dark:bg-slate-900 hover:bg-indigo-50 dark:hover:bg-indigo-900/20 transition-colors group" 
+              className="h-10 w-10 md:h-12 md:w-12 rounded-xl md:rounded-2xl border-zinc-200 dark:border-zinc-800 dark:bg-zinc-900 hover:bg-emerald-50 dark:hover:bg-emerald-900/20 transition-colors group" 
               onClick={handleExportAnki}
               disabled={isExporting}
               title="Xuất tệp Anki (.apkg)"
             >
-              {isExporting ? <Loader2 className="animate-spin text-indigo-500 w-4.5 h-4.5 md:w-5 md:h-5" /> : <FileDown className="w-4.5 h-4.5 md:w-5 md:h-5 text-slate-400 group-hover:text-indigo-500 transition-colors" />}
+              {isExporting ? <Loader2 className="animate-spin text-emerald-500 w-4.5 h-4.5 md:w-5 md:h-5" /> : <FileDown className="w-4.5 h-4.5 md:w-5 md:h-5 text-zinc-400 group-hover:text-emerald-500 transition-colors" />}
             </Button>
             {deck.ownerId === user?.uid ? (
-              <Button variant="outline" size="icon" title="Xóa bộ thẻ" aria-label="Xóa bộ thẻ" className="h-10 w-10 md:h-12 md:w-12 rounded-xl md:rounded-2xl border-slate-200 dark:border-slate-800 dark:bg-slate-900 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors group" onClick={handleDelete}>
-                <Trash2 className="w-4.5 h-4.5 md:w-5 md:h-5 text-slate-400 group-hover:text-red-500 transition-colors" />
+              <Button variant="outline" size="icon" title="Xóa bộ thẻ" aria-label="Xóa bộ thẻ" className="h-10 w-10 md:h-12 md:w-12 rounded-xl md:rounded-2xl border-zinc-200 dark:border-zinc-800 dark:bg-zinc-900 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors group" onClick={handleDelete}>
+                <Trash2 className="w-4.5 h-4.5 md:w-5 md:h-5 text-zinc-400 group-hover:text-red-500 transition-colors" />
               </Button>
             ) : deck.isPublic && (
               <Button 
                 variant="outline" 
                 size="icon" 
-                className="h-10 w-10 md:h-12 md:w-12 rounded-xl md:rounded-2xl border-slate-200 dark:border-slate-800 dark:bg-slate-900 hover:bg-emerald-50 dark:hover:bg-emerald-900/20 transition-colors group" 
+                className="h-10 w-10 md:h-12 md:w-12 rounded-xl md:rounded-2xl border-zinc-200 dark:border-zinc-800 dark:bg-zinc-900 hover:bg-emerald-50 dark:hover:bg-emerald-900/20 transition-colors group" 
                 onClick={handleSync}
                 disabled={isSyncing}
                 title="Đồng bộ bộ thẻ này"
               >
-                {isSyncing ? <Loader2 className="animate-spin text-emerald-500 w-4.5 h-4.5 md:w-5 md:h-5" /> : <Plus className="w-4.5 h-4.5 md:w-5 md:h-5 text-slate-400 group-hover:text-emerald-500 transition-colors" />}
+                {isSyncing ? <Loader2 className="animate-spin text-emerald-500 w-4.5 h-4.5 md:w-5 md:h-5" /> : <Plus className="w-4.5 h-4.5 md:w-5 md:h-5 text-zinc-400 group-hover:text-emerald-500 transition-colors" />}
               </Button>
             )}
           </div>
           <Link to={`/study/${deckId}`} className="flex-1 md:flex-none">
-            <Button className="w-full bg-indigo-600 hover:bg-indigo-700 h-10 md:h-12 px-6 md:px-8 rounded-xl md:rounded-2xl font-black shadow-lg shadow-indigo-200 dark:shadow-none gap-2 transition-all active:scale-95 text-xs md:text-sm">
+            <Button className="w-full bg-emerald-600 hover:bg-emerald-700 h-10 md:h-12 px-6 md:px-8 rounded-xl md:rounded-2xl font-extrabold shadow-lg shadow-emerald-200 dark:shadow-none gap-2 transition-all active:scale-95 text-xs md:text-sm">
               <Play className="w-4 h-4 md:w-5 md:h-5" fill="currentColor" />
               BẮT ĐẦU HỌC
             </Button>
@@ -635,7 +874,7 @@ export default function DeckDetail({ user, profile }: DeckDetailProps) {
           </DialogHeader>
           <div className="space-y-6 py-4">
             <div className="space-y-2">
-              <label className="text-xs font-black text-slate-400 uppercase tracking-widest">Tên bộ thẻ</label>
+              <label className="text-xs font-extrabold text-zinc-400 uppercase tracking-widest">Tên bộ thẻ</label>
               <Input 
                 value={editedDeck.name}
                 onChange={(e) => setEditedDeck({...editedDeck, name: e.target.value})}
@@ -643,7 +882,7 @@ export default function DeckDetail({ user, profile }: DeckDetailProps) {
               />
             </div>
             <div className="space-y-2">
-              <label className="text-xs font-black text-slate-400 uppercase tracking-widest">Chủ đề</label>
+              <label className="text-xs font-extrabold text-zinc-400 uppercase tracking-widest">Chủ đề</label>
               <Input 
                 value={editedDeck.category}
                 onChange={(e) => setEditedDeck({...editedDeck, category: e.target.value})}
@@ -651,7 +890,7 @@ export default function DeckDetail({ user, profile }: DeckDetailProps) {
               />
             </div>
             <div className="space-y-2">
-              <label className="text-xs font-black text-slate-400 uppercase tracking-widest">Tags (Phân tách bằng dấu phẩy)</label>
+              <label className="text-xs font-extrabold text-zinc-400 uppercase tracking-widest">Tags (Phân tách bằng dấu phẩy)</label>
               <Input 
                 value={editedDeck.tags}
                 onChange={(e) => setEditedDeck({...editedDeck, tags: e.target.value})}
@@ -660,7 +899,7 @@ export default function DeckDetail({ user, profile }: DeckDetailProps) {
               />
             </div>
             <div className="space-y-2">
-              <label className="text-xs font-black text-slate-400 uppercase tracking-widest">Màu sắc</label>
+              <label className="text-xs font-extrabold text-zinc-400 uppercase tracking-widest">Màu sắc</label>
               <div className="flex items-center gap-3">
                 <Input 
                   type="color"
@@ -669,7 +908,7 @@ export default function DeckDetail({ user, profile }: DeckDetailProps) {
                   className="w-12 h-12 p-1 rounded-xl cursor-pointer"
                 />
                 <div className="flex flex-wrap gap-2">
-                  {['#4f46e5', '#ef4444', '#f59e0b', '#10b981', '#3b82f6', '#8b5cf6', '#ec4899', '#000000'].map(c => (
+                  {['#10b981', '#ef4444', '#f59e0b', '#10b981', '#3b82f6', '#8b5cf6', '#ec4899', '#000000'].map(c => (
                     <button
                       key={c}
                       onClick={() => setEditedDeck({...editedDeck, color: c})}
@@ -691,33 +930,33 @@ export default function DeckDetail({ user, profile }: DeckDetailProps) {
       </Dialog>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 md:gap-8">
-        <Card className="bg-white dark:bg-slate-900 border-none shadow-xl p-6 md:p-8 rounded-[1.5rem] md:rounded-[2.5rem] flex flex-col items-center justify-center text-center space-y-2 md:space-y-3 relative overflow-hidden group">
+        <Card className="bg-white dark:bg-zinc-900 border-none shadow-xl p-6 md:p-8 rounded-[1.5rem] md:rounded-[2.5rem] flex flex-col items-center justify-center text-center space-y-2 md:space-y-3 relative overflow-hidden group">
           <div className="absolute -top-12 -right-12 w-32 h-32 bg-orange-500/5 rounded-full blur-2xl group-hover:bg-orange-500/10 transition-colors" />
           <div className="h-12 w-12 md:h-14 md:w-14 rounded-xl md:rounded-2xl bg-orange-50 dark:bg-orange-900/30 text-orange-600 dark:text-orange-400 flex items-center justify-center mb-1 md:mb-2 shadow-inner">
             <Calendar className="w-6 h-6 md:w-7 md:h-7" />
           </div>
-          <span className="text-3xl md:text-4xl font-black text-slate-900 dark:text-white tracking-tight">{dueCards}</span>
-          <span className="text-[9px] md:text-[10px] font-black text-slate-400 uppercase tracking-[0.2em]">Cần ôn tập ngay</span>
+          <span className="text-3xl md:text-4xl font-extrabold text-zinc-900 dark:text-white tracking-tight">{dueCards}</span>
+          <span className="text-[9px] md:text-[10px] font-extrabold text-zinc-400 uppercase tracking-[0.2em]">Cần ôn tập ngay</span>
         </Card>
         
-        <Card className="bg-white dark:bg-slate-900 border-none shadow-xl p-6 md:p-8 rounded-[1.5rem] md:rounded-[2.5rem] flex flex-col items-center justify-center text-center space-y-2 md:space-y-3 relative overflow-hidden group">
-          <div className="absolute -top-12 -right-12 w-32 h-32 bg-indigo-500/5 rounded-full blur-2xl group-hover:bg-indigo-500/10 transition-colors" />
-          <div className="h-12 w-12 md:h-14 md:w-14 rounded-xl md:rounded-2xl bg-indigo-50 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400 flex items-center justify-center mb-1 md:mb-2 shadow-inner">
+        <Card className="bg-white dark:bg-zinc-900 border-none shadow-xl p-6 md:p-8 rounded-[1.5rem] md:rounded-[2.5rem] flex flex-col items-center justify-center text-center space-y-2 md:space-y-3 relative overflow-hidden group">
+          <div className="absolute -top-12 -right-12 w-32 h-32 bg-emerald-500/5 rounded-full blur-2xl group-hover:bg-emerald-500/10 transition-colors" />
+          <div className="h-12 w-12 md:h-14 md:w-14 rounded-xl md:rounded-2xl bg-emerald-50 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400 flex items-center justify-center mb-1 md:mb-2 shadow-inner">
             <BookOpen className="w-6 h-6 md:w-7 md:h-7" />
           </div>
-          <span className="text-3xl md:text-4xl font-black text-slate-900 dark:text-white tracking-tight">{cards.length}</span>
-          <span className="text-[9px] md:text-[10px] font-black text-slate-400 uppercase tracking-[0.2em]">Tổng số thẻ học</span>
+          <span className="text-3xl md:text-4xl font-extrabold text-zinc-900 dark:text-white tracking-tight">{cards.length}</span>
+          <span className="text-[9px] md:text-[10px] font-extrabold text-zinc-400 uppercase tracking-[0.2em]">Tổng số thẻ học</span>
         </Card>
 
-        <Card className="bg-white dark:bg-slate-900 border-none shadow-xl p-6 md:p-8 rounded-[1.5rem] md:rounded-[2.5rem] flex flex-col items-center justify-center text-center space-y-2 md:space-y-3 relative overflow-hidden group sm:col-span-2 lg:col-span-1">
+        <Card className="bg-white dark:bg-zinc-900 border-none shadow-xl p-6 md:p-8 rounded-[1.5rem] md:rounded-[2.5rem] flex flex-col items-center justify-center text-center space-y-2 md:space-y-3 relative overflow-hidden group sm:col-span-2 lg:col-span-1">
           <div className="absolute -top-12 -right-12 w-32 h-32 bg-emerald-500/5 rounded-full blur-2xl group-hover:bg-emerald-500/10 transition-colors" />
           <div className="h-12 w-12 md:h-14 md:w-14 rounded-xl md:rounded-2xl bg-emerald-50 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400 flex items-center justify-center mb-1 md:mb-2 shadow-inner">
             <Clock className="w-6 h-6 md:w-7 md:h-7" />
           </div>
-          <span className="text-3xl md:text-4xl font-black text-slate-900 dark:text-white tracking-tight">
+          <span className="text-3xl md:text-4xl font-extrabold text-zinc-900 dark:text-white tracking-tight">
             {format(new Date(deck.createdAt), 'dd/MM')}
           </span>
-          <span className="text-[9px] md:text-[10px] font-black text-slate-400 uppercase tracking-[0.2em]">Ngày khởi tạo</span>
+          <span className="text-[9px] md:text-[10px] font-extrabold text-zinc-400 uppercase tracking-[0.2em]">Ngày khởi tạo</span>
         </Card>
       </div>
 
@@ -728,12 +967,12 @@ export default function DeckDetail({ user, profile }: DeckDetailProps) {
             <div className="p-2 bg-primary/10 rounded-lg md:rounded-xl text-primary">
               <FileText className="w-4.5 h-4.5 md:w-5 md:h-5" />
             </div>
-            <h2 className="text-xl md:text-2xl font-black text-slate-900 dark:text-white tracking-tight">Mindmap & Ghi chú bài học</h2>
+            <h2 className="text-xl md:text-2xl font-extrabold text-zinc-900 dark:text-white tracking-tight">Mindmap & Ghi chú bài học</h2>
             <Button
               variant="ghost"
               size="sm"
               onClick={() => setShowMindmap(!showMindmap)}
-              className="ml-2 hover:bg-slate-100 dark:hover:bg-white/5 rounded-full"
+              className="ml-2 hover:bg-zinc-100 dark:hover:bg-white/5 rounded-full"
             >
               {showMindmap ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
             </Button>
@@ -765,29 +1004,29 @@ export default function DeckDetail({ user, profile }: DeckDetailProps) {
         
         {showMindmap && (
           <div className="space-y-4">
-          <Card className="bg-white dark:bg-slate-900 border-none shadow-2xl rounded-2xl md:rounded-[2rem] overflow-hidden animate-in fade-in zoom-in duration-300">
-            <div className="p-1 bg-slate-50 dark:bg-slate-800/50 border-b border-slate-100 dark:border-white/5 flex items-center gap-2 px-4 md:px-6 py-2 md:py-3">
+          <Card className="bg-white dark:bg-zinc-900 border-none shadow-2xl rounded-2xl md:rounded-[2rem] overflow-hidden animate-in fade-in zoom-in duration-300">
+            <div className="p-1 bg-zinc-50 dark:bg-zinc-800/50 border-b border-zinc-100 dark:border-white/5 flex items-center gap-2 px-4 md:px-6 py-2 md:py-3">
               <div className="flex gap-1">
                 <div className="w-2.5 h-2.5 rounded-full bg-red-400/20 border border-red-400/30" />
                 <div className="w-2.5 h-2.5 rounded-full bg-amber-400/20 border border-amber-400/30" />
                 <div className="w-2.5 h-2.5 rounded-full bg-emerald-400/20 border border-emerald-400/30" />
               </div>
-              <span className="text-[8px] md:text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] ml-2 md:ml-4">Chế độ soạn thảo — Hỗ trợ Markdown</span>
+              <span className="text-[8px] md:text-[10px] font-extrabold text-zinc-400 uppercase tracking-[0.2em] ml-2 md:ml-4">Chế độ soạn thảo — Hỗ trợ Markdown</span>
             </div>
             <Textarea 
               placeholder="Dán Mindmap hoặc ghi chú chi tiết..."
               value={mindmap}
               onChange={(e) => setMindmap(e.target.value)}
               readOnly={deck.ownerId !== user?.uid}
-              className="min-h-[250px] md:min-h-[300px] w-full p-6 md:p-10 text-base md:text-lg leading-relaxed border-none focus-visible:ring-0 bg-transparent resize-y font-medium text-slate-700 dark:text-slate-300 placeholder:text-slate-300 dark:placeholder:text-slate-700"
+              className="min-h-[250px] md:min-h-[300px] w-full p-6 md:p-10 text-base md:text-lg leading-relaxed border-none focus-visible:ring-0 bg-transparent resize-y font-medium text-zinc-700 dark:text-zinc-300 placeholder:text-zinc-300 dark:placeholder:text-zinc-700"
             />
             {mindmap.trim() && (
-              <div className="p-6 md:p-10 bg-slate-50 dark:bg-[#08090A] border-t border-slate-200 dark:border-white/5">
+              <div className="p-6 md:p-10 bg-zinc-50 dark:bg-[#08090A] border-t border-zinc-200 dark:border-white/5">
                 <div className="flex items-center gap-2 mb-6">
                   <div className="w-1 h-4 bg-primary rounded-full" />
-                  <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em]">Xem trước Mindmap</h3>
+                  <h3 className="text-[10px] font-extrabold text-zinc-400 uppercase tracking-[0.2em]">Xem trước Mindmap</h3>
                 </div>
-                <div className="markdown-body prose prose-slate dark:prose-invert max-w-none prose-headings:font-black prose-headings:tracking-tight prose-p:font-medium prose-p:leading-relaxed prose-li:font-medium prose-strong:text-primary dark:prose-strong:text-primary">
+                <div className="markdown-body prose prose-slate dark:prose-invert max-w-none prose-headings:font-extrabold prose-headings:tracking-tight prose-p:font-medium prose-p:leading-relaxed prose-li:font-medium prose-strong:text-primary dark:prose-strong:text-primary">
                   <ReactMarkdown>{mindmap}</ReactMarkdown>
                 </div>
               </div>
@@ -797,10 +1036,10 @@ export default function DeckDetail({ user, profile }: DeckDetailProps) {
             <Card className="premium-panel border-none shadow-2xl rounded-2xl md:rounded-[2rem] overflow-hidden animate-in fade-in zoom-in duration-300">
               <div className="p-1 bg-primary/5 dark:bg-primary/10 border-b border-primary/10 flex items-center gap-2 px-4 md:px-6 py-2 md:py-3">
                 <Sparkles size={14} className="text-primary" />
-                <span className="text-[8px] md:text-[10px] font-black text-primary uppercase tracking-[0.2em]">Mindmap do AI tạo — tách riêng khỏi ghi chú của bạn</span>
+                <span className="text-[8px] md:text-[10px] font-extrabold text-primary uppercase tracking-[0.2em]">Mindmap do AI tạo — tách riêng khỏi ghi chú của bạn</span>
               </div>
               <div className="p-6 md:p-10">
-                <div className="markdown-body prose prose-slate dark:prose-invert max-w-none prose-headings:font-black prose-headings:tracking-tight prose-p:font-medium prose-p:leading-relaxed prose-li:font-medium prose-strong:text-primary dark:prose-strong:text-primary">
+                <div className="markdown-body prose prose-slate dark:prose-invert max-w-none prose-headings:font-extrabold prose-headings:tracking-tight prose-p:font-medium prose-p:leading-relaxed prose-li:font-medium prose-strong:text-primary dark:prose-strong:text-primary">
                   <ReactMarkdown>{aiMindmap}</ReactMarkdown>
                 </div>
               </div>
@@ -812,132 +1051,79 @@ export default function DeckDetail({ user, profile }: DeckDetailProps) {
 
       <div className="space-y-6">
         <div className="flex items-center justify-between">
-          <h2 className="text-2xl font-black text-slate-900 dark:text-white tracking-tight">Danh sách thẻ học</h2>
+          <h2 className="text-2xl font-extrabold text-zinc-900 dark:text-white tracking-tight">Danh sách thẻ học</h2>
           {deck.ownerId === user?.uid && (
-            <Button onClick={() => setIsAddModalOpen(true)} className="bg-indigo-600 hover:bg-indigo-700 h-12 px-6 rounded-2xl font-black gap-2 shadow-lg shadow-indigo-200 dark:shadow-none transition-all active:scale-95">
+            <Button onClick={() => setIsAddModalOpen(true)} className="bg-emerald-600 hover:bg-emerald-700 h-12 px-6 rounded-2xl font-extrabold gap-2 shadow-lg shadow-emerald-200 dark:shadow-none transition-all active:scale-95">
               <Plus size={18} /> THÊM THẺ MỚI
             </Button>
           )}
         </div>
 
-        <div className="grid gap-5">
-          {cards.slice(0, visibleCardCount).map((card) => {
-            const schedule = normalizeCardSchedule(card);
-            const due = isCardDue(card);
-            const buried = isCardBuried(card);
-            const statusLabel = schedule.suspended ? 'Đã tạm dừng' : buried ? 'Hoãn hôm nay' : due ? 'Cần ôn ngay' : (STATE_LABELS[schedule.state] || schedule.state);
-            const statusClass = schedule.suspended
-              ? 'bg-zinc-200 text-zinc-700 dark:bg-white/10 dark:text-zinc-300'
-              : buried
-                ? 'bg-sky-100 text-sky-700 dark:bg-sky-900/30 dark:text-sky-300'
-                : due
-                  ? 'bg-orange-100 dark:bg-orange-900/30 text-orange-600 dark:text-orange-400'
-                  : 'bg-emerald-100 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400';
-            const frontAudio = card.frontAudio?.length ? card.frontAudio : (card.audioUrls || []);
-            const backAudio = card.backAudio || [];
-
-            return (
-            <Card key={card.id} className="cv-auto border-none shadow-xl hover:shadow-2xl transition-all duration-500 group overflow-hidden bg-white dark:bg-slate-900 rounded-[2rem]">
-              <CardContent className="p-0 flex items-stretch">
-                <div className="w-2 bg-indigo-100 dark:bg-indigo-900 group-hover:bg-indigo-600 transition-all duration-500" />
-                <div className="flex-1 p-6 grid grid-cols-1 md:grid-cols-2 gap-8">
-                  <div className="flex gap-6">
-                    <div className="flex flex-col gap-2">
-                      {card.imageUrl && (
-                        <div className="w-24 h-24 rounded-2xl overflow-hidden flex-shrink-0 border-2 border-slate-50 dark:border-slate-800 shadow-md">
-                          <img src={card.imageUrl} alt="" loading="lazy" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
-                        </div>
-                      )}
-                      {!card.imageUrl && <div className="w-24 h-24 rounded-2xl bg-slate-50 dark:bg-slate-800 border-2 border-dashed border-slate-100 dark:border-slate-800 flex items-center justify-center text-slate-300 dark:text-slate-700"><ImageIcon size={28} /></div>}
-                    </div>
-                    <div className="flex-1">
-                      <div className="mb-2 flex items-center gap-2">
-                        <span className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em]">Mặt trước</span>
-                        {frontAudio.map((src, index) => (
-                          <AudioButton
-                            key={`front-${card.id}-${index}`}
-                            src={src}
-                            size="icon-sm"
-                            variant="outline"
-                            className="h-7 w-7 rounded-lg"
-                            label={`Phát audio mặt trước ${index + 1}`}
-                          />
-                        ))}
-                      </div>
-                      <div className="text-lg font-bold text-slate-900 dark:text-white prose prose-sm prose-slate dark:prose-invert leading-relaxed">
-                        <ReactMarkdown>{card.front}</ReactMarkdown>
-                      </div>
-                    </div>
-                  </div>
-                  <div className="flex justify-between items-start gap-6">
-                    <div className="flex gap-6 flex-1">
-                      <div className="flex flex-col gap-2">
-                        {card.backImageUrl && (
-                          <div className="w-24 h-24 rounded-2xl overflow-hidden flex-shrink-0 border-2 border-slate-50 dark:border-slate-800 shadow-md">
-                            <img src={card.backImageUrl} alt="" loading="lazy" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
-                          </div>
-                        )}
-                      </div>
-                      <div className="flex-1">
-                        <div className="mb-2 flex items-center gap-2">
-                          <span className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em]">Mặt sau</span>
-                          {backAudio.map((src, index) => (
-                            <AudioButton
-                              key={`back-${card.id}-${index}`}
-                              src={src}
-                              size="icon-sm"
-                              variant="outline"
-                              className="h-7 w-7 rounded-lg"
-                              label={`Phát audio mặt sau ${index + 1}`}
-                            />
-                          ))}
-                        </div>
-                        <div className="text-base font-medium text-slate-600 dark:text-slate-400 prose prose-sm prose-slate dark:prose-invert leading-relaxed">
-                          <ReactMarkdown>{card.back}</ReactMarkdown>
-                        </div>
-                      </div>
-                    </div>
-                    <div className="flex flex-col items-end gap-4">
-                      {deck.ownerId === user?.uid && (
-                        <div className="flex items-center gap-1 bg-slate-50 dark:bg-slate-800/50 p-1 rounded-xl">
-                          <Button variant="ghost" size="icon" title="Sửa thẻ" aria-label="Sửa thẻ" className="h-9 w-9 text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 rounded-lg transition-colors" onClick={() => setEditingCard(card)}>
-                            <Edit2 size={16} />
-                          </Button>
-                          <Button variant="ghost" size="icon" title="Hoãn hôm nay" aria-label="Hoãn hôm nay" className="h-9 w-9 text-slate-400 hover:text-sky-600 dark:hover:text-sky-400 rounded-lg transition-colors" onClick={() => handleBuryCard(card)}>
-                            <Calendar size={16} />
-                          </Button>
-                          <Button variant="ghost" size="icon" title="Tạm dừng thẻ" aria-label="Tạm dừng thẻ" className="h-9 w-9 text-slate-400 hover:text-amber-600 dark:hover:text-amber-400 rounded-lg transition-colors" onClick={() => handleToggleSuspendCard(card)}>
-                            <Lock size={16} />
-                          </Button>
-                          <Button variant="ghost" size="icon" title="Xóa thẻ" aria-label="Xóa thẻ" className="h-9 w-9 text-slate-400 hover:text-red-500 rounded-lg transition-colors" onClick={() => handleDeleteCard(card.id)}>
-                            <Trash2 size={16} />
-                          </Button>
-                        </div>
-                      )}
-                      <span className={`text-[10px] px-3 py-1 rounded-full font-black uppercase tracking-widest ${statusClass}`}>
-                        {statusLabel}
-                      </span>
-                    </div>
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
-            );
-          })}
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-center">
+          <div className="relative flex-1 w-full">
+            <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-zinc-400" size={18} />
+            <Input
+              placeholder="Tìm thẻ theo nội dung mặt trước / mặt sau..."
+              value={cardSearch}
+              onChange={(e) => setCardSearch(e.target.value)}
+              className="pl-11 h-12 rounded-xl bg-white dark:bg-white/5 border-zinc-200 dark:border-white/10 dark:text-white"
+            />
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {CARD_FILTERS.map((filter) => (
+              <Button
+                key={filter.key}
+                variant={cardFilter === filter.key ? 'default' : 'outline'}
+                onClick={() => setCardFilter(filter.key)}
+                className="rounded-xl font-bold h-10 px-4 text-xs"
+              >
+                {filter.label} ({filterCounts[filter.key]})
+              </Button>
+            ))}
+          </div>
         </div>
 
-        {cards.length > 0 && (
+        <div className="grid gap-5">
+          {filteredCards.slice(0, visibleCardCount).map((card) => (
+            <DeckCardRow
+              key={card.id}
+              card={card}
+              isOwner={deck.ownerId === user?.uid}
+              onEdit={handleEditCard}
+              onDelete={handleDeleteCard}
+              onBury={handleBuryCard}
+              onToggleSuspend={handleToggleSuspendCard}
+            />
+          ))}
+          {cards.length > 0 && filteredCards.length === 0 && (
+            <div className="premium-panel py-16 text-center">
+              <p className="text-lg font-bold text-zinc-900 dark:text-white">Không có thẻ nào khớp điều kiện lọc</p>
+              <p className="text-zinc-500 dark:text-zinc-400 mt-2 font-medium">Thử đổi từ khóa tìm kiếm hoặc chọn bộ lọc khác.</p>
+              <Button
+                variant="outline"
+                onClick={() => { setCardSearch(''); setCardFilter('all'); }}
+                className="gap-2 h-11 px-6 rounded-xl font-bold border-zinc-200 dark:border-white/10 dark:text-white mt-6"
+              >
+                <RotateCcw size={16} />
+                Xóa bộ lọc
+              </Button>
+            </div>
+          )}
+        </div>
+
+        {filteredCards.length > 0 && (
           <div className="flex flex-col items-center gap-3 pt-2">
-            <p className="text-xs font-bold text-slate-400 uppercase tracking-widest">
-              Đang hiển thị {Math.min(visibleCardCount, cards.length)}/{cards.length} thẻ
+            <p className="text-xs font-bold text-zinc-400 uppercase tracking-widest">
+              Đang hiển thị {Math.min(visibleCardCount, filteredCards.length)}/{filteredCards.length} thẻ
+              {(cardSearch.trim() || cardFilter !== 'all') ? ` (đã lọc từ ${cards.length} thẻ)` : ''}
             </p>
-            {visibleCardCount < cards.length && (
+            {visibleCardCount < filteredCards.length && (
               <Button
                 variant="outline"
                 onClick={() => setVisibleCardCount((count) => count + CARDS_PAGE_SIZE)}
-                className="h-11 px-8 rounded-2xl font-bold border-slate-200 dark:border-white/10 dark:text-white"
+                className="h-11 px-8 rounded-2xl font-bold border-zinc-200 dark:border-white/10 dark:text-white"
               >
-                Xem thêm thẻ (còn {cards.length - visibleCardCount})
+                Xem thêm thẻ (còn {filteredCards.length - visibleCardCount})
               </Button>
             )}
           </div>
@@ -971,7 +1157,7 @@ export default function DeckDetail({ user, profile }: DeckDetailProps) {
             <div className="space-y-6 py-4">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <div className="space-y-2">
-                  <label className="text-sm font-bold text-slate-700">Mặt trước (Câu hỏi)</label>
+                  <label className="text-sm font-bold text-zinc-700">Mặt trước (Câu hỏi)</label>
                   <Textarea 
                     value={editingCard.front} 
                     onChange={(e) => setEditingCard({...editingCard, front: e.target.value})}
@@ -985,7 +1171,7 @@ export default function DeckDetail({ user, profile }: DeckDetailProps) {
                   />
                 </div>
                 <div className="space-y-2">
-                  <label className="text-sm font-bold text-slate-700">Mặt sau (Trả lời)</label>
+                  <label className="text-sm font-bold text-zinc-700">Mặt sau (Trả lời)</label>
                   <Textarea 
                     value={editingCard.back} 
                     onChange={(e) => setEditingCard({...editingCard, back: e.target.value})}
@@ -1000,11 +1186,11 @@ export default function DeckDetail({ user, profile }: DeckDetailProps) {
                 </div>
               </div>
 
-              <div className="p-4 bg-slate-50 dark:bg-slate-800 rounded-2xl border border-slate-100 dark:border-slate-700 space-y-4">
-                <h4 className="text-xs font-black uppercase tracking-widest text-slate-400">Tùy chỉnh giao diện thẻ</h4>
+              <div className="p-4 bg-zinc-50 dark:bg-zinc-800 rounded-2xl border border-zinc-100 dark:border-zinc-700 space-y-4">
+                <h4 className="text-xs font-extrabold uppercase tracking-widest text-zinc-400">Tùy chỉnh giao diện thẻ</h4>
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                   <div className="space-y-2">
-                    <label className="text-xs font-bold text-slate-500">Màu nền</label>
+                    <label className="text-xs font-bold text-zinc-500">Màu nền</label>
                     <div className="flex gap-2 items-center">
                       <Input 
                         type="color" 
@@ -1028,7 +1214,7 @@ export default function DeckDetail({ user, profile }: DeckDetailProps) {
                     </div>
                   </div>
                   <div className="space-y-2">
-                    <label className="text-xs font-bold text-slate-500">Màu chữ</label>
+                    <label className="text-xs font-bold text-zinc-500">Màu chữ</label>
                     <div className="flex gap-2 items-center">
                       <Input 
                         type="color" 
@@ -1052,7 +1238,7 @@ export default function DeckDetail({ user, profile }: DeckDetailProps) {
                     </div>
                   </div>
                   <div className="space-y-2">
-                    <label className="text-xs font-bold text-slate-500">Kích thước chữ</label>
+                    <label className="text-xs font-bold text-zinc-500">Kích thước chữ</label>
                     <select 
                       value={editingCard.customStyles?.fontSize || 'text-xl'} 
                       onChange={(e) => setEditingCard({
@@ -1074,7 +1260,7 @@ export default function DeckDetail({ user, profile }: DeckDetailProps) {
           )}
           <DialogFooter>
             <Button variant="ghost" onClick={() => setEditingCard(null)}>Hủy</Button>
-            <Button onClick={handleUpdateCard} disabled={isSubmitting} className="bg-indigo-600 hover:bg-indigo-700">
+            <Button onClick={handleUpdateCard} disabled={isSubmitting} className="bg-emerald-600 hover:bg-emerald-700">
               {isSubmitting ? <Loader2 className="animate-spin" size={20} /> : 'Lưu thay đổi'}
             </Button>
           </DialogFooter>
@@ -1090,8 +1276,8 @@ export default function DeckDetail({ user, profile }: DeckDetailProps) {
           
           <div className="space-y-6 py-4">
             {/* AI Section */}
-            <div className="p-4 bg-indigo-50 rounded-2xl border border-indigo-100 space-y-3">
-              <div className="flex items-center gap-2 text-indigo-700 font-bold">
+            <div className="p-4 bg-emerald-50 dark:bg-emerald-500/10 rounded-2xl border border-emerald-100 dark:border-emerald-500/20 space-y-3">
+              <div className="flex items-center gap-2 text-emerald-700 dark:text-emerald-300 font-bold">
                 <Sparkles size={18} />
                 <span>Tạo nhanh bằng AI</span>
               </div>
@@ -1099,25 +1285,25 @@ export default function DeckDetail({ user, profile }: DeckDetailProps) {
                 placeholder="Dán nội dung vào đây để AI tự tạo thẻ..." 
                 value={aiText}
                 onChange={(e) => setAiText(e.target.value)}
-                className="bg-white rounded-xl min-h-[80px]"
+                className="bg-white dark:bg-white/5 rounded-xl min-h-[80px]"
               />
               <Button 
                 onClick={handleGenerateAI} 
                 disabled={isGenerating || !aiText.trim()}
-                className="w-full bg-indigo-600 hover:bg-indigo-700"
+                className="w-full bg-emerald-600 hover:bg-emerald-700"
               >
                 {isGenerating ? <Loader2 className="animate-spin" size={20} /> : 'Tạo thẻ bằng AI'}
               </Button>
             </div>
 
             <div className="relative">
-              <div className="absolute inset-0 flex items-center"><span className="w-full border-t border-slate-200" /></div>
-              <div className="relative flex justify-center text-xs uppercase"><span className="bg-white px-2 text-slate-400 font-bold">Hoặc thêm thủ công</span></div>
+              <div className="absolute inset-0 flex items-center"><span className="w-full border-t border-zinc-200" /></div>
+              <div className="relative flex justify-center text-xs uppercase"><span className="bg-popover px-2 text-zinc-400 font-bold">Hoặc thêm thủ công</span></div>
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div className="space-y-2">
-                <label className="text-sm font-bold text-slate-700">Mặt trước</label>
+                <label className="text-sm font-bold text-zinc-700">Mặt trước</label>
                 <Textarea 
                   placeholder="Câu hỏi..." 
                   value={newCard.front}
@@ -1132,7 +1318,7 @@ export default function DeckDetail({ user, profile }: DeckDetailProps) {
                 />
               </div>
               <div className="space-y-2">
-                <label className="text-sm font-bold text-slate-700">Mặt sau</label>
+                <label className="text-sm font-bold text-zinc-700">Mặt sau</label>
                 <Textarea 
                   placeholder="Câu trả lời..." 
                   value={newCard.back}
@@ -1148,11 +1334,11 @@ export default function DeckDetail({ user, profile }: DeckDetailProps) {
               </div>
             </div>
 
-            <div className="p-4 bg-slate-50 dark:bg-slate-800 rounded-2xl border border-slate-100 dark:border-slate-700 space-y-4">
-              <h4 className="text-xs font-black uppercase tracking-widest text-slate-400">Tùy chỉnh giao diện thẻ</h4>
+            <div className="p-4 bg-zinc-50 dark:bg-zinc-800 rounded-2xl border border-zinc-100 dark:border-zinc-700 space-y-4">
+              <h4 className="text-xs font-extrabold uppercase tracking-widest text-zinc-400">Tùy chỉnh giao diện thẻ</h4>
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                 <div className="space-y-2">
-                  <label className="text-xs font-bold text-slate-500">Màu nền</label>
+                  <label className="text-xs font-bold text-zinc-500">Màu nền</label>
                   <div className="flex gap-2 items-center">
                     <Input 
                       type="color" 
@@ -1170,7 +1356,7 @@ export default function DeckDetail({ user, profile }: DeckDetailProps) {
                   </div>
                 </div>
                 <div className="space-y-2">
-                  <label className="text-xs font-bold text-slate-500">Màu chữ</label>
+                  <label className="text-xs font-bold text-zinc-500">Màu chữ</label>
                   <div className="flex gap-2 items-center">
                     <Input 
                       type="color" 
@@ -1188,7 +1374,7 @@ export default function DeckDetail({ user, profile }: DeckDetailProps) {
                   </div>
                 </div>
                 <div className="space-y-2">
-                  <label className="text-xs font-bold text-slate-500">Kích thước chữ</label>
+                  <label className="text-xs font-bold text-zinc-500">Kích thước chữ</label>
                   <select 
                     value={newCard.fontSize} 
                     onChange={(e) => setNewCard({...newCard, fontSize: e.target.value})}
@@ -1207,7 +1393,7 @@ export default function DeckDetail({ user, profile }: DeckDetailProps) {
 
           <DialogFooter>
             <Button variant="ghost" onClick={() => setIsAddModalOpen(false)}>Hủy</Button>
-            <Button onClick={handleAddCard} disabled={isSubmitting || !newCard.front || !newCard.back} className="bg-indigo-600 hover:bg-indigo-700">
+            <Button onClick={handleAddCard} disabled={isSubmitting || !newCard.front || !newCard.back} className="bg-emerald-600 hover:bg-emerald-700">
               {isSubmitting ? <Loader2 className="animate-spin" size={20} /> : 'Thêm thẻ'}
             </Button>
           </DialogFooter>

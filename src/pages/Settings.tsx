@@ -189,10 +189,30 @@ export default function Settings({ user, profile }: SettingsProps) {
     intervalModifier: String(schedulerConfig.intervalModifier),
     burySiblings: schedulerConfig.burySiblings,
   });
+  // Bản nháp tương ứng với cấu hình ĐÃ lưu — so sánh với schedulerDraft để
+  // hiện chỉ báo "có thay đổi chưa lưu" cho mục thuật toán (lưu thủ công).
+  const savedSchedulerDraft = useMemo(() => ({
+    learningSteps: serializeSchedulerSteps(schedulerConfig.learningSteps),
+    relearningSteps: serializeSchedulerSteps(schedulerConfig.relearningSteps),
+    desiredRetentionPercent: String(Math.round(schedulerConfig.desiredRetention * 100)),
+    newCardsPerDay: String(schedulerConfig.newCardsPerDay),
+    reviewsPerDay: String(schedulerConfig.reviewsPerDay),
+    maximumInterval: String(schedulerConfig.maximumInterval),
+    leechThreshold: String(schedulerConfig.leechThreshold),
+    intervalModifier: String(schedulerConfig.intervalModifier),
+    burySiblings: schedulerConfig.burySiblings,
+  }), [schedulerConfig]);
+  const schedulerDirty = JSON.stringify(schedulerDraft) !== JSON.stringify(savedSchedulerDraft);
+  const [dailyGoalDraft, setDailyGoalDraft] = useState(String(profile?.settings?.dailyGoal || 20));
+  const [isSavingDailyGoal, setIsSavingDailyGoal] = useState(false);
 
   useEffect(() => {
     setGeminiApiKey(profile?.settings?.geminiApiKey || profile?.settings?.aiApiKey || '');
   }, [profile?.settings?.geminiApiKey, profile?.settings?.aiApiKey]);
+
+  useEffect(() => {
+    setDailyGoalDraft(String(profile?.settings?.dailyGoal || 20));
+  }, [profile?.settings?.dailyGoal]);
 
   useEffect(() => {
     setProfileName(profile?.displayName || user?.displayName || '');
@@ -367,6 +387,28 @@ export default function Settings({ user, profile }: SettingsProps) {
       toast.error(`Lỗi Gemini: ${message}`);
     } finally {
       setIsSaving(false);
+    }
+  };
+
+  const handleSaveDailyGoal = async () => {
+    if (!user) return;
+
+    const parsed = Math.round(Number(dailyGoalDraft));
+    if (!Number.isFinite(parsed) || parsed < 1 || parsed > 1000) {
+      toast.error('Mục tiêu mỗi ngày cần là số nguyên từ 1 đến 1000.');
+      return;
+    }
+
+    setIsSavingDailyGoal(true);
+    try {
+      await updateDoc(doc(db, 'users', user.uid), {
+        'settings.dailyGoal': parsed,
+      });
+      toast.success('Đã lưu mục tiêu học mỗi ngày.');
+    } catch {
+      toast.error('Không thể lưu mục tiêu học mỗi ngày.');
+    } finally {
+      setIsSavingDailyGoal(false);
     }
   };
 
@@ -596,6 +638,32 @@ export default function Settings({ user, profile }: SettingsProps) {
               <p className="mt-1 text-xs font-medium text-zinc-500">Thẻ đã học</p>
             </div>
           </div>
+
+          <div className="mt-6 flex flex-col gap-4 rounded-lg border border-zinc-200 bg-zinc-50/80 p-4 dark:border-white/10 dark:bg-white/[0.04] sm:flex-row sm:items-center sm:justify-between">
+            <div className="min-w-0">
+              <p className="text-sm font-semibold text-zinc-950 dark:text-white">Mục tiêu học mỗi ngày</p>
+              <p className="mt-1 text-sm leading-6 text-zinc-500 dark:text-zinc-400">
+                Số thẻ mục tiêu hiển thị ở thanh tiến độ "Hôm nay" trên Tổng quan và thanh bên.
+              </p>
+            </div>
+            <div className="flex shrink-0 items-center gap-2">
+              <Input
+                type="number"
+                min="1"
+                max="1000"
+                step="1"
+                value={dailyGoalDraft}
+                onChange={(event) => setDailyGoalDraft(event.target.value)}
+                className="h-10 w-24 text-center font-mono"
+                aria-label="Mục tiêu số thẻ mỗi ngày"
+              />
+              <span className="text-sm font-medium text-zinc-500">thẻ/ngày</span>
+              <Button type="button" onClick={handleSaveDailyGoal} disabled={isSavingDailyGoal} className="h-10 px-4">
+                {isSavingDailyGoal ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+                Lưu
+              </Button>
+            </div>
+          </div>
         </section>
 
         <section className="premium-panel p-6 dark:bg-zinc-950/70">
@@ -743,10 +811,18 @@ export default function Settings({ user, profile }: SettingsProps) {
               Thuật toán FSRS-6 tính khoảng ôn từ độ ổn định, độ khó và khả năng nhớ lại của từng thẻ. Bước học nhập dạng <span className="font-mono">1m, 10m, 1d</span>.
             </p>
           </div>
-          <Button type="button" onClick={handleSaveScheduler} className="h-10 px-5">
-            <Save className="h-4 w-4" />
-            Lưu cấu hình
-          </Button>
+          <div className="flex shrink-0 flex-col items-start gap-2 md:items-end">
+            <Button type="button" onClick={handleSaveScheduler} className="h-10 px-5">
+              <Save className="h-4 w-4" />
+              Lưu cấu hình
+            </Button>
+            {schedulerDirty && (
+              <span className="inline-flex items-center gap-2 rounded-full bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-700 dark:bg-amber-500/10 dark:text-amber-300">
+                <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
+                Có thay đổi chưa lưu
+              </span>
+            )}
+          </div>
         </div>
 
         <div className="mt-6 grid gap-4 lg:grid-cols-2">

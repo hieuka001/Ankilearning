@@ -1,35 +1,36 @@
 import { useState, useRef, useEffect } from 'react';
 import { createWorker } from 'tesseract.js';
-import * as pdfjsLib from 'pdfjs-dist';
 import { motion, AnimatePresence } from 'motion/react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Textarea } from '@/components/ui/textarea';
-import { 
-  Camera, 
-  FileText, 
-  Sparkles, 
-  Loader2, 
-  Copy, 
+import {
+  Camera,
+  FileText,
+  Sparkles,
+  Loader2,
+  Copy,
   Check,
   BrainCircuit,
   Upload,
   Settings2,
   Save,
-  Plus
+  Plus,
+  Trash2
 } from 'lucide-react';
 import { generateFlashcardsFromText } from '../services/aiService';
 import { toast } from 'sonner';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
 import { collection, addDoc, serverTimestamp, writeBatch, doc, query, where, getDocs, updateDoc, increment } from 'firebase/firestore';
 import { db } from '../firebase';
 import { useNavigate } from 'react-router-dom';
 import { createInitialCardSchedule } from '../lib/spacedRepetition';
 import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
+import tesseractWorkerUrl from 'tesseract.js/dist/worker.min.js?url';
 
-// Dùng worker PDF đóng gói cùng app (không phụ thuộc CDN ngoài).
-pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
+// pdfjs (thư viện ~452KB) được nạp lười bên trong handler xử lý PDF để không
+// tải kèm trang; chỉ URL của worker (chuỗi) được import tĩnh tại đây.
+// Tesseract cũng tự host toàn bộ: worker từ bundle, core WASM + dữ liệu ngôn
+// ngữ eng/vie từ public/tesseract-core và public/tessdata (không còn CDN).
 
 const MAX_PDF_PAGES = 30;
 const MAX_MATERIAL_CHARS = 60000;
@@ -128,6 +129,50 @@ export default function AIHelper({ user, profile }: AIHelperProps) {
     }
   }, [user]);
 
+  // Nháp nội dung nguồn (văn bản OCR/dán tay + ô nhấn mạnh): tự lưu vào
+  // localStorage để không mất khi chuyển trang, khôi phục khi mở lại trang,
+  // xoá sau khi lưu bộ thẻ thành công. Không lưu API key hay dữ liệu nhạy cảm.
+  const draftKey = `draft:${user?.uid || 'guest'}:ai-helper`;
+  const draftLoadedRef = useRef(false);
+
+  useEffect(() => {
+    if (draftLoadedRef.current) return;
+    draftLoadedRef.current = true;
+    try {
+      const raw = localStorage.getItem(draftKey);
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      if (typeof parsed?.ocrText === 'string' && parsed.ocrText) setOcrText(parsed.ocrText);
+      if (typeof parsed?.emphasis === 'string' && parsed.emphasis) setEmphasis(parsed.emphasis);
+    } catch {
+      // Nháp lỗi/không đọc được — bỏ qua, trang vẫn dùng bình thường.
+    }
+  }, [draftKey]);
+
+  useEffect(() => {
+    if (!draftLoadedRef.current) return;
+    const timer = window.setTimeout(() => {
+      try {
+        if (ocrText || emphasis) {
+          localStorage.setItem(draftKey, JSON.stringify({ ocrText, emphasis }));
+        } else {
+          localStorage.removeItem(draftKey);
+        }
+      } catch {
+        // Storage đầy/bị chặn — mất nháp nhưng không ảnh hưởng luồng chính.
+      }
+    }, 400);
+    return () => window.clearTimeout(timer);
+  }, [ocrText, emphasis, draftKey]);
+
+  const updateGeneratedCard = (index: number, field: 'front' | 'back', value: string) => {
+    setGeneratedCards(prev => prev.map((card, i) => (i === index ? { ...card, [field]: value } : card)));
+  };
+
+  const removeGeneratedCard = (index: number) => {
+    setGeneratedCards(prev => prev.filter((_, i) => i !== index));
+  };
+
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
@@ -165,6 +210,8 @@ export default function AIHelper({ user, profile }: AIHelperProps) {
       reader.onload = async (event) => {
         const typedArray = new Uint8Array(event.target?.result as ArrayBuffer);
         try {
+          const pdfjsLib = await import('pdfjs-dist');
+          pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
           const pdf = await pdfjsLib.getDocument(typedArray).promise;
           const totalPages = pdf.numPages;
           const pagesToRead = Math.min(totalPages, MAX_PDF_PAGES);
@@ -204,7 +251,14 @@ export default function AIHelper({ user, profile }: AIHelperProps) {
     setIsProcessing(true);
     let worker: any = null;
     try {
-      worker = await createWorker('vie+eng');
+      // Tự host OCR: worker script đi cùng bundle, core WASM và dữ liệu ngôn
+      // ngữ (eng + vie, bản best_int) phục vụ từ cùng origin — OCR chạy được
+      // cả khi offline và không phụ thuộc CDN bên thứ ba.
+      worker = await createWorker('vie+eng', undefined, {
+        workerPath: tesseractWorkerUrl,
+        corePath: '/tesseract-core',
+        langPath: '/tessdata',
+      });
       const { data: { text } } = await worker.recognize(imageSrc);
       const capped = capMaterialText(text);
       setOcrText(capped.text);
@@ -256,7 +310,14 @@ export default function AIHelper({ user, profile }: AIHelperProps) {
 
   const handleSaveToDeck = async () => {
     if (!user || generatedCards.length === 0) return;
-    
+
+    // Chỉ lưu các thẻ còn đủ hai mặt sau khi người dùng đã sửa/xoá ở preview.
+    const cardsToSave = generatedCards.filter(card => card.front?.trim() && card.back?.trim());
+    if (cardsToSave.length === 0) {
+      toast.error("Không còn thẻ hợp lệ để lưu — mỗi thẻ cần đủ mặt trước và mặt sau.");
+      return;
+    }
+
     if (selectedDeckId === 'new' && !deckName.trim()) {
       toast.error("Vui lòng nhập tên bộ thẻ.");
       return;
@@ -273,7 +334,7 @@ export default function AIHelper({ user, profile }: AIHelperProps) {
           name: deckName,
           description: `Tạo tự động từ Study Copilot dựa trên tài liệu giáo trình.`,
           category: 'Y khoa',
-          cardCount: generatedCards.length,
+          cardCount: cardsToSave.length,
           createdAt: new Date().toISOString(),
           isPublic: false,
           color: '#4f46e5',
@@ -283,13 +344,13 @@ export default function AIHelper({ user, profile }: AIHelperProps) {
       } else {
         // Update existing deck card count
         await updateDoc(doc(db, 'decks', selectedDeckId), {
-          cardCount: increment(generatedCards.length)
+          cardCount: increment(cardsToSave.length)
         });
       }
 
       // 2. Create Flashcards using Batch
       const batch = writeBatch(db);
-      generatedCards.forEach(card => {
+      cardsToSave.forEach(card => {
         const cardRef = doc(collection(db, `decks/${deckId}/cards`));
         batch.set(cardRef, {
           deckId: deckId,
@@ -305,6 +366,8 @@ export default function AIHelper({ user, profile }: AIHelperProps) {
 
       await batch.commit();
       toast.success(selectedDeckId === 'new' ? "Đã tạo bộ thẻ thành công!" : "Đã thêm vào bộ thẻ thành công!");
+      // Lưu thành công → dọn nháp nội dung nguồn.
+      try { localStorage.removeItem(draftKey); } catch { /* bỏ qua */ }
       navigate('/decks');
     } catch {
       toast.error("Lỗi khi lưu bộ thẻ.");
@@ -319,15 +382,15 @@ export default function AIHelper({ user, profile }: AIHelperProps) {
         <div className="inline-flex p-4 md:p-6 bg-primary/10 text-primary rounded-[1.5rem] md:rounded-[2rem] mb-2 shadow-2xl shadow-primary/10">
           <BrainCircuit className="w-8 h-8 md:w-12 md:h-12" />
         </div>
-        <h1 className="text-3xl md:text-5xl font-black text-slate-900 dark:text-white tracking-tighter text-balance">Study Copilot</h1>
-        <p className="text-slate-500 dark:text-slate-400 text-lg md:text-xl font-medium leading-relaxed">
+        <h1 className="text-3xl md:text-5xl font-extrabold text-zinc-900 dark:text-white tracking-tighter text-balance">Study Copilot</h1>
+        <p className="text-zinc-500 dark:text-zinc-400 text-lg md:text-xl font-medium leading-relaxed">
           Gia sư học tập cá nhân giúp phân tích tài liệu, tóm tắt kiến thức, tạo flashcards và gợi ý câu hỏi nâng cao bằng <span className="text-primary font-bold">Gemini</span>.
         </p>
         <div className="mx-auto grid max-w-3xl grid-cols-2 gap-2 text-left md:grid-cols-5">
           {['Audio', 'Transcript', 'AI Summary', 'Flashcards', 'Quiz'].map((step, index) => (
             <div key={step} className="workflow-step p-3">
-              <p className="font-mono text-[10px] font-black text-primary">0{index + 1}</p>
-              <p className="mt-1 text-xs font-bold text-slate-700 dark:text-slate-200">{step}</p>
+              <p className="font-mono text-[10px] font-extrabold text-primary">0{index + 1}</p>
+              <p className="mt-1 text-xs font-bold text-zinc-700 dark:text-zinc-200">{step}</p>
             </div>
           ))}
         </div>
@@ -337,34 +400,34 @@ export default function AIHelper({ user, profile }: AIHelperProps) {
         {/* Input Section */}
         <section className="lg:col-span-7 space-y-6 md:space-y-8">
           <Card className="premium-panel border-0 bg-transparent shadow-2xl overflow-hidden rounded-3xl md:rounded-[3rem]">
-            <CardHeader className="p-6 md:p-10 pb-4 md:pb-6 border-b border-slate-100 dark:border-white/5">
+            <CardHeader className="p-6 md:p-10 pb-4 md:pb-6 border-b border-zinc-100 dark:border-white/5">
               <div className="flex items-center gap-3 md:gap-4">
                 <div className="p-2.5 md:p-3 bg-primary/10 text-primary rounded-xl md:rounded-2xl">
                   <Settings2 className="w-5 h-5 md:w-6 md:h-6" />
                 </div>
                 <div>
-                  <CardTitle className="text-xl md:text-2xl font-black tracking-tight">Cấu hình đầu vào</CardTitle>
-                  <CardDescription className="text-[8px] md:text-[10px] font-black uppercase tracking-widest text-slate-400">Source & AI Options</CardDescription>
+                  <CardTitle className="text-xl md:text-2xl font-extrabold tracking-tight">Cấu hình đầu vào</CardTitle>
+                  <CardDescription className="text-[8px] md:text-[10px] font-extrabold uppercase tracking-widest text-zinc-400">Source & AI Options</CardDescription>
                 </div>
               </div>
             </CardHeader>
             <CardContent className="p-6 md:p-10 space-y-6 md:space-y-10">
               <div className="space-y-4">
-                <label className="text-[9px] md:text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] flex items-center gap-2">
+                <label className="text-[9px] md:text-[10px] font-extrabold text-zinc-400 uppercase tracking-[0.2em] flex items-center gap-2">
                   <FileText className="w-3.5 h-3.5" />
                   Tài liệu PDF
                 </label>
                 <div 
                   onClick={() => pdfInputRef.current?.click()}
-                  className="group border-2 border-dashed border-slate-200 dark:border-white/10 rounded-2xl md:rounded-[2rem] p-6 flex flex-col items-center justify-center cursor-pointer hover:border-blue-500/50 hover:bg-blue-500/5 transition-all"
+                  className="group border-2 border-dashed border-zinc-200 dark:border-white/10 rounded-2xl md:rounded-[2rem] p-6 flex flex-col items-center justify-center cursor-pointer hover:border-blue-500/50 hover:bg-blue-500/5 transition-all"
                 >
                   <div className="flex items-center gap-4">
                     <div className="p-3 bg-blue-50 dark:bg-blue-500/10 rounded-xl text-blue-500">
                       <FileText className="w-6 h-6" />
                     </div>
                     <div className="text-left">
-                      <p className="text-sm font-black text-slate-700 dark:text-slate-200 uppercase tracking-widest">Tải lên file PDF</p>
-                      <p className="text-[10px] text-slate-400 font-medium">Trích xuất văn bản tối đa 30 trang đầu, giữ cấu trúc đoạn</p>
+                      <p className="text-sm font-extrabold text-zinc-700 dark:text-zinc-200 uppercase tracking-widest">Tải lên file PDF</p>
+                      <p className="text-[10px] text-zinc-400 font-medium">Trích xuất văn bản tối đa 30 trang đầu, giữ cấu trúc đoạn</p>
                     </div>
                   </div>
                   <input 
@@ -378,21 +441,21 @@ export default function AIHelper({ user, profile }: AIHelperProps) {
               </div>
 
               <div className="relative py-2 md:py-4">
-                <div className="absolute inset-0 flex items-center"><span className="w-full border-t border-slate-100 dark:border-white/5" /></div>
-                <div className="relative flex justify-center text-[8px] md:text-[10px] uppercase tracking-[0.4em]"><span className="bg-white dark:bg-[#0C0D0E] px-4 md:px-6 text-slate-400 font-black">Hoặc</span></div>
+                <div className="absolute inset-0 flex items-center"><span className="w-full border-t border-zinc-100 dark:border-white/5" /></div>
+                <div className="relative flex justify-center text-[8px] md:text-[10px] uppercase tracking-[0.4em]"><span className="bg-white dark:bg-[#0C0D0E] px-4 md:px-6 text-zinc-400 font-extrabold">Hoặc</span></div>
               </div>
 
               <div className="space-y-4">
                 <div className="flex items-center justify-between">
-                  <label className="text-[9px] md:text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] flex items-center gap-2">
+                  <label className="text-[9px] md:text-[10px] font-extrabold text-zinc-400 uppercase tracking-[0.2em] flex items-center gap-2">
                     <Camera className="w-3.5 h-3.5" />
                     Hình ảnh tài liệu
                   </label>
                   <div className="flex items-center gap-3">
-                    <span className="text-[10px] font-black text-slate-400">AI VISION</span>
+                    <span className="text-[10px] font-extrabold text-zinc-400">AI VISION</span>
                     <button 
                       onClick={() => setUseVision(!useVision)}
-                      className={`w-10 h-5 rounded-full transition-all relative ${useVision ? 'bg-primary' : 'bg-slate-200 dark:bg-white/10'}`}
+                      className={`w-10 h-5 rounded-full transition-all relative ${useVision ? 'bg-primary' : 'bg-zinc-200 dark:bg-white/10'}`}
                     >
                       <motion.div 
                         animate={{ x: useVision ? 20 : 0 }}
@@ -404,7 +467,7 @@ export default function AIHelper({ user, profile }: AIHelperProps) {
 
                 <div 
                   onClick={() => fileInputRef.current?.click()}
-                  className="group border-2 border-dashed border-slate-200 dark:border-white/10 rounded-2xl md:rounded-[2.5rem] p-8 md:p-12 flex flex-col items-center justify-center cursor-pointer hover:border-primary/50 hover:bg-primary/5 transition-all duration-500"
+                  className="group border-2 border-dashed border-zinc-200 dark:border-white/10 rounded-2xl md:rounded-[2.5rem] p-8 md:p-12 flex flex-col items-center justify-center cursor-pointer hover:border-primary/50 hover:bg-primary/5 transition-all duration-500"
                 >
                 {image ? (
                   <div className="relative">
@@ -415,11 +478,11 @@ export default function AIHelper({ user, profile }: AIHelperProps) {
                   </div>
                 ) : (
                   <>
-                    <div className="p-4 md:p-6 bg-slate-50 dark:bg-white/5 rounded-full text-slate-300 dark:text-slate-700 mb-4 md:mb-6 group-hover:scale-110 group-hover:text-primary transition-all duration-500">
+                    <div className="p-4 md:p-6 bg-zinc-50 dark:bg-white/5 rounded-full text-zinc-300 dark:text-zinc-700 mb-4 md:mb-6 group-hover:scale-110 group-hover:text-primary transition-all duration-500">
                       <Camera className="w-8 h-8 md:w-12 md:h-12" />
                     </div>
-                    <p className="text-base md:text-lg text-slate-500 dark:text-slate-400 font-black uppercase tracking-widest text-center">Tải ảnh tài liệu</p>
-                    <p className="text-[10px] md:text-xs text-slate-400 mt-1 md:mt-2 font-medium">PNG, JPG up to 10MB</p>
+                    <p className="text-base md:text-lg text-zinc-500 dark:text-zinc-400 font-extrabold uppercase tracking-widest text-center">Tải ảnh tài liệu</p>
+                    <p className="text-[10px] md:text-xs text-zinc-400 mt-1 md:mt-2 font-medium">PNG, JPG up to 10MB</p>
                   </>
                 )}
                 <input 
@@ -435,39 +498,39 @@ export default function AIHelper({ user, profile }: AIHelperProps) {
               {isProcessing && (
                 <div className="flex items-center justify-center gap-3 md:gap-4 p-6 md:p-8 bg-primary/5 border border-primary/10 text-primary rounded-2xl md:rounded-3xl animate-pulse">
                   <Loader2 className="animate-spin w-6 h-6 md:w-7 md:h-7" />
-                  <span className="font-black text-[9px] md:text-xs uppercase tracking-widest">Đang trích xuất...</span>
+                  <span className="font-extrabold text-[9px] md:text-xs uppercase tracking-widest">Đang trích xuất...</span>
                 </div>
               )}
 
-              <div className="space-y-6 md:space-y-8 pt-6 md:pt-10 border-t border-slate-100 dark:border-white/5">
+              <div className="space-y-6 md:space-y-8 pt-6 md:pt-10 border-t border-zinc-100 dark:border-white/5">
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 md:gap-8">
                   <div className="space-y-2 md:space-y-3">
-                    <label className="text-[9px] md:text-[10px] font-black text-slate-400 uppercase tracking-[0.2em]">Số thẻ cần tạo</label>
+                    <label className="text-[9px] md:text-[10px] font-extrabold text-zinc-400 uppercase tracking-[0.2em]">Số thẻ cần tạo</label>
                     <input 
                       type="number"
                       min="1"
                       max="20"
                       value={cardCount}
                       onChange={(e) => setCardCount(parseInt(e.target.value) || 5)}
-                      className="w-full h-12 md:h-14 px-4 md:px-6 rounded-xl md:rounded-2xl border-2 border-slate-100 dark:border-white/5 bg-slate-50 dark:bg-white/5 dark:text-white focus:border-primary outline-none transition-all font-mono font-bold text-lg md:text-xl"
+                      className="w-full h-12 md:h-14 px-4 md:px-6 rounded-xl md:rounded-2xl border-2 border-zinc-100 dark:border-white/5 bg-zinc-50 dark:bg-white/5 dark:text-white focus:border-primary outline-none transition-all font-mono font-bold text-lg md:text-xl"
                     />
                   </div>
                   <div className="space-y-2 md:space-y-3">
-                    <label className="text-[9px] md:text-[10px] font-black text-slate-400 uppercase tracking-[0.2em]">Nhấn mạnh nội dung</label>
+                    <label className="text-[9px] md:text-[10px] font-extrabold text-zinc-400 uppercase tracking-[0.2em]">Nhấn mạnh nội dung</label>
                     <input 
                       placeholder="VD: Định nghĩa..."
                       value={emphasis}
                       onChange={(e) => setEmphasis(e.target.value)}
-                      className="w-full h-12 md:h-14 px-4 md:px-6 rounded-xl md:rounded-2xl border-2 border-slate-100 dark:border-white/5 bg-slate-50 dark:bg-white/5 dark:text-white focus:border-primary outline-none transition-all font-medium text-sm md:text-base"
+                      className="w-full h-12 md:h-14 px-4 md:px-6 rounded-xl md:rounded-2xl border-2 border-zinc-100 dark:border-white/5 bg-zinc-50 dark:bg-white/5 dark:text-white focus:border-primary outline-none transition-all font-medium text-sm md:text-base"
                     />
                   </div>
                 </div>
 
                 <div className="space-y-3 md:space-y-4">
                   <div className="flex items-center justify-between">
-                    <label className="text-[9px] md:text-[10px] font-black text-slate-400 uppercase tracking-[0.2em]">Dữ liệu thô</label>
+                    <label className="text-[9px] md:text-[10px] font-extrabold text-zinc-400 uppercase tracking-[0.2em]">Dữ liệu thô</label>
                     {ocrText && (
-                      <Button variant="ghost" size="sm" onClick={() => copyToClipboard(ocrText)} className="h-8 text-[9px] md:text-[10px] font-black uppercase tracking-widest text-slate-400 hover:text-primary">
+                      <Button variant="ghost" size="sm" onClick={() => copyToClipboard(ocrText)} className="h-8 text-[9px] md:text-[10px] font-extrabold uppercase tracking-widest text-zinc-400 hover:text-primary">
                         <Copy size={12} className="mr-2" /> Copy
                       </Button>
                     )}
@@ -476,14 +539,14 @@ export default function AIHelper({ user, profile }: AIHelperProps) {
                     value={ocrText}
                     onChange={(e) => setOcrText(e.target.value)}
                     placeholder="Quét hoặc dán văn bản..."
-                    className="min-h-[200px] md:min-h-[250px] rounded-2xl md:rounded-3xl border-2 border-slate-100 dark:border-white/5 bg-slate-50 dark:bg-white/5 dark:text-white text-sm md:text-base leading-relaxed font-medium p-4 md:p-8 focus:border-primary transition-all"
+                    className="min-h-[200px] md:min-h-[250px] rounded-2xl md:rounded-3xl border-2 border-zinc-100 dark:border-white/5 bg-zinc-50 dark:bg-white/5 dark:text-white text-sm md:text-base leading-relaxed font-medium p-4 md:p-8 focus:border-primary transition-all"
                   />
                 </div>
 
                 <Button
                   onClick={handleGenerateCards}
                   disabled={(!ocrText.trim() && !image) || isGenerating}
-                  className="w-full bg-primary hover:bg-primary/90 gap-3 md:gap-4 h-16 md:h-20 rounded-2xl md:rounded-[2rem] font-black text-base md:text-xl shadow-2xl shadow-primary/30 transition-all active:scale-[0.98] group"
+                  className="w-full bg-primary hover:bg-primary/90 gap-3 md:gap-4 h-16 md:h-20 rounded-2xl md:rounded-[2rem] font-extrabold text-base md:text-xl shadow-2xl shadow-primary/30 transition-all active:scale-[0.98] group"
                 >
                   {isGenerating ? <Loader2 className="animate-spin w-6 h-6 md:w-7 md:h-7" /> : <Sparkles className="group-hover:animate-pulse w-6 h-6 md:w-7 md:h-7" />}
                   TẠO BỘ THẺ VỚI AI
@@ -496,21 +559,21 @@ export default function AIHelper({ user, profile }: AIHelperProps) {
         {/* AI Results Section */}
         <section className="lg:col-span-5 space-y-6 md:space-y-8">
           <Card className="premium-panel border-0 bg-transparent shadow-2xl h-full flex flex-col rounded-3xl md:rounded-[3rem] overflow-hidden min-h-[400px]">
-            <CardHeader className="p-6 md:p-10 pb-4 md:pb-6 bg-slate-900 dark:bg-black text-white">
+            <CardHeader className="p-6 md:p-10 pb-4 md:pb-6 bg-zinc-900 dark:bg-black text-white">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-3 md:gap-4">
                   <Sparkles className="text-primary w-6 h-6 md:w-7 md:h-7" />
                   <div>
-                    <CardTitle className="text-xl md:text-2xl font-black tracking-tight">Kết quả AI</CardTitle>
-                    <CardDescription className="text-[8px] md:text-[10px] font-black uppercase tracking-widest text-white/50">Flashcards Preview</CardDescription>
+                    <CardTitle className="text-xl md:text-2xl font-extrabold tracking-tight">Kết quả AI</CardTitle>
+                    <CardDescription className="text-[8px] md:text-[10px] font-extrabold uppercase tracking-widest text-white/50">Flashcards Preview</CardDescription>
                   </div>
                 </div>
                 {generatedCards.length > 0 && (
-                  <Button 
+                  <Button
                     onClick={handleSaveToDeck}
-                    disabled={isSaving}
+                    disabled={isSaving || generatedCards.length === 0}
                     size="sm"
-                    className="bg-primary hover:bg-primary/90 font-black text-[10px] uppercase tracking-widest h-9 px-4 rounded-xl shadow-lg shadow-primary/20"
+                    className="bg-primary hover:bg-primary/90 font-extrabold text-[10px] uppercase tracking-widest h-9 px-4 rounded-xl shadow-lg shadow-primary/20"
                   >
                     {isSaving ? <Loader2 className="animate-spin w-3.5 h-3.5 mr-2" /> : <Save className="w-3.5 h-3.5 mr-2" />}
                     Lưu bộ thẻ
@@ -521,13 +584,13 @@ export default function AIHelper({ user, profile }: AIHelperProps) {
             <CardContent className="p-6 md:p-10 flex-1 overflow-y-auto custom-scrollbar">
               {generatedCards.length > 0 ? (
                 <div className="space-y-6 md:space-y-8">
-                  <div className="p-4 bg-slate-50 dark:bg-white/5 rounded-2xl border border-slate-100 dark:border-white/5 space-y-4">
+                  <div className="p-4 bg-zinc-50 dark:bg-white/5 rounded-2xl border border-zinc-100 dark:border-white/5 space-y-4">
                     <div className="space-y-2">
-                      <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Chọn đích đến</label>
+                      <label className="text-[9px] font-extrabold text-zinc-400 uppercase tracking-widest">Chọn đích đến</label>
                       <select 
                         value={selectedDeckId}
                         onChange={(e) => setSelectedDeckId(e.target.value)}
-                        className="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-white/10 rounded-xl px-4 py-2 text-sm font-bold text-slate-900 dark:text-white outline-none focus:border-primary"
+                        className="w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-white/10 rounded-xl px-4 py-2 text-sm font-bold text-zinc-900 dark:text-white outline-none focus:border-primary"
                       >
                         <option value="new">+ Tạo bộ thẻ mới</option>
                         {existingDecks.map(deck => (
@@ -538,51 +601,71 @@ export default function AIHelper({ user, profile }: AIHelperProps) {
 
                     {selectedDeckId === 'new' && (
                       <div className="space-y-2">
-                        <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Tên bộ thẻ mới</label>
-                        <input 
+                        <label className="text-[9px] font-extrabold text-zinc-400 uppercase tracking-widest">Tên bộ thẻ mới</label>
+                        <input
                           value={deckName}
                           onChange={(e) => setDeckName(e.target.value)}
-                          className="w-full bg-transparent border-none p-0 focus:ring-0 font-black text-lg md:text-xl text-slate-900 dark:text-white placeholder:text-slate-300"
+                          className="w-full bg-transparent border-none p-0 focus:ring-0 font-extrabold text-lg md:text-xl text-zinc-900 dark:text-white placeholder:text-zinc-300"
                           placeholder="Nhập tên bộ thẻ..."
                         />
                       </div>
                     )}
+                    <p className="text-[10px] font-bold text-zinc-400">
+                      Sẽ lưu {generatedCards.filter(card => card.front?.trim() && card.back?.trim()).length}/{generatedCards.length} thẻ — sửa hoặc xoá từng thẻ ngay bên dưới trước khi lưu.
+                    </p>
                   </div>
                   {generatedCards.map((card, idx) => (
-                    <motion.div 
-                      key={idx} 
+                    <motion.div
+                      key={idx}
                       initial={{ opacity: 0, y: 20 }}
                       animate={{ opacity: 1, y: 0 }}
                       transition={{ delay: idx * 0.1 }}
-                      className="p-5 md:p-8 bg-slate-50 dark:bg-white/5 rounded-2xl md:rounded-[2rem] border border-slate-100 dark:border-white/5 space-y-4 md:space-y-6 hover:border-primary/30 transition-all group"
+                      className="p-5 md:p-8 bg-zinc-50 dark:bg-white/5 rounded-2xl md:rounded-[2rem] border border-zinc-100 dark:border-white/5 space-y-4 md:space-y-6 hover:border-primary/30 transition-all group"
                     >
-                      <div className="space-y-1.5 md:space-y-2">
-                        <span className="text-[8px] md:text-[9px] font-black text-slate-400 uppercase tracking-[0.3em]">Mặt trước</span>
-                        <div className="text-slate-900 dark:text-white font-black text-lg md:text-xl leading-tight tracking-tight prose dark:prose-invert max-w-none">
-                          <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                            {card.front}
-                          </ReactMarkdown>
-                        </div>
+                      <div className="flex items-center justify-between">
+                        <span className="text-[8px] md:text-[9px] font-extrabold text-zinc-400 uppercase tracking-[0.3em]">Thẻ {idx + 1}</span>
+                        <button
+                          type="button"
+                          onClick={() => removeGeneratedCard(idx)}
+                          disabled={isSaving}
+                          aria-label={`Xoá thẻ ${idx + 1}`}
+                          className="inline-flex items-center gap-1.5 rounded-lg px-2 py-1 text-[10px] font-bold text-zinc-400 transition-colors hover:bg-rose-50 hover:text-rose-500 dark:hover:bg-rose-500/10 disabled:opacity-50"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                          Xoá thẻ
+                        </button>
                       </div>
-                      <div className="pt-4 md:pt-6 border-t border-slate-200 dark:border-white/10 space-y-1.5 md:space-y-2">
-                        <span className="text-[8px] md:text-[10px] font-black text-primary uppercase tracking-[0.3em]">Mặt sau</span>
-                        <div className="text-sm md:text-base text-slate-600 dark:text-slate-400 leading-relaxed font-medium prose dark:prose-invert max-w-none">
-                          <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                            {card.back}
-                          </ReactMarkdown>
-                        </div>
+                      <div className="space-y-1.5 md:space-y-2">
+                        <span className="text-[8px] md:text-[9px] font-extrabold text-zinc-400 uppercase tracking-[0.3em]">Mặt trước</span>
+                        <Textarea
+                          value={card.front}
+                          onChange={(e) => updateGeneratedCard(idx, 'front', e.target.value)}
+                          disabled={isSaving}
+                          placeholder="Nội dung mặt trước..."
+                          className="min-h-[72px] rounded-xl border-zinc-200 bg-white font-semibold text-zinc-900 focus:border-primary dark:border-white/10 dark:bg-white/5 dark:text-white"
+                        />
+                      </div>
+                      <div className="pt-4 md:pt-6 border-t border-zinc-200 dark:border-white/10 space-y-1.5 md:space-y-2">
+                        <span className="text-[8px] md:text-[10px] font-extrabold text-primary uppercase tracking-[0.3em]">Mặt sau</span>
+                        <Textarea
+                          value={card.back}
+                          onChange={(e) => updateGeneratedCard(idx, 'back', e.target.value)}
+                          disabled={isSaving}
+                          placeholder="Nội dung mặt sau..."
+                          className="min-h-[72px] rounded-xl border-zinc-200 bg-white font-medium text-zinc-600 focus:border-primary dark:border-white/10 dark:bg-white/5 dark:text-zinc-300"
+                        />
                       </div>
                     </motion.div>
                   ))}
                 </div>
               ) : (
                 <div className="h-full min-h-[300px] md:min-h-[500px] flex flex-col items-center justify-center text-center p-6 md:p-12 space-y-6 md:space-y-8">
-                  <div className="p-6 md:p-10 bg-slate-50 dark:bg-white/5 rounded-[2rem] md:rounded-[3rem] text-slate-200 dark:text-slate-800 border border-slate-100 dark:border-white/5">
+                  <div className="p-6 md:p-10 bg-zinc-50 dark:bg-white/5 rounded-[2rem] md:rounded-[3rem] text-zinc-200 dark:text-zinc-800 border border-zinc-100 dark:border-white/5">
                     <BrainCircuit className="w-16 h-16 md:w-24 md:h-24" />
                   </div>
                   <div className="space-y-2 md:space-y-3">
-                    <p className="text-slate-500 dark:text-slate-400 font-black uppercase tracking-[0.2em] text-xs md:text-sm">Chưa có dữ liệu</p>
-                    <p className="text-[10px] md:text-xs text-slate-400 max-w-[200px] md:max-w-[240px] font-medium leading-relaxed mx-auto">Cung cấp tài liệu đầu vào để AI bắt đầu phân tích.</p>
+                    <p className="text-zinc-500 dark:text-zinc-400 font-extrabold uppercase tracking-[0.2em] text-xs md:text-sm">Chưa có dữ liệu</p>
+                    <p className="text-[10px] md:text-xs text-zinc-400 max-w-[200px] md:max-w-[240px] font-medium leading-relaxed mx-auto">Cung cấp tài liệu đầu vào để AI bắt đầu phân tích.</p>
                   </div>
                 </div>
               )}

@@ -45,6 +45,49 @@ export const MAX_REVIEW_RETRY_COUNT = 5;
 /** A pending gamification event is abandoned after this many failed flush attempts. */
 export const MAX_GAMIFICATION_ATTEMPTS = 3;
 
+/**
+ * Error codes that describe a TRANSIENT failure (network flapping, Firestore
+ * 5xx/unavailable, an auth token mid-refresh). Transient failures must NOT
+ * burn the dead-letter budget: a one-minute Firestore wobble would otherwise
+ * permanently kill queued records after a handful of dense flush triggers.
+ * Only permanent errors (permission-denied, invalid-argument, ...) count
+ * toward MAX_REVIEW_RETRY_COUNT / MAX_GAMIFICATION_ATTEMPTS.
+ */
+const TRANSIENT_ERROR_CODES = new Set([
+  'unavailable',
+  'deadline-exceeded',
+  'aborted',
+  'cancelled',
+  'unknown',
+  'internal',
+  'resource-exhausted',
+  'auth/network-request-failed',
+  'auth/id-token-expired',
+  'auth/user-token-expired',
+  'auth/internal-error',
+  'storage/retry-limit-exceeded',
+]);
+
+const TRANSIENT_MESSAGE_PATTERN =
+  /offline|network|failed to fetch|fetch failed|timeout|timed out|temporar|connection|econn|socket/i;
+
+export function isTransientSyncError(error: unknown): boolean {
+  if (typeof navigator !== 'undefined' && !navigator.onLine) return true;
+  const code = (error as { code?: unknown } | null)?.code;
+  if (typeof code === 'string') {
+    const bare = code.includes('/') ? code.slice(code.lastIndexOf('/') + 1) : code;
+    if (TRANSIENT_ERROR_CODES.has(code) || TRANSIENT_ERROR_CODES.has(bare)) return true;
+    // Known-permanent codes win over message heuristics below.
+    if (bare === 'permission-denied' || bare === 'invalid-argument' || bare === 'not-found'
+      || bare === 'already-exists' || bare === 'failed-precondition' || bare === 'out-of-range'
+      || bare === 'unauthenticated') {
+      return false;
+    }
+  }
+  const message = error instanceof Error ? error.message : String(error ?? '');
+  return TRANSIENT_MESSAGE_PATTERN.test(message);
+}
+
 class LearningCardDB extends Dexie {
   cards!: Table<CachedCardRecord, string>;
   reviewResults!: Table<ReviewQueueRecord, string>;
@@ -154,10 +197,17 @@ export async function markReviewResultsSynced(ids: string[]) {
 
 export async function markReviewResultsFailed(ids: string[], error: unknown) {
   const message = error instanceof Error ? error.message : String(error);
+  // Transient failures (offline, Firestore unavailable, token refresh) keep
+  // the record pending WITHOUT consuming its dead-letter budget.
+  const transient = isTransientSyncError(error);
   await localDB.transaction('rw', localDB.reviewResults, async () => {
     await Promise.all(ids.map(async (id) => {
       const record = await localDB.reviewResults.get(id);
       if (!record || record.status === 'synced' || record.status === 'dead') return;
+      if (transient) {
+        await localDB.reviewResults.update(id, { error: message });
+        return;
+      }
       const retryCount = (record.retryCount ?? 0) + 1;
       await localDB.reviewResults.update(id, {
         retryCount,
@@ -181,8 +231,9 @@ export async function saveGamificationEvent(record: GamificationQueueRecord) {
   await localDB.gamificationEvents.put({ attempts: 0, ...record });
 }
 
-export async function getPendingGamificationEvents() {
-  return localDB.gamificationEvents.where('status').equals('pending').sortBy('createdAt');
+export async function getPendingGamificationEvents(userId?: string) {
+  const events = await localDB.gamificationEvents.where('status').equals('pending').sortBy('createdAt');
+  return userId ? events.filter((event) => event.userId === userId) : events;
 }
 
 export async function countDeadGamificationEvents() {
@@ -203,10 +254,42 @@ export async function markGamificationEventsSynced(ids: string[]) {
 export async function markGamificationEventFailed(id: string, error: unknown) {
   const record = await localDB.gamificationEvents.get(id);
   if (!record || record.status === 'synced' || record.status === 'dead') return;
+  const message = error instanceof Error ? error.message : String(error);
+  // Same rule as review records: transient errors do not burn attempts.
+  if (isTransientSyncError(error)) {
+    await localDB.gamificationEvents.update(id, { error: message });
+    return;
+  }
   const attempts = (record.attempts ?? 0) + 1;
   await localDB.gamificationEvents.update(id, {
     attempts,
     status: attempts >= MAX_GAMIFICATION_ATTEMPTS ? 'dead' : 'pending',
-    error: error instanceof Error ? error.message : String(error),
+    error: message,
   });
+}
+
+/** Synced outbox records older than this are deleted so IndexedDB stays bounded. */
+const SYNCED_PRUNE_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+const PRUNE_INTERVAL_MS = 60 * 60 * 1000;
+let lastPruneAt = 0;
+
+/**
+ * Delete 'synced' review/gamification records older than 7 days. Called from
+ * the flush paths; self-throttles to at most one run per hour per session and
+ * never throws into the caller.
+ */
+export async function pruneSyncedRecords() {
+  const now = Date.now();
+  if (now - lastPruneAt < PRUNE_INTERVAL_MS) return;
+  lastPruneAt = now;
+  const cutoff = new Date(now - SYNCED_PRUNE_AGE_MS).toISOString();
+  const isStale = (record: { syncedAt?: string }) => !!record.syncedAt && record.syncedAt < cutoff;
+  try {
+    await Promise.all([
+      localDB.reviewResults.where('status').equals('synced').and(isStale).delete(),
+      localDB.gamificationEvents.where('status').equals('synced').and(isStale).delete(),
+    ]);
+  } catch (error) {
+    console.warn('Synced-record prune failed.', error);
+  }
 }

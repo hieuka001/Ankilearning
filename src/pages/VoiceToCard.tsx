@@ -76,6 +76,44 @@ export default function VoiceToCard({ user, profile }: VoiceToCardProps) {
   
   const recognitionRef = useRef<any>(null);
   const navigate = useNavigate();
+
+  // Nháp bản ghi (transcript + lĩnh vực đang chọn): tự lưu vào localStorage
+  // để không mất khi rời trang trước lúc tạo thẻ, khôi phục khi mở lại, xoá
+  // sau khi lưu thẻ thành công hoặc khi người dùng bấm Xoá.
+  const draftKey = `draft:${user?.uid || 'guest'}:voice-to-card`;
+  const draftLoadedRef = useRef(false);
+
+  useEffect(() => {
+    if (draftLoadedRef.current) return;
+    draftLoadedRef.current = true;
+    try {
+      const raw = localStorage.getItem(draftKey);
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      if (typeof parsed?.transcript === 'string' && parsed.transcript) setTranscript(parsed.transcript);
+      if (parsed?.domain === 'medical' || parsed?.domain === 'language' || parsed?.domain === 'general') {
+        setDomain(parsed.domain);
+      }
+    } catch {
+      // Nháp lỗi/không đọc được — bỏ qua, trang vẫn dùng bình thường.
+    }
+  }, [draftKey]);
+
+  useEffect(() => {
+    if (!draftLoadedRef.current) return;
+    const timer = window.setTimeout(() => {
+      try {
+        if (transcript) {
+          localStorage.setItem(draftKey, JSON.stringify({ transcript, domain }));
+        } else {
+          localStorage.removeItem(draftKey);
+        }
+      } catch {
+        // Storage đầy/bị chặn — mất nháp nhưng không ảnh hưởng luồng chính.
+      }
+    }, 400);
+    return () => window.clearTimeout(timer);
+  }, [transcript, domain, draftKey]);
   const recognitionLang = speechRecognitionLanguage(profile?.settings?.language || settings.language);
   const domainConfig = DOMAIN_OPTIONS.find(option => option.id === domain) || DOMAIN_OPTIONS[0];
   const isMedical = domain === 'medical';
@@ -181,6 +219,8 @@ export default function VoiceToCard({ user, profile }: VoiceToCardProps) {
     setGeneratedCards([]);
     setSelectedFile(null);
     setFileBase64(null);
+    // Người dùng chủ động xoá → dọn luôn nháp đã lưu.
+    try { localStorage.removeItem(draftKey); } catch { /* bỏ qua */ }
   };
 
   const handleGenerate = async () => {
@@ -275,6 +315,8 @@ export default function VoiceToCard({ user, profile }: VoiceToCardProps) {
 
       await batch.commit();
       toast.success("Đã lưu thẻ thành công!");
+      // Lưu thành công → dọn nháp bản ghi.
+      try { localStorage.removeItem(draftKey); } catch { /* bỏ qua */ }
       navigate('/decks');
     } catch {
       toast.error("Lỗi khi lưu dữ liệu.");
@@ -290,8 +332,8 @@ export default function VoiceToCard({ user, profile }: VoiceToCardProps) {
           <Mic className="w-8 h-8 md:w-12 md:h-12" />
         </div>
         <div className="space-y-2">
-          <h1 className="text-3xl md:text-5xl font-black text-slate-900 dark:text-white tracking-tighter">Voice-to-Card</h1>
-          <p className="text-slate-500 dark:text-slate-400 text-lg md:text-xl font-medium max-w-2xl mx-auto leading-relaxed">
+          <h1 className="text-3xl md:text-5xl font-extrabold text-zinc-900 dark:text-white tracking-tighter">Voice-to-Card</h1>
+          <p className="text-zinc-500 dark:text-zinc-400 text-lg md:text-xl font-medium max-w-2xl mx-auto leading-relaxed">
             {isMedical ? (
               <>Ghi lời bình lâm sàng ngay tại giường bệnh. <span className="text-red-500 font-bold">AI Assistant</span> sẽ tự động trích xuất thành flashcards y khoa súc tích.</>
             ) : domain === 'language' ? (
@@ -301,16 +343,16 @@ export default function VoiceToCard({ user, profile }: VoiceToCardProps) {
             )}
           </p>
           <div className="flex flex-wrap items-center justify-center gap-2 pt-2">
-            <span className="text-[10px] font-black uppercase tracking-widest text-slate-400 mr-1">Lĩnh vực</span>
+            <span className="text-[10px] font-extrabold uppercase tracking-widest text-zinc-400 mr-1">Lĩnh vực</span>
             {DOMAIN_OPTIONS.map(option => (
               <button
                 key={option.id}
                 type="button"
                 onClick={() => handleDomainChange(option.id)}
-                className={`h-10 px-5 rounded-full text-xs font-black uppercase tracking-widest transition-all ${
+                className={`h-10 px-5 rounded-full text-xs font-extrabold uppercase tracking-widest transition-all ${
                   domain === option.id
                     ? 'bg-red-500 text-white shadow-lg shadow-red-500/25'
-                    : 'bg-slate-100 dark:bg-white/5 text-slate-500 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-white/10'
+                    : 'bg-zinc-100 dark:bg-white/5 text-zinc-500 dark:text-zinc-300 hover:bg-zinc-200 dark:hover:bg-white/10'
                 }`}
               >
                 {option.label}
@@ -320,8 +362,8 @@ export default function VoiceToCard({ user, profile }: VoiceToCardProps) {
           <div className="mx-auto grid max-w-3xl grid-cols-2 gap-2 pt-4 text-left md:grid-cols-5">
             {['Audio', 'Transcript', 'AI Summary', 'Flashcards', 'Quiz'].map((step, index) => (
               <div key={step} className="workflow-step p-3">
-                <p className="font-mono text-[10px] font-black text-primary">0{index + 1}</p>
-                <p className="mt-1 text-xs font-bold text-slate-700 dark:text-slate-200">{step}</p>
+                <p className="font-mono text-[10px] font-extrabold text-primary">0{index + 1}</p>
+                <p className="mt-1 text-xs font-bold text-zinc-700 dark:text-zinc-200">{step}</p>
               </div>
             ))}
           </div>
@@ -332,24 +374,24 @@ export default function VoiceToCard({ user, profile }: VoiceToCardProps) {
         {/* Recording Section */}
         <div className="space-y-6">
           <Card className="border-none shadow-2xl bg-white dark:bg-[#0C0D0E] rounded-[2.5rem] overflow-hidden">
-            <CardHeader className="p-8 md:p-10 border-b border-slate-100 dark:border-white/5">
+            <CardHeader className="p-8 md:p-10 border-b border-zinc-100 dark:border-white/5">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-3">
                   <div className="p-2 bg-red-500/10 text-red-500 rounded-xl">
                     <Stethoscope size={20} />
                   </div>
-                  <CardTitle className="text-xl font-black tracking-tight">Audio Capture</CardTitle>
+                  <CardTitle className="text-xl font-extrabold tracking-tight">Audio Capture</CardTitle>
                 </div>
                 {isListening && (
                   <div className="flex items-center gap-2">
                     <div className="w-2 h-2 bg-red-500 rounded-full animate-ping" />
-                    <span className="text-[10px] font-black text-red-500 uppercase tracking-widest">Live Recording</span>
+                    <span className="text-[10px] font-extrabold text-red-500 uppercase tracking-widest">Live Recording</span>
                   </div>
                 )}
               </div>
             </CardHeader>
             <CardContent className="p-8 md:p-10 space-y-8">
-              <div className="relative min-h-[300px] md:min-h-[400px] bg-slate-50 dark:bg-black/40 rounded-[2rem] p-6 md:p-10 overflow-hidden border border-slate-100 dark:border-white/5 flex flex-col">
+              <div className="relative min-h-[300px] md:min-h-[400px] bg-zinc-50 dark:bg-black/40 rounded-[2rem] p-6 md:p-10 overflow-hidden border border-zinc-100 dark:border-white/5 flex flex-col">
                 <input 
                   type="file" 
                   ref={fileInputRef}
@@ -370,7 +412,7 @@ export default function VoiceToCard({ user, profile }: VoiceToCardProps) {
                         <div className="w-12 h-12 bg-primary/10 text-primary rounded-full flex items-center justify-center">
                           <Mic size={24} />
                         </div>
-                        <span className="text-[10px] font-black uppercase tracking-widest text-slate-500">Live Voice</span>
+                        <span className="text-[10px] font-extrabold uppercase tracking-widest text-zinc-500">Live Voice</span>
                       </motion.button>
 
                       <motion.button
@@ -382,13 +424,13 @@ export default function VoiceToCard({ user, profile }: VoiceToCardProps) {
                         <div className="w-12 h-12 bg-red-500/10 text-red-500 rounded-full flex items-center justify-center">
                           <Upload size={24} />
                         </div>
-                        <span className="text-[10px] font-black uppercase tracking-widest text-slate-500">Upload Media</span>
+                        <span className="text-[10px] font-extrabold uppercase tracking-widest text-zinc-500">Upload Media</span>
                       </motion.button>
                     </div>
 
                     <div className="space-y-2">
-                      <p className="text-slate-400 font-bold text-sm">Ghi âm trực tiếp hoặc tải tệp lên</p>
-                      <p className="text-slate-300 dark:text-slate-700 text-xs italic">
+                      <p className="text-zinc-400 font-bold text-sm">Ghi âm trực tiếp hoặc tải tệp lên</p>
+                      <p className="text-zinc-300 dark:text-zinc-700 text-xs italic">
                         {isMedical ? 'Hỗ trợ Audio/Video phân tích lâm sàng' : domain === 'language' ? 'Hỗ trợ Audio/Video học ngoại ngữ' : 'Hỗ trợ Audio/Video mọi chủ đề'} • Tối đa 10MB/tệp
                       </p>
                     </div>
@@ -399,11 +441,11 @@ export default function VoiceToCard({ user, profile }: VoiceToCardProps) {
                       {selectedFile.type.startsWith('video') ? (
                         <FileVideo className="w-16 h-16 text-red-500" />
                       ) : (
-                        <FileAudio className="w-16 h-16 text-indigo-500" />
+                        <FileAudio className="w-16 h-16 text-emerald-500" />
                       )}
                       <div className="text-center">
-                        <p className="text-lg font-black text-slate-900 dark:text-white truncate max-w-[200px]">{selectedFile.name}</p>
-                        <p className="text-[10px] font-bold text-slate-400">{(selectedFile.size / (1024 * 1024)).toFixed(2)} MB • {selectedFile.type}</p>
+                        <p className="text-lg font-extrabold text-zinc-900 dark:text-white truncate max-w-[200px]">{selectedFile.name}</p>
+                        <p className="text-[10px] font-bold text-zinc-400">{(selectedFile.size / (1024 * 1024)).toFixed(2)} MB • {selectedFile.type}</p>
                       </div>
                       <Button
                         variant="ghost"
@@ -416,12 +458,12 @@ export default function VoiceToCard({ user, profile }: VoiceToCardProps) {
                     </div>
                     <div className="flex items-center gap-2 px-6 py-3 bg-red-500/10 text-red-500 rounded-full">
                       <Zap size={16} className="animate-pulse" />
-                      <span className="text-xs font-black uppercase tracking-widest text-red-500">Ready to Analyze with Multimodal AI</span>
+                      <span className="text-xs font-extrabold uppercase tracking-widest text-red-500">Ready to Analyze with Multimodal AI</span>
                     </div>
                   </div>
                 ) : (
                   <div className="prose dark:prose-invert max-w-none flex-1">
-                    <p className="text-slate-700 dark:text-slate-200 text-lg md:text-xl font-medium leading-relaxed">
+                    <p className="text-zinc-700 dark:text-zinc-200 text-lg md:text-xl font-medium leading-relaxed">
                       {transcript}
                       <span className="text-primary/50 italic">{interimTranscript}</span>
                     </p>
@@ -445,7 +487,7 @@ export default function VoiceToCard({ user, profile }: VoiceToCardProps) {
               <div className="flex flex-wrap gap-4">
                 <Button 
                   onClick={toggleListening}
-                  className={`flex-1 h-16 md:h-20 rounded-2xl md:rounded-[2rem] font-black text-base md:text-xl shadow-2xl transition-all active:scale-95 ${
+                  className={`flex-1 h-16 md:h-20 rounded-2xl md:rounded-[2rem] font-extrabold text-base md:text-xl shadow-2xl transition-all active:scale-95 ${
                     isListening 
                       ? 'bg-red-500 hover:bg-red-600 shadow-red-500/20' 
                       : 'bg-primary hover:bg-primary/90 shadow-primary/20'
@@ -460,7 +502,7 @@ export default function VoiceToCard({ user, profile }: VoiceToCardProps) {
                 <Button 
                   variant="outline" 
                   onClick={handleClear}
-                  className="w-16 md:w-20 h-16 md:h-20 rounded-2xl md:rounded-[2rem] border-2 border-slate-100 dark:border-white/5 bg-slate-50 dark:bg-white/5 hover:bg-red-50 dark:hover:bg-red-500/10 hover:text-red-500 transition-all"
+                  className="w-16 md:w-20 h-16 md:h-20 rounded-2xl md:rounded-[2rem] border-2 border-zinc-100 dark:border-white/5 bg-zinc-50 dark:bg-white/5 hover:bg-red-50 dark:hover:bg-red-500/10 hover:text-red-500 transition-all"
                 >
                   <RotateCcw size={24} />
                 </Button>
@@ -469,7 +511,7 @@ export default function VoiceToCard({ user, profile }: VoiceToCardProps) {
               <Button 
                 onClick={handleGenerate}
                 disabled={(!(transcript + interimTranscript).trim() && !fileBase64) || isGenerating || isListening}
-                className="w-full bg-slate-900 dark:bg-white dark:text-slate-900 hover:bg-slate-800 dark:hover:bg-slate-100 h-16 md:h-20 rounded-2xl md:rounded-[2rem] font-black text-base md:text-xl shadow-2xl transition-all active:scale-95 gap-3"
+                className="w-full bg-zinc-900 dark:bg-white dark:text-zinc-900 hover:bg-zinc-800 dark:hover:bg-zinc-100 h-16 md:h-20 rounded-2xl md:rounded-[2rem] font-extrabold text-base md:text-xl shadow-2xl transition-all active:scale-95 gap-3"
               >
                 {isGenerating ? <Loader2 className="animate-spin w-6 h-6" /> : <Zap className="w-6 h-6" />}
                 {isMedical ? 'TẠO FLASHCARDS Y KHOA' : 'TẠO FLASHCARDS'}
@@ -488,21 +530,21 @@ export default function VoiceToCard({ user, profile }: VoiceToCardProps) {
                 exit={{ opacity: 0, scale: 0.95 }}
                 className="space-y-6"
               >
-                <div className="bg-slate-900 dark:bg-black p-8 md:p-10 rounded-[2.5rem] shadow-2xl space-y-8">
+                <div className="bg-zinc-900 dark:bg-black p-8 md:p-10 rounded-[2.5rem] shadow-2xl space-y-8">
                   <div className="flex items-center justify-between border-b border-white/5 pb-6">
                     <div className="flex items-center gap-3">
                       <div className="p-2 bg-primary/10 text-primary rounded-xl">
                         <Sparkles size={20} />
                       </div>
                       <div>
-                        <h3 className="text-white text-xl font-black tracking-tight">{isMedical ? 'AI Clinical Cards' : 'AI Cards'}</h3>
-                        <p className="text-[10px] font-black text-white/40 uppercase tracking-widest">{isMedical ? 'Medical Extraction' : `${domainConfig.label} Extraction`}</p>
+                        <h3 className="text-white text-xl font-extrabold tracking-tight">{isMedical ? 'AI Clinical Cards' : 'AI Cards'}</h3>
+                        <p className="text-[10px] font-extrabold text-white/40 uppercase tracking-widest">{isMedical ? 'Medical Extraction' : `${domainConfig.label} Extraction`}</p>
                       </div>
                     </div>
                     <Button 
                       onClick={handleSave}
                       disabled={isSaving}
-                      className="bg-primary hover:bg-primary/90 rounded-xl px-6 font-black text-xs uppercase tracking-widest h-11"
+                      className="bg-primary hover:bg-primary/90 rounded-xl px-6 font-extrabold text-xs uppercase tracking-widest h-11"
                     >
                       {isSaving ? <Loader2 className="animate-spin w-4 h-4 mr-2" /> : <Save className="w-4 h-4 mr-2" />}
                       SAVE CARDS
@@ -512,11 +554,11 @@ export default function VoiceToCard({ user, profile }: VoiceToCardProps) {
                   <div className="space-y-4">
                     <div className="bg-white/5 p-4 rounded-2xl border border-white/5 space-y-4">
                       <div className="space-y-2">
-                        <label className="text-[9px] font-black text-white/30 uppercase tracking-widest">Select Destination</label>
+                        <label className="text-[9px] font-extrabold text-white/30 uppercase tracking-widest">Select Destination</label>
                         <select 
                           value={selectedDeckId}
                           onChange={(e) => setSelectedDeckId(e.target.value)}
-                          className="w-full bg-slate-800 border-none rounded-xl px-4 py-3 text-sm font-bold text-white outline-none focus:ring-2 focus:ring-primary/50"
+                          className="w-full bg-zinc-800 border-none rounded-xl px-4 py-3 text-sm font-bold text-white outline-none focus:ring-2 focus:ring-primary/50"
                         >
                           <option value="new">+ Create New Deck</option>
                           {existingDecks.map(deck => (
@@ -527,11 +569,11 @@ export default function VoiceToCard({ user, profile }: VoiceToCardProps) {
 
                       {selectedDeckId === 'new' && (
                         <div className="space-y-2">
-                          <label className="text-[9px] font-black text-white/30 uppercase tracking-widest">Deck Name</label>
+                          <label className="text-[9px] font-extrabold text-white/30 uppercase tracking-widest">Deck Name</label>
                           <input 
                             value={deckName}
                             onChange={(e) => setDeckName(e.target.value)}
-                            className="w-full bg-transparent border-none p-0 focus:ring-0 font-black text-lg text-white placeholder:text-white/20"
+                            className="w-full bg-transparent border-none p-0 focus:ring-0 font-extrabold text-lg text-white placeholder:text-white/20"
                             placeholder={isMedical ? 'Tên ca lâm sàng...' : 'Tên bộ thẻ...'}
                           />
                         </div>
@@ -542,14 +584,14 @@ export default function VoiceToCard({ user, profile }: VoiceToCardProps) {
                       {generatedCards.map((card, idx) => (
                         <div key={idx} className="p-6 bg-white/5 border border-white/5 rounded-2xl space-y-4 group hover:bg-white/[0.07] transition-all">
                           <div className="space-y-2">
-                            <span className="text-[8px] font-black text-white/30 uppercase tracking-[0.3em]">Front</span>
-                            <div className="text-white font-black text-lg leading-tight tracking-tight">
+                            <span className="text-[8px] font-extrabold text-white/30 uppercase tracking-[0.3em]">Front</span>
+                            <div className="text-white font-extrabold text-lg leading-tight tracking-tight">
                               <ReactMarkdown>{card.front}</ReactMarkdown>
                             </div>
                           </div>
                           <div className="pt-4 border-t border-white/5 space-y-2">
-                            <span className="text-[8px] font-black text-primary/70 uppercase tracking-[0.3em]">Back</span>
-                            <div className="text-sm text-slate-400 font-medium leading-relaxed">
+                            <span className="text-[8px] font-extrabold text-primary/70 uppercase tracking-[0.3em]">Back</span>
+                            <div className="text-sm text-zinc-400 font-medium leading-relaxed">
                                <ReactMarkdown>{card.back}</ReactMarkdown>
                             </div>
                           </div>
@@ -560,18 +602,18 @@ export default function VoiceToCard({ user, profile }: VoiceToCardProps) {
                 </div>
               </motion.div>
             ) : (
-              <div className="h-full flex flex-col items-center justify-center text-center p-12 space-y-10 bg-slate-50 dark:bg-white/5 rounded-[2.5rem] border border-dashed border-slate-200 dark:border-white/10 opacity-60">
+              <div className="h-full flex flex-col items-center justify-center text-center p-12 space-y-10 bg-zinc-50 dark:bg-white/5 rounded-[2.5rem] border border-dashed border-zinc-200 dark:border-white/10 opacity-60">
                 <div className="relative">
                   <div className="w-24 h-24 bg-white dark:bg-white/5 rounded-full flex items-center justify-center shadow-xl">
-                    <BrainCircuit className="text-slate-300 w-12 h-12" />
+                    <BrainCircuit className="text-zinc-300 w-12 h-12" />
                   </div>
                   <div className="absolute -top-2 -right-2 p-2 bg-primary text-white rounded-xl shadow-lg">
                     <Plus size={16} />
                   </div>
                 </div>
                 <div className="space-y-2">
-                  <h4 className="text-xl font-black text-slate-800 dark:text-slate-200 tracking-tight">Kết quả sẽ hiện ở đây</h4>
-                  <p className="text-sm font-medium text-slate-500 dark:text-slate-400 max-w-xs mx-auto leading-relaxed">
+                  <h4 className="text-xl font-extrabold text-zinc-800 dark:text-zinc-200 tracking-tight">Kết quả sẽ hiện ở đây</h4>
+                  <p className="text-sm font-medium text-zinc-500 dark:text-zinc-400 max-w-xs mx-auto leading-relaxed">
                     {isMedical
                       ? 'AI sẽ trích xuất các điểm lâm sàng quan trọng từ ghi chú giọng nói của bạn.'
                       : 'AI sẽ trích xuất các ý chính từ bản ghi của bạn thành thẻ học.'}
@@ -581,11 +623,11 @@ export default function VoiceToCard({ user, profile }: VoiceToCardProps) {
                 <div className="grid grid-cols-2 gap-4 w-full max-w-sm">
                   <div className="p-4 bg-white dark:bg-white/5 rounded-2xl space-y-2">
                     <Clock size={16} className="text-primary" />
-                    <p className="text-[10px] font-black text-slate-400 uppercase">Save Time</p>
+                    <p className="text-[10px] font-extrabold text-zinc-400 uppercase">Save Time</p>
                   </div>
                   <div className="p-4 bg-white dark:bg-white/5 rounded-2xl space-y-2">
                     <Zap size={16} className="text-orange-500" />
-                    <p className="text-[10px] font-black text-slate-400 uppercase">Deep Insight</p>
+                    <p className="text-[10px] font-extrabold text-zinc-400 uppercase">Deep Insight</p>
                   </div>
                 </div>
               </div>

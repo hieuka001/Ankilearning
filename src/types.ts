@@ -11,6 +11,10 @@ export interface UserProfile {
   totalQuizzesCompleted?: number;
   totalStudyTimeMinutes?: number;
   lastQuizCompletedAt?: string;
+  /** Gamification totals written by gamificationService (see src/lib/gamification). */
+  xp?: number;
+  level?: number;
+  updatedAt?: string;
   settings: {
     dailyGoal: number;
     theme: 'light' | 'dark' | 'system';
@@ -34,6 +38,7 @@ export interface UserProfile {
       relearningSteps?: { amount: number; unit: 'minute' | 'day' }[];
       newCardsPerDay?: number;
       reviewsPerDay?: number;
+      leechThreshold?: number;
       burySiblings?: boolean;
       intervalModifier?: number;
       graduatingInterval?: number;
@@ -87,6 +92,8 @@ export interface Deck {
   createdAt: string;
   isPublic: boolean;
   mindmap?: string;
+  /** AI-generated mindmap kept separate from the user's own `mindmap` notes. */
+  aiMindmap?: string;
   color?: string;
   tags?: string[];
 }

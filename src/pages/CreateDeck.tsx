@@ -1,6 +1,5 @@
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { collection, addDoc, serverTimestamp } from 'firebase/firestore';
-import * as pdfjsLib from 'pdfjs-dist';
 import { db, auth } from '../firebase';
 import { User } from 'firebase/auth';
 import { Button } from '@/components/ui/button';
@@ -28,8 +27,8 @@ import { createInitialCardSchedule } from '../lib/spacedRepetition';
 import { CATEGORY_PRESETS, getCategoryArt } from '../lib/categoryArt';
 import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 
-// Dùng worker PDF đóng gói cùng app (không phụ thuộc CDN ngoài).
-pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
+// pdfjs (thư viện ~452KB) được nạp lười bên trong handler xử lý PDF để không
+// tải kèm trang; chỉ URL của worker (chuỗi) được import tĩnh tại đây.
 
 const EMPTY_CARDS_MESSAGE = 'AI không tạo được thẻ nào từ nội dung này — thử rút gọn/chia nhỏ tài liệu hoặc kiểm tra lại nội dung.';
 
@@ -56,6 +55,56 @@ export default function CreateDeck({ user, profile }: CreateDeckProps) {
   const [color, setColor] = useState('#4f46e5');
   const [tags, setTags] = useState('');
   const pdfInputRef = useRef<HTMLInputElement>(null);
+
+  // Nháp đang soạn (tên/mô tả/danh sách thẻ...): tự lưu vào localStorage để
+  // không mất khi chuyển trang, khôi phục khi mở lại, xoá sau khi lưu thành
+  // công. Không lưu ảnh dạng data URL hay dữ liệu nhạy cảm.
+  const draftKey = `draft:${user?.uid || 'guest'}:create-deck`;
+  const draftLoadedRef = useRef(false);
+
+  useEffect(() => {
+    if (draftLoadedRef.current) return;
+    draftLoadedRef.current = true;
+    try {
+      const raw = localStorage.getItem(draftKey);
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      if (typeof parsed?.name === 'string' && parsed.name) setName(parsed.name);
+      if (typeof parsed?.description === 'string' && parsed.description) setDescription(parsed.description);
+      if (typeof parsed?.category === 'string' && parsed.category) setCategory(parsed.category);
+      if (typeof parsed?.tags === 'string' && parsed.tags) setTags(parsed.tags);
+      if (typeof parsed?.color === 'string' && parsed.color) setColor(parsed.color);
+      if (typeof parsed?.isPublic === 'boolean') setIsPublic(parsed.isPublic);
+      if (typeof parsed?.aiText === 'string' && parsed.aiText) setAiText(parsed.aiText);
+      if (Array.isArray(parsed?.cards) && parsed.cards.length > 0) {
+        setCards(parsed.cards.map((card: any) => ({
+          front: typeof card?.front === 'string' ? card.front : '',
+          back: typeof card?.back === 'string' ? card.back : '',
+          imageUrl: typeof card?.imageUrl === 'string' ? card.imageUrl : undefined,
+        })));
+      }
+    } catch {
+      // Nháp lỗi/không đọc được — bỏ qua, trang vẫn dùng bình thường.
+    }
+  }, [draftKey]);
+
+  useEffect(() => {
+    if (!draftLoadedRef.current) return;
+    const timer = window.setTimeout(() => {
+      try {
+        const hasContent = name || description || category || tags || aiText
+          || cards.some(card => card.front || card.back || card.imageUrl);
+        if (hasContent) {
+          localStorage.setItem(draftKey, JSON.stringify({ name, description, category, tags, color, isPublic, aiText, cards }));
+        } else {
+          localStorage.removeItem(draftKey);
+        }
+      } catch {
+        // Storage đầy/bị chặn — mất nháp nhưng không ảnh hưởng luồng chính.
+      }
+    }, 400);
+    return () => window.clearTimeout(timer);
+  }, [draftKey, name, description, category, tags, color, isPublic, aiText, cards]);
 
   const addCard = () => {
     setCards([...cards, { front: '', back: '' }]);
@@ -180,6 +229,8 @@ export default function CreateDeck({ user, profile }: CreateDeckProps) {
       reader.onload = async (event) => {
         const typedArray = new Uint8Array(event.target?.result as ArrayBuffer);
         try {
+          const pdfjsLib = await import('pdfjs-dist');
+          pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
           const pdf = await pdfjsLib.getDocument(typedArray).promise;
           let fullText = '';
           const toastId = toast.loading(`Đang xử lý PDF: 0/${pdf.numPages} trang...`);
@@ -263,6 +314,8 @@ export default function CreateDeck({ user, profile }: CreateDeckProps) {
       toast.dismiss(toastId);
       playSound('success', settings.volume);
       toast.success("Đã tạo bộ thẻ thành công!");
+      // Lưu thành công → dọn nháp đang soạn.
+      try { localStorage.removeItem(draftKey); } catch { /* bỏ qua */ }
       navigate('/decks');
     } catch (error) {
       toast.dismiss(toastId);
@@ -274,56 +327,56 @@ export default function CreateDeck({ user, profile }: CreateDeckProps) {
 
   return (
     <div className="space-y-10 pb-32 animate-in fade-in slide-in-from-right-8 duration-700 font-sans">
-      <header className="flex items-center gap-6 border-b border-slate-200 dark:border-white/5 pb-8">
+      <header className="flex items-center gap-6 border-b border-zinc-200 dark:border-white/5 pb-8">
         <Link to="/decks">
-          <Button variant="ghost" size="icon" className="rounded-2xl hover:bg-slate-100 dark:hover:bg-white/5 h-12 w-12">
+          <Button variant="ghost" size="icon" className="rounded-2xl hover:bg-zinc-100 dark:hover:bg-white/5 h-12 w-12">
             <ArrowLeft className="w-6 h-6" />
           </Button>
         </Link>
         <div>
-          <h1 className="text-5xl font-black text-slate-900 dark:text-white tracking-tighter">Tạo bộ thẻ mới</h1>
-          <p className="text-slate-500 dark:text-slate-400 font-medium mt-1">Xây dựng thư viện kiến thức cá nhân của bạn.</p>
+          <h1 className="text-5xl font-extrabold text-zinc-900 dark:text-white tracking-tighter">Tạo bộ thẻ mới</h1>
+          <p className="text-zinc-500 dark:text-zinc-400 font-medium mt-1">Xây dựng thư viện kiến thức cá nhân của bạn.</p>
         </div>
       </header>
 
       <form onSubmit={handleSubmit} className="space-y-10">
-        <Card className="border border-slate-200 dark:border-white/5 shadow-2xl overflow-hidden bg-white dark:bg-[#0C0D0E] rounded-[2rem]">
-          <CardHeader className="p-8 pb-4 border-b border-slate-100 dark:border-white/5 bg-slate-50/50 dark:bg-white/5">
-            <CardTitle className="text-xl font-black tracking-tight">Thông tin bộ thẻ</CardTitle>
-            <CardDescription className="text-[10px] font-black uppercase tracking-widest text-slate-400">Thông tin chung</CardDescription>
+        <Card className="border border-zinc-200 dark:border-white/5 shadow-2xl overflow-hidden bg-white dark:bg-[#0C0D0E] rounded-[2rem]">
+          <CardHeader className="p-8 pb-4 border-b border-zinc-100 dark:border-white/5 bg-zinc-50/50 dark:bg-white/5">
+            <CardTitle className="text-xl font-extrabold tracking-tight">Thông tin bộ thẻ</CardTitle>
+            <CardDescription className="text-[10px] font-extrabold uppercase tracking-widest text-zinc-400">Thông tin chung</CardDescription>
           </CardHeader>
           <CardContent className="p-8 space-y-8">
             <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
               <div className="space-y-3">
-                <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em]">Tên bộ thẻ *</label>
+                <label className="text-[10px] font-extrabold text-zinc-400 uppercase tracking-[0.2em]">Tên bộ thẻ *</label>
                 <Input 
                   placeholder="Ví dụ: Tiếng Anh giao tiếp" 
                   value={name}
                   onChange={(e) => setName(e.target.value)}
-                  className="h-12 px-5 rounded-2xl border-slate-200 dark:border-white/10 dark:bg-white/5 dark:text-white focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none transition-all font-medium"
+                  className="h-12 px-5 rounded-2xl border-zinc-200 dark:border-white/10 dark:bg-white/5 dark:text-white focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none transition-all font-medium"
                 />
               </div>
               <div className="space-y-3">
-                <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em]">Chủ đề</label>
+                <label className="text-[10px] font-extrabold text-zinc-400 uppercase tracking-[0.2em]">Chủ đề</label>
                 <Input 
                   placeholder="Ví dụ: Ngôn ngữ, Khoa học..." 
                   value={category}
                   onChange={(e) => setCategory(e.target.value)}
-                  className="h-12 px-5 rounded-2xl border-slate-200 dark:border-white/10 dark:bg-white/5 dark:text-white focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none transition-all font-medium"
+                  className="h-12 px-5 rounded-2xl border-zinc-200 dark:border-white/10 dark:bg-white/5 dark:text-white focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none transition-all font-medium"
                 />
               </div>
               <div className="space-y-3">
-                <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em]">Tags (Phân tách bằng dấu phẩy)</label>
+                <label className="text-[10px] font-extrabold text-zinc-400 uppercase tracking-[0.2em]">Tags (Phân tách bằng dấu phẩy)</label>
                 <Input 
                   placeholder="ngoại, tim mạch, tiêu hóa..." 
                   value={tags}
                   onChange={(e) => setTags(e.target.value)}
-                  className="h-12 px-5 rounded-2xl border-slate-200 dark:border-white/10 dark:bg-white/5 dark:text-white focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none transition-all font-medium"
+                  className="h-12 px-5 rounded-2xl border-zinc-200 dark:border-white/10 dark:bg-white/5 dark:text-white focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none transition-all font-medium"
                 />
               </div>
             </div>
             <div className="space-y-3">
-              <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em]">Chọn nhanh danh mục</label>
+              <label className="text-[10px] font-extrabold text-zinc-400 uppercase tracking-[0.2em]">Chọn nhanh danh mục</label>
               <div className="flex flex-wrap gap-2">
                 {CATEGORY_PRESETS.map((preset) => (
                   <button
@@ -333,14 +386,14 @@ export default function CreateDeck({ user, profile }: CreateDeckProps) {
                     className={`rounded-full px-4 py-2 text-xs font-bold transition-all ${
                       category === preset.label
                         ? 'bg-primary text-white shadow-lg shadow-primary/25'
-                        : 'bg-slate-100 text-slate-600 hover:bg-slate-200 dark:bg-white/5 dark:text-slate-300 dark:hover:bg-white/10'
+                        : 'bg-zinc-100 text-zinc-600 hover:bg-zinc-200 dark:bg-white/5 dark:text-zinc-300 dark:hover:bg-white/10'
                     }`}
                   >
                     {preset.label}
                   </button>
                 ))}
               </div>
-              <div className="relative overflow-hidden rounded-2xl border border-slate-200 dark:border-white/10">
+              <div className="relative overflow-hidden rounded-2xl border border-zinc-200 dark:border-white/10">
                 <img
                   src={getCategoryArt(category)}
                   alt="Xem trước ảnh bìa theo danh mục"
@@ -354,16 +407,16 @@ export default function CreateDeck({ user, profile }: CreateDeckProps) {
               </div>
             </div>
             <div className="space-y-3">
-              <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em]">Mô tả</label>
+              <label className="text-[10px] font-extrabold text-zinc-400 uppercase tracking-[0.2em]">Mô tả</label>
               <Textarea 
                 placeholder="Mô tả ngắn gọn về bộ thẻ này..." 
                 value={description}
                 onChange={(e) => setDescription(e.target.value)}
-                className="rounded-2xl border-slate-200 dark:border-white/10 dark:bg-white/5 dark:text-white min-h-[120px] p-5 focus:ring-primary/20"
+                className="rounded-2xl border-zinc-200 dark:border-white/10 dark:bg-white/5 dark:text-white min-h-[120px] p-5 focus:ring-primary/20"
               />
             </div>
             <div className="space-y-3">
-              <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em]">Màu đại diện</label>
+              <label className="text-[10px] font-extrabold text-zinc-400 uppercase tracking-[0.2em]">Màu đại diện</label>
               <div className="flex items-center gap-4">
                 <Input 
                   type="color" 
@@ -391,11 +444,11 @@ export default function CreateDeck({ user, profile }: CreateDeckProps) {
                   id="isPublic" 
                   checked={isPublic}
                   onChange={(e) => setIsPublic(e.target.checked)}
-                  className="w-5 h-5 text-primary rounded-lg border-slate-300 dark:border-white/10 focus:ring-primary bg-white dark:bg-white/5"
+                  className="w-5 h-5 text-primary rounded-lg border-zinc-300 dark:border-white/10 focus:ring-primary bg-white dark:bg-white/5"
                 />
               </div>
-              <label htmlFor="isPublic" className="text-xs font-bold text-slate-600 dark:text-slate-400 flex items-center gap-2 cursor-pointer select-none">
-                <Globe size={16} className="text-slate-400" />
+              <label htmlFor="isPublic" className="text-xs font-bold text-zinc-600 dark:text-zinc-400 flex items-center gap-2 cursor-pointer select-none">
+                <Globe size={16} className="text-zinc-400" />
                 Công khai bộ thẻ này (Mọi người có thể tìm thấy và học)
               </label>
             </div>
@@ -405,11 +458,11 @@ export default function CreateDeck({ user, profile }: CreateDeckProps) {
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
           <Card className="border border-primary/20 border-dashed shadow-xl overflow-hidden bg-primary/5 rounded-[2rem]">
             <CardHeader className="p-8 pb-4">
-              <CardTitle className="text-primary flex items-center gap-3 text-xl font-black tracking-tight">
+              <CardTitle className="text-primary flex items-center gap-3 text-xl font-extrabold tracking-tight">
                 <Sparkles className="w-6 h-6" />
                 Tạo thẻ nhanh với AI
               </CardTitle>
-              <CardDescription className="text-[10px] font-black uppercase tracking-widest text-primary/60">Tạo bởi AI</CardDescription>
+              <CardDescription className="text-[10px] font-extrabold uppercase tracking-widest text-primary/60">Tạo bởi AI</CardDescription>
             </CardHeader>
             <CardContent className="p-8 pt-0 space-y-6">
               <div className="flex gap-4 items-center">
@@ -422,7 +475,7 @@ export default function CreateDeck({ user, profile }: CreateDeckProps) {
                   ) : (
                     <>
                       <ImageIcon className="w-6 h-6 text-primary/40" />
-                      <span className="text-[8px] font-black mt-1 text-primary/40">ẢNH</span>
+                      <span className="text-[8px] font-extrabold mt-1 text-primary/40">ẢNH</span>
                     </>
                   )}
                 </div>
@@ -463,7 +516,7 @@ export default function CreateDeck({ user, profile }: CreateDeckProps) {
                 type="button"
                 onClick={handleGenerateAI}
                 disabled={isGenerating || !aiText.trim()}
-                className="w-full bg-primary hover:bg-primary/90 text-white gap-3 h-14 rounded-2xl font-black shadow-lg shadow-primary/20"
+                className="w-full bg-primary hover:bg-primary/90 text-white gap-3 h-14 rounded-2xl font-extrabold shadow-lg shadow-primary/20"
               >
                 {isGenerating ? <Loader2 className="animate-spin w-5 h-5" /> : <Sparkles className="w-5 h-5" />}
                 Tạo thẻ bằng AI
@@ -473,11 +526,11 @@ export default function CreateDeck({ user, profile }: CreateDeckProps) {
 
           <Card className="border border-emerald-500/20 border-dashed shadow-xl overflow-hidden bg-emerald-500/5 rounded-[2rem]">
             <CardHeader className="p-8 pb-4">
-              <CardTitle className="text-emerald-600 dark:text-emerald-400 flex items-center gap-3 text-xl font-black tracking-tight">
+              <CardTitle className="text-emerald-600 dark:text-emerald-400 flex items-center gap-3 text-xl font-extrabold tracking-tight">
                 <LinkIcon className="w-6 h-6" />
                 Nhập từ URL hình ảnh
               </CardTitle>
-              <CardDescription className="text-[10px] font-black uppercase tracking-widest text-emerald-500/60">Nguồn bên ngoài</CardDescription>
+              <CardDescription className="text-[10px] font-extrabold uppercase tracking-widest text-emerald-500/60">Nguồn bên ngoài</CardDescription>
             </CardHeader>
             <CardContent className="p-8 pt-0 space-y-6">
               <p className="text-xs text-emerald-600/80 dark:text-emerald-400/80 font-medium leading-relaxed">
@@ -493,7 +546,7 @@ export default function CreateDeck({ user, profile }: CreateDeckProps) {
                   type="button"
                   onClick={handleImportFromUrl}
                   disabled={isGenerating}
-                  className="bg-emerald-600 hover:bg-emerald-700 text-white h-14 px-8 rounded-2xl font-black"
+                  className="bg-emerald-600 hover:bg-emerald-700 text-white h-14 px-8 rounded-2xl font-extrabold"
                 >
                   {isGenerating ? <Loader2 className="animate-spin w-5 h-5" /> : 'Thêm'}
                 </Button>
@@ -505,16 +558,16 @@ export default function CreateDeck({ user, profile }: CreateDeckProps) {
         <div className="space-y-6">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
-              <div className="w-10 h-10 bg-slate-100 dark:bg-white/5 rounded-xl flex items-center justify-center font-black text-slate-400">
+              <div className="w-10 h-10 bg-zinc-100 dark:bg-white/5 rounded-xl flex items-center justify-center font-extrabold text-zinc-400">
                 {cards.length}
               </div>
-              <h2 className="text-2xl font-black text-slate-900 dark:text-white tracking-tighter">Danh sách thẻ</h2>
+              <h2 className="text-2xl font-extrabold text-zinc-900 dark:text-white tracking-tighter">Danh sách thẻ</h2>
             </div>
             <Button 
               type="button" 
               onClick={addCard}
               variant="outline" 
-              className="border-primary text-primary hover:bg-primary/5 h-12 px-6 rounded-2xl gap-2 font-black"
+              className="border-primary text-primary hover:bg-primary/5 h-12 px-6 rounded-2xl gap-2 font-extrabold"
             >
               <Plus size={18} /> Thêm thẻ thủ công
             </Button>
@@ -522,41 +575,41 @@ export default function CreateDeck({ user, profile }: CreateDeckProps) {
 
           <div className="space-y-6">
             {cards.map((card, index) => (
-              <Card key={index} className="border border-slate-200 dark:border-white/5 shadow-xl relative group bg-white dark:bg-[#0C0D0E] rounded-[2rem] overflow-hidden">
+              <Card key={index} className="border border-zinc-200 dark:border-white/5 shadow-xl relative group bg-white dark:bg-[#0C0D0E] rounded-[2rem] overflow-hidden">
                 <CardContent className="p-8 space-y-6">
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
                     <div className="space-y-3">
-                      <label className="text-[9px] font-black text-slate-400 uppercase tracking-[0.2em]">Mặt trước (Câu hỏi)</label>
+                      <label className="text-[9px] font-extrabold text-zinc-400 uppercase tracking-[0.2em]">Mặt trước (Câu hỏi)</label>
                       <Textarea 
                         placeholder="Nhập câu hỏi..." 
                         value={card.front}
                         onChange={(e) => updateCard(index, 'front', e.target.value)}
-                        className="rounded-2xl border-slate-100 dark:border-white/5 dark:bg-white/5 dark:text-white min-h-[100px] p-5 focus:ring-primary/20 font-medium"
+                        className="rounded-2xl border-zinc-100 dark:border-white/5 dark:bg-white/5 dark:text-white min-h-[100px] p-5 focus:ring-primary/20 font-medium"
                       />
                     </div>
                     <div className="space-y-3">
-                      <label className="text-[9px] font-black text-slate-400 uppercase tracking-[0.2em]">Mặt sau (Câu trả lời)</label>
+                      <label className="text-[9px] font-extrabold text-zinc-400 uppercase tracking-[0.2em]">Mặt sau (Câu trả lời)</label>
                       <Textarea 
                         placeholder="Nhập câu trả lời..." 
                         value={card.back}
                         onChange={(e) => updateCard(index, 'back', e.target.value)}
-                        className="rounded-2xl border-slate-100 dark:border-white/5 dark:bg-white/5 dark:text-white min-h-[100px] p-5 focus:ring-primary/20 font-medium"
+                        className="rounded-2xl border-zinc-100 dark:border-white/5 dark:bg-white/5 dark:text-white min-h-[100px] p-5 focus:ring-primary/20 font-medium"
                       />
                     </div>
                   </div>
                   
                   <div className="space-y-3">
-                    <label className="text-[9px] font-black text-slate-400 uppercase tracking-[0.2em] flex items-center gap-2">
+                    <label className="text-[9px] font-extrabold text-zinc-400 uppercase tracking-[0.2em] flex items-center gap-2">
                       <ImageIcon size={14} /> Link hình ảnh (Tùy chọn)
                     </label>
                     <Input 
                       placeholder="https://..." 
                       value={card.imageUrl || ''}
                       onChange={(e) => updateCard(index, 'imageUrl', e.target.value)}
-                      className="h-12 px-5 rounded-2xl border-slate-100 dark:border-white/5 dark:bg-white/5 dark:text-white focus:ring-primary/20 font-medium"
+                      className="h-12 px-5 rounded-2xl border-zinc-100 dark:border-white/5 dark:bg-white/5 dark:text-white focus:ring-primary/20 font-medium"
                     />
                     {card.imageUrl && (
-                      <div className="mt-4 relative w-40 h-24 rounded-2xl overflow-hidden border border-slate-200 dark:border-white/10 shadow-lg">
+                      <div className="mt-4 relative w-40 h-24 rounded-2xl overflow-hidden border border-zinc-200 dark:border-white/10 shadow-lg">
                         <img 
                           src={card.imageUrl} 
                           alt="Preview" 
@@ -574,7 +627,7 @@ export default function CreateDeck({ user, profile }: CreateDeckProps) {
                     <button 
                       type="button"
                       onClick={() => removeCard(index)}
-                      className="absolute top-6 right-6 p-2 bg-slate-50 dark:bg-white/5 text-slate-400 hover:text-rose-500 rounded-xl shadow-sm opacity-0 group-hover:opacity-100 transition-all"
+                      className="absolute top-6 right-6 p-2 bg-zinc-50 dark:bg-white/5 text-zinc-400 hover:text-rose-500 rounded-xl shadow-sm opacity-0 group-hover:opacity-100 transition-all"
                     >
                       <Trash2 size={18} />
                     </button>
@@ -585,11 +638,11 @@ export default function CreateDeck({ user, profile }: CreateDeckProps) {
           </div>
         </div>
 
-        <div className="fixed bottom-10 left-1/2 -translate-x-1/2 md:left-auto md:right-10 md:translate-x-0 z-50">
+        <div className="fixed bottom-10 left-1/2 -tranzinc-x-1/2 md:left-auto md:right-10 md:tranzinc-x-0 z-50">
           <Button 
             type="submit"
             disabled={isSubmitting}
-            className="bg-primary hover:bg-primary/90 text-white px-10 h-16 rounded-2xl shadow-2xl shadow-primary/30 gap-3 text-xl font-black transition-all active:scale-95"
+            className="bg-primary hover:bg-primary/90 text-white px-10 h-16 rounded-2xl shadow-2xl shadow-primary/30 gap-3 text-xl font-extrabold transition-all active:scale-95"
           >
             {isSubmitting ? <Loader2 className="animate-spin w-6 h-6" /> : <Save className="w-6 h-6" />}
             Lưu bộ thẻ

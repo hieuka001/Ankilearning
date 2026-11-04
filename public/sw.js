@@ -3,9 +3,33 @@
  * Only same-origin GET requests are handled; Firestore / Google API traffic
  * is never intercepted or cached.
  */
-const CACHE_VERSION = 'ankilearning-v3';
+const CACHE_VERSION = 'ankilearning-v4';
 const STATIC_CACHE = `${CACHE_VERSION}-static`;
 const APP_SHELL = ['/', '/index.html', '/manifest.webmanifest', '/icon.svg'];
+/* Upper bound for runtime-cached assets (hashed JS/CSS, fonts, images,
+ * audio, OCR core files...). Oldest entries beyond this are evicted so the
+ * cache cannot grow without limit between version bumps. */
+const MAX_CACHE_ENTRIES = 120;
+
+async function trimCache(cacheName, maxEntries) {
+  try {
+    const cache = await caches.open(cacheName);
+    const keys = await cache.keys();
+    if (keys.length <= maxEntries) return;
+    // Never evict app-shell entries — they are the offline fallback.
+    const removable = keys.filter((request) => {
+      try {
+        return !APP_SHELL.includes(new URL(request.url).pathname);
+      } catch {
+        return true;
+      }
+    });
+    const excess = keys.length - maxEntries;
+    await Promise.all(removable.slice(0, excess).map((request) => cache.delete(request)));
+  } catch {
+    // Trimming is best-effort housekeeping only.
+  }
+}
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
@@ -70,6 +94,7 @@ self.addEventListener('fetch', (event) => {
           caches
             .open(STATIC_CACHE)
             .then((cache) => cache.put(request, copy))
+            .then(() => trimCache(STATIC_CACHE, MAX_CACHE_ENTRIES))
             .catch(() => undefined);
         }
         return response;

@@ -1,4 +1,5 @@
 import { memo, useCallback, useMemo, useState } from 'react';
+import DOMPurify from 'dompurify';
 import { AnimatePresence, motion } from 'motion/react';
 import { Archive, Ban, RotateCcw, Volume2, X } from 'lucide-react';
 import type { Flashcard } from '../types';
@@ -139,14 +140,26 @@ function renderMarkdownImagesInHtml(rawContent: string) {
   return rawContent.replace(markdownImagePattern, (_match, alt, src) => renderImageTag(src, alt));
 }
 
-const allowedTags = new Set([
-  'A', 'ARTICLE', 'B', 'BLOCKQUOTE', 'BR', 'CODE', 'DETAILS', 'DIV', 'EM', 'FIGURE', 'FIGCAPTION',
-  'H1', 'H2', 'H3', 'H4', 'HR', 'I', 'IMG', 'LI', 'MARK', 'OL', 'P', 'PRE',
-  'RP', 'RT', 'RUBY', 'SMALL', 'SPAN', 'STRONG', 'SUB', 'SUMMARY', 'SUP', 'TABLE', 'TBODY', 'TD', 'TH',
-  'THEAD', 'TR', 'U', 'UL',
-]);
-
-const allowedAttributes = new Set(['alt', 'aria-label', 'class', 'colspan', 'hidden', 'href', 'lang', 'rowspan', 'src', 'title']);
+/**
+ * Card content is untrusted (own decks, imported .apkg decks, public decks),
+ * so it is sanitized with DOMPurify before hitting dangerouslySetInnerHTML.
+ * The previous hand-rolled DOMParser sanitizer had known bypass classes
+ * (control-character-obfuscated URL schemes, mXSS via svg/math re-parsing);
+ * DOMPurify handles those. The allowlist mirrors the old one, extended with
+ * audio/source so imported Anki sound tags survive.
+ */
+const reviewSanitizeConfig = {
+  ALLOWED_TAGS: [
+    'a', 'article', 'audio', 'b', 'blockquote', 'br', 'code', 'details', 'div', 'em', 'figure',
+    'figcaption', 'h1', 'h2', 'h3', 'h4', 'hr', 'i', 'img', 'li', 'mark', 'ol', 'p', 'pre',
+    'rp', 'rt', 'ruby', 'small', 'source', 'span', 'strong', 'sub', 'summary', 'sup', 'table',
+    'tbody', 'td', 'th', 'thead', 'tr', 'u', 'ul',
+  ],
+  ALLOWED_ATTR: [
+    'alt', 'aria-label', 'class', 'colspan', 'controls', 'hidden', 'href', 'lang', 'rowspan',
+    'src', 'title',
+  ],
+};
 
 function sanitizeReviewHtml(rawContent: string) {
   const htmlReadyContent = renderMarkdownImagesInHtml(rawContent);
@@ -155,42 +168,21 @@ function sanitizeReviewHtml(rawContent: string) {
 
   if (typeof window === 'undefined') return source;
 
-  const doc = new DOMParser().parseFromString(`<div>${source}</div>`, 'text/html');
-  doc.querySelectorAll('script,style,iframe,object,embed,link,meta').forEach((node) => node.remove());
+  const clean = DOMPurify.sanitize(source, reviewSanitizeConfig);
 
-  doc.body.querySelectorAll('*').forEach((element) => {
-    if (!allowedTags.has(element.tagName)) {
-      element.replaceWith(...Array.from(element.childNodes));
-      return;
-    }
-
-    Array.from(element.attributes).forEach((attribute) => {
-      const name = attribute.name.toLowerCase();
-      const value = attribute.value.trim();
-      if (name.startsWith('on') || name === 'style' || !allowedAttributes.has(name)) {
-        element.removeAttribute(attribute.name);
-        return;
-      }
-      if ((name === 'href' || name === 'src') && /^(javascript|data:text\/html)/i.test(value)) {
-        element.removeAttribute(attribute.name);
-        return;
-      }
-      if (name === 'src' && /^data:(?!image\/)/i.test(value)) {
-        element.removeAttribute(attribute.name);
-      }
-    });
-
-    if (element.tagName === 'A') {
-      element.setAttribute('target', '_blank');
-      element.setAttribute('rel', 'noopener noreferrer');
-    }
-
-    if (element.tagName === 'IMG') {
-      element.setAttribute('loading', 'lazy');
-      element.setAttribute('decoding', 'async');
-      element.setAttribute('referrerpolicy', 'no-referrer');
-      element.setAttribute('data-review-image', 'true');
-    }
+  // Presentation pass over the ALREADY-sanitized markup (same behaviour as
+  // the old sanitizer): links open in a new tab, images lazy-load and are
+  // marked so the click-to-zoom handler can find them.
+  const doc = new DOMParser().parseFromString(`<div>${clean}</div>`, 'text/html');
+  doc.body.querySelectorAll('a').forEach((element) => {
+    element.setAttribute('target', '_blank');
+    element.setAttribute('rel', 'noopener noreferrer');
+  });
+  doc.body.querySelectorAll('img').forEach((element) => {
+    element.setAttribute('loading', 'lazy');
+    element.setAttribute('decoding', 'async');
+    element.setAttribute('referrerpolicy', 'no-referrer');
+    element.setAttribute('data-review-image', 'true');
   });
 
   return doc.body.firstElementChild?.innerHTML || '';

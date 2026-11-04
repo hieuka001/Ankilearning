@@ -54,6 +54,12 @@ interface UndoSnapshot {
   statsBefore: { reviewed: number; correct: number };
   historyEntry: ReviewLog;
   wasCorrect: boolean;
+  rating: SchedulerRating;
+}
+
+interface FinishSummary {
+  duration: number;
+  ratings: Record<SchedulerRating, number>;
 }
 
 /**
@@ -70,6 +76,42 @@ const readLastReviewTime = (card: Flashcard): Date | null => {
   if (!raw) return null;
   const parsed = new Date(raw);
   return Number.isFinite(parsed.getTime()) ? parsed : null;
+};
+
+/**
+ * Cheap signature of a deck's card set (count + a rolling hash over each
+ * card's id and its freshest timestamps). Used to skip rewriting the whole
+ * Dexie cache on every Study open when nothing changed since the last load.
+ * Module-level so it survives remounts within the same app session.
+ */
+const cardsCacheSignatures = new Map<string, string>();
+
+const cardSetSignature = (cards: Flashcard[]): string => {
+  let hash = cards.length;
+  for (const card of cards) {
+    const lastReview = typeof card.lastReview === 'string' ? card.lastReview : card.lastReview?.reviewTime || '';
+    const stamp = `${card.id}|${card.updatedAt || ''}|${lastReview}|${card.dueDate || ''};`;
+    for (let i = 0; i < stamp.length; i += 1) {
+      hash = ((hash << 5) - hash + stamp.charCodeAt(i)) | 0;
+    }
+  }
+  return String(hash);
+};
+
+const EMPTY_RATING_COUNTS: Record<SchedulerRating, number> = { again: 0, hard: 0, good: 0, easy: 0 };
+
+const RATING_LABELS: Record<SchedulerRating, string> = {
+  again: 'Quên',
+  hard: 'Khó',
+  good: 'Tốt',
+  easy: 'Dễ',
+};
+
+const formatSessionDuration = (totalSeconds: number): string => {
+  if (totalSeconds < 60) return `${totalSeconds} giây`;
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return seconds > 0 ? `${minutes} phút ${seconds} giây` : `${minutes} phút`;
 };
 
 /**
@@ -137,6 +179,7 @@ export default function Study({ user, profile }: StudyProps) {
   const [undoSnapshot, setUndoSnapshot] = useState<UndoSnapshot | null>(null);
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle');
   const [reloadKey, setReloadKey] = useState(0);
+  const [finishSummary, setFinishSummary] = useState<FinishSummary | null>(null);
 
   // The session queue lives in a ref as well as state: rating handlers must
   // make advance/finish decisions against the queue AS UPDATED by the
@@ -147,6 +190,7 @@ export default function Study({ user, profile }: StudyProps) {
   const sessionStatsRef = useRef({ reviewed: 0, correct: 0 });
   const startTimeRef = useRef(Date.now());
   const finishStatsRef = useRef<{ reviewed: number; correct: number } | null>(null);
+  const ratingCountsRef = useRef<Record<SchedulerRating, number>>({ ...EMPTY_RATING_COUNTS });
   const reviewAllRef = useRef(false);
   const prefetchedImages = useRef<Set<string>>(new Set());
   const ratingLockRef = useRef(false);
@@ -178,6 +222,7 @@ export default function Study({ user, profile }: StudyProps) {
 
   const loading = loadState === 'loading';
   const schedulerConfig = cloudScheduler || profile?.settings?.scheduler || settings.scheduler;
+  const dailyGoal = Math.max(profile?.settings?.dailyGoal || 20, 1);
   const { previewRatings, reviewCard } = useScheduler(schedulerConfig);
   const currentCard = cards[currentIndex];
   const ratingPreviews = useMemo(
@@ -196,6 +241,8 @@ export default function Study({ user, profile }: StudyProps) {
     setSessionStats({ reviewed: 0, correct: 0 });
     startTimeRef.current = Date.now();
     finishStatsRef.current = null;
+    ratingCountsRef.current = { ...EMPTY_RATING_COUNTS };
+    setFinishSummary(null);
     setUndoSnapshot(null);
     setSaveStatus('idle');
     setLoadState('ready');
@@ -205,6 +252,8 @@ export default function Study({ user, profile }: StudyProps) {
     setUndoSnapshot(null);
     setSaveStatus('idle');
     finishStatsRef.current = null;
+    ratingCountsRef.current = { ...EMPTY_RATING_COUNTS };
+    setFinishSummary(null);
     setIsFinished(false);
     sessionStatsRef.current = { reviewed: 0, correct: 0 };
     setSessionStats({ reviewed: 0, correct: 0 });
@@ -246,7 +295,22 @@ export default function Study({ user, profile }: StudyProps) {
     const fetchData = async () => {
       setLoadState('loading');
       try {
-        const deckSnap = await getDoc(doc(db, 'decks', deckId));
+        // Deck, cards, per-user progress and the user doc are independent
+        // reads — run them in parallel instead of four serial round-trips
+        // before the first card can render.
+        const [deckSnap, cardsSnap, progressSnap, userSnap] = await Promise.all([
+          getDoc(doc(db, 'decks', deckId)),
+          getDocs(collection(db, `decks/${deckId}/cards`)),
+          getDocs(query(
+            collection(db, `users/${user.uid}/cardProgress`),
+            where('deckId', '==', deckId),
+          )).catch((progressError) => {
+            console.warn('Unable to load cloud study progress.', progressError);
+            return null;
+          }),
+          getDoc(doc(db, 'users', user.uid)),
+        ]);
+
         if (!deckSnap.exists()) {
           navigate('/decks');
           return;
@@ -256,22 +320,12 @@ export default function Study({ user, profile }: StudyProps) {
         if (cancelled) return;
         setDeck(deckData);
 
-        const cardsSnap = await getDocs(collection(db, `decks/${deckId}/cards`));
         const rawCards = cardsSnap.docs.map((cardDoc) => ({ id: cardDoc.id, ...cardDoc.data() } as Flashcard));
         const progressByCardId = new Map<string, Partial<Flashcard>>();
-
-        try {
-          const progressSnap = await getDocs(query(
-            collection(db, `users/${user.uid}/cardProgress`),
-            where('deckId', '==', deckId),
-          ));
-          progressSnap.docs.forEach((progressDoc) => {
-            const progressData = progressDoc.data() as Partial<Flashcard> & { cardId?: string };
-            if (progressData.cardId) progressByCardId.set(progressData.cardId, progressData);
-          });
-        } catch (progressError) {
-          console.warn('Unable to load cloud study progress.', progressError);
-        }
+        progressSnap?.docs.forEach((progressDoc) => {
+          const progressData = progressDoc.data() as Partial<Flashcard> & { cardId?: string };
+          if (progressData.cardId) progressByCardId.set(progressData.cardId, progressData);
+        });
 
         const allCards = rawCards.map((card) => ({
           ...card,
@@ -280,9 +334,16 @@ export default function Study({ user, profile }: StudyProps) {
           deckId: card.deckId || deckData.id,
           ownerId: card.ownerId || deckData.ownerId,
         } as Flashcard));
-        await cacheCards(user.uid, deckId, allCards).catch(() => undefined);
 
-        const userSnap = await getDoc(doc(db, 'users', user.uid));
+        // Only rewrite the on-device cache when the card set actually
+        // changed since the last load of this deck on this device.
+        const cacheKey = `${user.uid}:${deckId}`;
+        const signature = cardSetSignature(allCards);
+        if (cardsCacheSignatures.get(cacheKey) !== signature) {
+          await cacheCards(user.uid, deckId, allCards).catch(() => undefined);
+          cardsCacheSignatures.set(cacheKey, signature);
+        }
+
         let remoteScheduler: SchedulerConfigInput | null = null;
         if (userSnap.exists()) {
           const userData = userSnap.data() as UserProfile;
@@ -363,6 +424,7 @@ export default function Study({ user, profile }: StudyProps) {
     setSaveStatus('saving');
     flushReviewQueue().catch((error) => console.warn('Review queue sync failed.', error));
     const duration = Math.round((Date.now() - startTimeRef.current) / 1000);
+    setFinishSummary({ duration, ratings: { ...ratingCountsRef.current } });
 
     try {
       if (!user) {
@@ -458,7 +520,11 @@ export default function Study({ user, profile }: StudyProps) {
     } as Flashcard;
 
     // Snapshot for Undo BEFORE any state moves on.
-    setUndoSnapshot({ cardBefore: currentCard, statsBefore, historyEntry, wasCorrect: isCorrect });
+    setUndoSnapshot({ cardBefore: currentCard, statsBefore, historyEntry, wasCorrect: isCorrect, rating });
+    ratingCountsRef.current = {
+      ...ratingCountsRef.current,
+      [rating]: ratingCountsRef.current[rating] + 1,
+    };
     sessionStatsRef.current = nextStats;
     setSessionStats(nextStats);
     setIsFlipped(false);
@@ -525,6 +591,10 @@ export default function Study({ user, profile }: StudyProps) {
       if (restoredIndex >= 0) setCurrentIndex(restoredIndex);
       sessionStatsRef.current = snapshot.statsBefore;
       setSessionStats(snapshot.statsBefore);
+      ratingCountsRef.current = {
+        ...ratingCountsRef.current,
+        [snapshot.rating]: Math.max(0, ratingCountsRef.current[snapshot.rating] - 1),
+      };
       setIsFlipped(false);
       setUndoSnapshot(null);
 
@@ -783,6 +853,55 @@ export default function Study({ user, profile }: StudyProps) {
               <p className="mt-1 text-xs font-semibold uppercase text-zinc-500">Chính xác</p>
             </div>
           </div>
+          {finishSummary && (
+            <div className="space-y-3 text-left">
+              <div className="grid grid-cols-2 gap-3">
+                <div className="rounded-lg border border-zinc-200 bg-zinc-50 p-4 dark:border-white/10 dark:bg-white/5">
+                  <p className="text-lg font-semibold text-zinc-950 dark:text-white">
+                    {formatSessionDuration(finishSummary.duration)}
+                  </p>
+                  <p className="mt-0.5 text-[11px] font-semibold uppercase text-zinc-500">Thời lượng phiên</p>
+                </div>
+                <div className="rounded-lg border border-zinc-200 bg-zinc-50 p-4 dark:border-white/10 dark:bg-white/5">
+                  <p className="text-lg font-semibold text-zinc-950 dark:text-white">
+                    {sessionStats.reviewed > 0
+                      ? `${(finishSummary.duration / sessionStats.reviewed).toFixed(1).replace('.', ',')} giây/thẻ`
+                      : '—'}
+                  </p>
+                  <p className="mt-0.5 text-[11px] font-semibold uppercase text-zinc-500">Tốc độ trung bình</p>
+                </div>
+              </div>
+              <div className="grid grid-cols-4 gap-2">
+                {(Object.keys(RATING_LABELS) as SchedulerRating[]).map((rating) => (
+                  <div
+                    key={rating}
+                    className="rounded-lg border border-zinc-200 bg-zinc-50 px-2 py-3 text-center dark:border-white/10 dark:bg-white/5"
+                  >
+                    <p className="font-mono text-xl font-semibold text-zinc-950 dark:text-white">
+                      {finishSummary.ratings[rating]}
+                    </p>
+                    <p className="mt-0.5 text-[10px] font-semibold uppercase text-zinc-500">{RATING_LABELS[rating]}</p>
+                  </div>
+                ))}
+              </div>
+              <div className="rounded-lg border border-zinc-200 bg-zinc-50 p-4 dark:border-white/10 dark:bg-white/5">
+                <div className="mb-2 flex items-center justify-between gap-3">
+                  <p className="text-xs font-semibold text-zinc-600 dark:text-zinc-300">
+                    Phiên này: {sessionStats.reviewed}/{dailyGoal} thẻ so với mục tiêu ngày
+                  </p>
+                  <p className="font-mono text-xs font-semibold text-zinc-500">
+                    {Math.min(100, Math.round((sessionStats.reviewed / dailyGoal) * 100))}%
+                  </p>
+                </div>
+                <div className="h-2 overflow-hidden rounded-full bg-zinc-200 dark:bg-white/10">
+                  <div
+                    className="h-full rounded-full bg-emerald-500"
+                    style={{ width: `${Math.min(100, (sessionStats.reviewed / dailyGoal) * 100)}%` }}
+                  />
+                </div>
+              </div>
+            </div>
+          )}
           <div className="space-y-3">
             <Link to="/decks">
               <Button className="h-12 w-full">Quay lại bộ thẻ</Button>

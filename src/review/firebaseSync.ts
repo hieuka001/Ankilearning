@@ -1,5 +1,5 @@
 import { arrayUnion, doc, writeBatch, type WriteBatch } from 'firebase/firestore';
-import { db } from '../firebase';
+import { auth, db } from '../firebase';
 import type { Flashcard, ReviewLog } from '../types';
 import { trackReviewActivity } from '../services/gamificationService';
 import {
@@ -7,6 +7,7 @@ import {
   getPendingReviewResults,
   markReviewResultsFailed,
   markReviewResultsSynced,
+  pruneSyncedRecords,
   saveReviewResult,
   upsertCachedCard,
   type ReviewQueueRecord,
@@ -123,7 +124,7 @@ export async function enqueueReviewSync(input: ReviewSyncInput) {
     }),
   ]);
 
-  const pendingCount = await countPendingReviewResults();
+  const pendingCount = await countPendingReviewResults(input.userId);
   if (pendingCount >= FLUSH_SIZE) {
     flushReviewQueue().catch((error) => console.warn('Review queue sync failed.', error));
     return;
@@ -131,12 +132,31 @@ export async function enqueueReviewSync(input: ReviewSyncInput) {
   scheduleFlush();
 }
 
-export async function flushReviewQueue() {
+/** FNV-1a hash — deterministic event ids for gamification idempotency. */
+function stableHash(value: string) {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < value.length; i += 1) {
+    hash ^= value.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(36);
+}
+
+/**
+ * Flush ONLY the current session user's queued records. Records belonging to
+ * another account on the same device must wait for their owner's session:
+ * flushing them under the wrong auth makes Firestore reject them and (for
+ * permanent errors) burns their retry budget.
+ */
+export async function flushReviewQueue(userId?: string) {
   if (isFlushing || (typeof navigator !== 'undefined' && !navigator.onLine)) return;
+  const uid = userId ?? auth.currentUser?.uid;
+  if (!uid) return;
   isFlushing = true;
 
   try {
-    const records = (await getPendingReviewResults()).slice(0, MAX_RECORDS_PER_FLUSH);
+    void pruneSyncedRecords();
+    const records = (await getPendingReviewResults(uid)).slice(0, MAX_RECORDS_PER_FLUSH);
     if (records.length === 0) return;
 
     const syncedIds: string[] = [];
@@ -176,11 +196,12 @@ export async function flushReviewQueue() {
       await markReviewResultsSynced(syncedIds);
 
       // Report real reviewed/correct counts from the records that actually synced.
-      const reviewedByUser = new Map<string, { total: number; correct: number }>();
+      const reviewedByUser = new Map<string, { total: number; correct: number; ids: string[] }>();
       syncedRecords.forEach((record) => {
-        const entry = reviewedByUser.get(record.userId) || { total: 0, correct: 0 };
+        const entry = reviewedByUser.get(record.userId) || { total: 0, correct: 0, ids: [] };
         entry.total += 1;
         if (record.isCorrect) entry.correct += 1;
+        entry.ids.push(record.id);
         reviewedByUser.set(record.userId, entry);
       });
 
@@ -190,6 +211,10 @@ export async function flushReviewQueue() {
             cardsReviewed: counts.total,
             correctCount: counts.correct,
             source: 'review_queue',
+            // Deterministic id derived from the exact record set: if this
+            // flush is replayed (two tabs, ambiguous commit), gamification
+            // recognizes the event and does not count it twice.
+            eventId: `rq-${userId}-${stableHash([...counts.ids].sort().join(','))}`,
           }).catch((error) => {
             console.warn('Gamification review tracking failed.', error);
           })

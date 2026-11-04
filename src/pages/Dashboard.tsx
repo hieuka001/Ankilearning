@@ -24,8 +24,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { db } from '../firebase';
 import { Deck, StudySession, UserProfile } from '../types';
-import { suggestStudyPath } from '../services/aiService';
-import { fetchMultipleDeckInsights, mergeForecastCounts } from '../lib/deckAnalytics';
+import { fetchMultipleDeckInsights, getDeckCacheSignature, mergeForecastCounts } from '../lib/deckAnalytics';
 import { buildSessionCountByDay } from '../lib/studySessions';
 import { getXpProgress } from '../lib/gamification';
 
@@ -54,6 +53,10 @@ export default function Dashboard({ user, profile, recentSessions }: DashboardPr
   const userId = user?.uid;
   const [recentDecks, setRecentDecks] = useState<(Deck & { dueCount: number })[]>([]);
   const [totalDeckCount, setTotalDeckCount] = useState(0);
+  // Headline numbers (due today, forecast, "Học ngay" target) aggregate
+  // over EVERY deck the user owns — not just the 4 shown in the list.
+  const [totalDueToday, setTotalDueToday] = useState(0);
+  const [firstDueDeckId, setFirstDueDeckId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [aiSuggestion, setAiSuggestion] = useState<string | null>(null);
   const [isGeneratingSuggestion, setIsGeneratingSuggestion] = useState(false);
@@ -105,6 +108,8 @@ export default function Dashboard({ user, profile, recentSessions }: DashboardPr
     if (!userId) {
       setRecentDecks([]);
       setTotalDeckCount(0);
+      setTotalDueToday(0);
+      setFirstDueDeckId(null);
       setForecastData(buildForecastShell());
       setLoading(false);
       return;
@@ -127,16 +132,24 @@ export default function Dashboard({ user, profile, recentSessions }: DashboardPr
         const forecastShell = buildForecastShell();
         const forecastDayKeys = new Set(forecastShell.map((day) => day.fullDate.getTime()));
 
-        if (topDecks.length === 0) {
+        if (decksData.length === 0) {
           setRecentDecks([]);
+          setTotalDueToday(0);
+          setFirstDueDeckId(null);
           setForecastData(forecastShell);
           setLoading(false);
           return;
         }
 
         try {
+          // Insights for ALL decks, served by the signature-keyed card
+          // cache: repeat snapshots reuse cached card lists instead of
+          // re-reading every card of every deck.
           const insightsByDeck = await fetchMultipleDeckInsights(
-            topDecks.map((deck) => deck.id),
+            decksData.map((deck) => ({
+              id: deck.id,
+              signature: getDeckCacheSignature(deck as Deck & { updatedAt?: string }),
+            })),
             forecastDayKeys,
           );
 
@@ -151,7 +164,17 @@ export default function Dashboard({ user, profile, recentSessions }: DashboardPr
             forecastShell.map((day) => day.fullDate.getTime()),
           );
 
+          let dueTotal = 0;
+          let firstDueId: string | null = null;
+          decksData.forEach((deck) => {
+            const due = insightsByDeck.get(deck.id)?.dueCount || 0;
+            dueTotal += due;
+            if (due > 0 && firstDueId === null) firstDueId = deck.id;
+          });
+
           setRecentDecks(decksWithDue);
+          setTotalDueToday(dueTotal);
+          setFirstDueDeckId(firstDueId);
           setForecastData(
             forecastShell.map((day, index) => ({
               ...day,
@@ -161,6 +184,8 @@ export default function Dashboard({ user, profile, recentSessions }: DashboardPr
         } catch {
           if (deckInsightsRequestRef.current !== requestId) return;
           setRecentDecks(topDecks.map((deck) => ({ ...deck, dueCount: 0 })));
+          setTotalDueToday(0);
+          setFirstDueDeckId(null);
           setForecastData(forecastShell);
         } finally {
           if (deckInsightsRequestRef.current === requestId) {
@@ -186,7 +211,7 @@ export default function Dashboard({ user, profile, recentSessions }: DashboardPr
 
   const dailyGoal = Math.max(profile?.settings?.dailyGoal || 20, 1);
   const dailyProgress = Math.min((cardsToday / dailyGoal) * 100, 100);
-  const dueToday = recentDecks.reduce((sum, deck) => sum + deck.dueCount, 0);
+  const dueToday = totalDueToday;
   const streakDays = profile?.streakDays ?? profile?.streak ?? 0;
   const cardsReviewed = profile?.totalCardsReviewed ?? profile?.totalCardsLearned ?? 0;
   const xpProgress = getXpProgress((profile as ProfileWithProgress | null)?.xp ?? 0);
@@ -220,13 +245,15 @@ export default function Dashboard({ user, profile, recentSessions }: DashboardPr
   const greetingHour = new Date().getHours();
   const greetingLabel = greetingHour < 12 ? 'Chào buổi sáng' : greetingHour < 18 ? 'Chào buổi chiều' : 'Chào buổi tối';
   const greetingName = profile?.displayName || 'bạn';
-  const firstDueDeck = recentDecks.find((deck) => deck.dueCount > 0);
-  const studyNowTarget = firstDueDeck ? `/study/${firstDueDeck.id}` : '/decks';
+  const studyNowTarget = firstDueDeckId ? `/study/${firstDueDeckId}` : '/decks';
 
   const handleGetAiSuggestion = async () => {
     if (!profile) return;
     setIsGeneratingSuggestion(true);
     try {
+      // The Gemini SDK chunk is only needed for this one button — load it
+      // on demand instead of with the home page (same pattern as Settings).
+      const { suggestStudyPath } = await import('../services/aiService');
       const suggestion = await suggestStudyPath(
         {
           totalCardsLearned: cardsReviewed,

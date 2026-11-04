@@ -202,11 +202,16 @@ export function getTodayKey(timeZone = DEFAULT_TIMEZONE, date = new Date()): str
 
 /**
  * The single study-day key convention for gamification: a yyyy-MM-dd key in
- * the user's timezone (same values getTodayKey produces). All streak writes
+ * the given timezone (same values getTodayKey produces). All streak writes
  * must go through helpers built on this key so `streak` and `streakDays`
  * can never drift apart.
+ *
+ * Named distinctly from the scheduler's `getStudyDayKey`
+ * (src/scheduler/intervalCalculator.ts), which uses the DEVICE-LOCAL day
+ * with no timezone parameter — the two conventions differ for users outside
+ * the configured timezone, and the near-identical names invited mix-ups.
  */
-export function getStudyDayKey(date = new Date(), timeZone = DEFAULT_TIMEZONE): string {
+export function getStudyDayKeyInTimezone(date = new Date(), timeZone = DEFAULT_TIMEZONE): string {
   return getTodayKey(timeZone, date);
 }
 
@@ -247,14 +252,14 @@ export function computeStreakOnActivity(
   now = new Date(),
   timeZone = DEFAULT_TIMEZONE,
 ): StreakComputation {
-  const todayKey = getStudyDayKey(now, timeZone);
+  const todayKey = getStudyDayKeyInTimezone(now, timeZone);
   const previousStreak = Math.max(0, Math.floor(previous.streakDays || 0));
 
   let lastDayKey = previous.lastStudyDayKey || '';
   if (!lastDayKey && previous.lastStudyDate) {
     const parsed = new Date(previous.lastStudyDate);
     if (Number.isFinite(parsed.getTime())) {
-      lastDayKey = getStudyDayKey(parsed, timeZone);
+      lastDayKey = getStudyDayKeyInTimezone(parsed, timeZone);
     }
   }
 

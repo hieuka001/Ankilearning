@@ -285,7 +285,7 @@
     position: absolute;
     z-index: -1;
     border-radius: 9999px;
-    filter: blur(72px);
+    filter: blur(52px);
     opacity: 0.5;
     pointer-events: none;
     will-change: transform;
@@ -294,8 +294,8 @@
   .aurora-blob-1 {
     top: -12%;
     left: -6%;
-    width: 34rem;
-    height: 34rem;
+    width: 27rem;
+    height: 27rem;
     background: radial-gradient(circle, rgba(16, 185, 129, 0.55) 0%, rgba(16, 185, 129, 0) 70%);
     animation: auroraDrift1 22s ease-in-out infinite alternate;
   }
@@ -303,8 +303,8 @@
   .aurora-blob-2 {
     top: 6%;
     right: -10%;
-    width: 30rem;
-    height: 30rem;
+    width: 24rem;
+    height: 24rem;
     background: radial-gradient(circle, rgba(20, 184, 166, 0.5) 0%, rgba(20, 184, 166, 0) 70%);
     animation: auroraDrift2 26s ease-in-out infinite alternate;
   }
@@ -312,8 +312,8 @@
   .aurora-blob-3 {
     bottom: -18%;
     left: 32%;
-    width: 26rem;
-    height: 26rem;
+    width: 21rem;
+    height: 21rem;
     background: radial-gradient(circle, rgba(245, 158, 11, 0.42) 0%, rgba(245, 158, 11, 0) 70%);
     animation: auroraDrift3 18s ease-in-out infinite alternate;
   }
@@ -330,13 +330,13 @@
     padding-top: env(safe-area-inset-top);
   }
 
+  /* Static gradient: the old canvasDrift animation repainted the whole
+     background continuously (background-position is a paint property). */
   .app-surface {
     background:
       linear-gradient(112deg, rgba(5, 150, 105, 0.12) 0%, rgba(5, 150, 105, 0) 35%),
       linear-gradient(248deg, rgba(20, 184, 166, 0.105) 0%, rgba(20, 184, 166, 0) 40%),
       linear-gradient(180deg, #fbfefc 0%, #e9f7f0 48%, #f3faf6 100%);
-    background-size: 150% 150%, 150% 150%, 100% 100%;
-    animation: canvasDrift 24s ease-in-out infinite alternate;
   }
 
   .dark .app-surface {
@@ -452,12 +452,6 @@
       linear-gradient(112deg, rgba(5, 150, 105, 0.13) 0%, rgba(5, 150, 105, 0) 35%),
       linear-gradient(248deg, rgba(20, 184, 166, 0.105) 0%, rgba(20, 184, 166, 0) 40%),
       linear-gradient(180deg, #fbfefc 0%, #e9f7f0 50%, #f3faf6 100%);
-    background-size: 150% 150%, 150% 150%, 100% 100%;
-    animation: canvasDrift 26s ease-in-out infinite alternate;
-  }
-
-  .app-shell-paused {
-    animation-play-state: paused;
   }
 
   .dark .app-shell {
@@ -1396,16 +1390,6 @@
     animation-iteration-count: 1 !important;
     scroll-behavior: auto !important;
     transition-duration: 0.01ms !important;
-  }
-}
-
-@keyframes canvasDrift {
-  0% {
-    background-position: 0% 0%, 100% 0%, 0% 0%;
-  }
-
-  100% {
-    background-position: 100% 18%, 0% 22%, 0% 0%;
   }
 }
 

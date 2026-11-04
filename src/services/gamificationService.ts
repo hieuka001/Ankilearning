@@ -3,12 +3,13 @@ import {
   doc,
   runTransaction,
 } from 'firebase/firestore';
-import { db } from '../firebase';
+import { auth, db } from '../firebase';
 import type { UserProfile } from '../types';
 import {
   getPendingGamificationEvents,
   markGamificationEventFailed,
   markGamificationEventsSynced,
+  pruneSyncedRecords,
   saveGamificationEvent,
   type GamificationQueueRecord,
 } from '../review/localDB';
@@ -43,6 +44,18 @@ interface ActivityInput {
   /** Study time to add to totalStudyTimeMinutes, when the caller knows it. */
   studyMinutes?: number;
   forceCooldownKey?: 'quiz';
+  /**
+   * Idempotency key. When set, the activity log document gets this exact id
+   * and the transaction skips the activity entirely if that log already
+   * exists — so a replayed flush / ambiguous commit can never count twice.
+   */
+  eventId?: string;
+  /**
+   * When the activity actually happened. Queued events replayed later pass
+   * their original queue time here so streaks/day keys reflect the study
+   * day, not the flush day. Future/invalid values fall back to now.
+   */
+  occurredAt?: Date;
 }
 
 interface ActivityResult {
@@ -60,6 +73,8 @@ export interface ReviewActivityInput {
   /** Optional study time (minutes) to add to the lifetime total. */
   studyMinutes?: number;
   source?: string;
+  /** Idempotency key — see ActivityInput.eventId. */
+  eventId?: string;
 }
 
 export interface QuizActivityInput {
@@ -96,7 +111,7 @@ function profileStats(userData: Partial<UserProfile>) {
   const totalCardsReviewed = numberValue(userData.totalCardsReviewed, numberValue(userData.totalCardsLearned));
   const totalQuizzesCompleted = numberValue(userData.totalQuizzesCompleted);
   const totalStudyTimeMinutes = numberValue(userData.totalStudyTimeMinutes);
-  const xp = numberValue((userData as { xp?: number }).xp);
+  const xp = numberValue(userData.xp);
 
   return {
     streakDays,
@@ -108,8 +123,16 @@ function profileStats(userData: Partial<UserProfile>) {
 }
 
 async function trackActivity(userId: string, input: ActivityInput, timezone = DEFAULT_TIMEZONE): Promise<ActivityResult> {
-  const now = new Date();
+  const writeNow = new Date();
+  // Streaks/day keys follow when the activity HAPPENED (queued events replay
+  // with their original time); `updatedAt` still stamps the actual write.
+  const now = input.occurredAt
+    && Number.isFinite(input.occurredAt.getTime())
+    && input.occurredAt.getTime() <= writeNow.getTime()
+    ? input.occurredAt
+    : writeNow;
   const nowIso = now.toISOString();
+  const writeNowIso = writeNow.toISOString();
   const dateKey = getTodayKey(timezone, now);
   const antiCheatFlags: string[] = [];
 
@@ -122,9 +145,26 @@ async function trackActivity(userId: string, input: ActivityInput, timezone = DE
     antiCheatFlags.push('large_review_batch');
   }
 
+  // Idempotency: with an eventId, the log document IS the processed-marker.
+  // The transaction reads it first; if it already exists the activity was
+  // already counted (replay / two-tab flush / ambiguous commit) and is
+  // skipped atomically. (A processedEventIds array on the profile doc would
+  // need a firestore.rules whitelist change — the log-doc id needs none:
+  // the create rules only require userId + dateKey.)
+  const logRef = input.eventId
+    ? doc(db, input.logCollection, input.eventId)
+    : doc(collection(db, input.logCollection));
+
   return runTransaction(db, async (transaction) => {
     const profileSnap = await transaction.get(userRef(userId));
     const userData = profileSnap.exists() ? profileSnap.data() as Partial<UserProfile> : {};
+
+    if (input.eventId) {
+      const existingLog = await transaction.get(logRef);
+      if (existingLog.exists()) {
+        return { antiCheatFlags: ['duplicate_event'], newBadges: [], xpEarned: 0 };
+      }
+    }
 
     if (input.forceCooldownKey === 'quiz' && userData.lastQuizCompletedAt) {
       const elapsed = now.getTime() - new Date(userData.lastQuizCompletedAt).getTime();
@@ -134,7 +174,7 @@ async function trackActivity(userId: string, input: ActivityInput, timezone = DE
       }
     }
 
-    const profileUpdatedAt = (userData as { updatedAt?: string | number | Date }).updatedAt;
+    const profileUpdatedAt = userData.updatedAt;
 
     // Anti-spam (MIN_REVIEW_DELAY_MS / REVIEW_SPAM_WINDOW_MS): queue records
     // carry no trustworthy per-review timestamps, so sub-1.2s gaps between
@@ -165,13 +205,24 @@ async function trackActivity(userId: string, input: ActivityInput, timezone = DE
     // Streak: ONE rule for every write path (computeStreakOnActivity), and
     // both profile fields are always written with the same value.
     const hasActivity = cardsReviewed > 0 || quizzesCompleted > 0;
-    const streak = hasActivity
+    let streak = hasActivity
       ? computeStreakOnActivity(
           { streakDays: previousStats.streakDays, lastStudyDate: userData.lastStudyDate },
           now,
           timezone,
         )
       : null;
+
+    // Out-of-order replay guard: a queued event from an EARLIER study day
+    // arriving after a later day's activity must still add its totals/XP,
+    // but must not rewind the streak or lastStudyDate.
+    if (streak && userData.lastStudyDate) {
+      const previousDate = new Date(userData.lastStudyDate);
+      if (Number.isFinite(previousDate.getTime())
+        && getTodayKey(timezone, previousDate) > dateKey) {
+        streak = null;
+      }
+    }
 
     // The rules whitelist has no dedicated perfect-quiz counter field, so the
     // count is derived from badge ownership (threshold for the badge is 1,
@@ -215,15 +266,15 @@ async function trackActivity(userId: string, input: ActivityInput, timezone = DE
       lastQuizCompletedAt: input.forceCooldownKey === 'quiz' && quizzesCompleted > 0 ? nowIso : userData.lastQuizCompletedAt || '',
       badges,
       achievements: badges,
-      updatedAt: nowIso,
+      updatedAt: writeNowIso,
     }, { merge: true });
 
-    const logRef = doc(collection(db, input.logCollection));
     transaction.set(logRef, {
       id: logRef.id,
       userId,
       dateKey,
-      createdAt: nowIso,
+      createdAt: writeNowIso,
+      ...(input.occurredAt ? { activityAt: nowIso } : {}),
       antiCheatFlags,
       ...input.logData,
     });
@@ -239,14 +290,24 @@ async function trackActivityWithOfflineQueue(
   input: ActivityInput,
   timezone = DEFAULT_TIMEZONE
 ): Promise<ActivityResult> {
+  // One id for the whole lifecycle: the direct attempt uses it as the
+  // idempotency key, and if the event ends up queued, the queued record
+  // keeps the SAME id — so a commit that actually landed despite the client
+  // seeing an error is recognized (and skipped) when the queue replays it.
+  const eventId = input.eventId
+    || `${userId}-${kind}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
   try {
-    const result = await trackActivity(userId, input, timezone);
+    const result = await trackActivity(userId, { ...input, eventId }, timezone);
     emitBadgeEvents(result.newBadges);
     return result;
   } catch (error) {
-    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+    // Queue on ANY failure, not just offline: previously an "online" error
+    // (permission, quota, 5xx) was rethrown after the review records had
+    // already been marked synced, silently losing the XP/totals forever.
+    try {
       await saveGamificationEvent({
-        id: `${userId}-${kind}-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        id: eventId,
         userId,
         kind,
         payload,
@@ -255,11 +316,12 @@ async function trackActivityWithOfflineQueue(
         createdAt: new Date().toISOString(),
         error: error instanceof Error ? error.message : String(error),
       });
-
-      return { antiCheatFlags: ['queued_offline'], newBadges: [], xpEarned: 0 };
+    } catch {
+      // Even the local queue failed — surface the original error.
+      throw error;
     }
 
-    throw error;
+    return { antiCheatFlags: ['queued_offline'], newBadges: [], xpEarned: 0 };
   }
 }
 
@@ -274,6 +336,7 @@ export function trackReviewActivity(userId: string, input: ReviewActivityInput, 
     cardsReviewed,
     correctCount,
     studyMinutes: input.studyMinutes,
+    eventId: input.eventId,
     logData: {
       type: 'review_batch',
       source: input.source || 'study',
@@ -313,20 +376,32 @@ export function trackQuizCompletion(userId: string, input: QuizActivityInput, ti
   return trackActivityWithOfflineQueue(userId, 'quiz', { ...input }, activityInput, timezone);
 }
 
-export async function flushGamificationQueue() {
+/**
+ * Flush ONLY the current session user's queued gamification events (same
+ * shared-device rule as the review queue: another account's events wait for
+ * their owner instead of failing under the wrong auth).
+ */
+export async function flushGamificationQueue(userId?: string) {
   if (isFlushingGamification || (typeof navigator !== 'undefined' && !navigator.onLine)) return;
+  const uid = userId ?? auth.currentUser?.uid;
+  if (!uid) return;
   isFlushingGamification = true;
 
   try {
+    void pruneSyncedRecords();
     // localDB (đợt 1d) keeps failed events at status 'pending' with an
     // attempts counter (dead-lettered at MAX_GAMIFICATION_ATTEMPTS = 3), so
     // this pending list already includes retryable 'failed' events — they
     // are retried here automatically and drop out once they turn 'dead'.
-    const pendingEvents = await getPendingGamificationEvents();
+    const pendingEvents = await getPendingGamificationEvents(uid);
 
     for (const event of pendingEvents) {
       try {
         let result: ActivityResult;
+        // Replay with the ORIGINAL activity time and the event's own id as
+        // the idempotency key: streak/day keys land on the study day, and a
+        // partially-applied earlier attempt is never counted twice.
+        const occurredAt = new Date(event.createdAt);
         if (event.kind === 'review') {
           const cardsReviewed = numberValue(event.payload.cardsReviewed);
           const correctCount = Math.min(cardsReviewed, numberValue(event.payload.correctCount, cardsReviewed));
@@ -335,6 +410,8 @@ export async function flushGamificationQueue() {
             cardsReviewed,
             correctCount,
             studyMinutes: numberValue(event.payload.studyMinutes),
+            eventId: event.id,
+            occurredAt,
             logData: {
               type: 'review_batch',
               source: String(event.payload.source || 'offline_queue'),
@@ -352,6 +429,8 @@ export async function flushGamificationQueue() {
             perfectQuiz: totalQuestions > 0 && score >= totalQuestions,
             studyMinutes: durationSeconds / 60,
             forceCooldownKey: 'quiz',
+            eventId: event.id,
+            occurredAt,
             logData: {
               type: 'quiz_completion',
               score,

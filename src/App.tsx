@@ -8,7 +8,7 @@ import { countCardsReviewedToday } from './lib/studySessions';
 import { Button } from '@/components/ui/button';
 import { Toaster } from '@/components/ui/sonner';
 import { toast } from 'sonner';
-import { AnimatePresence, motion } from 'motion/react';
+import { motion } from 'motion/react';
 import {
   Activity,
   ArrowRight,
@@ -29,10 +29,13 @@ import { SettingsProvider } from './contexts/SettingsContext';
 import BackgroundMusic from './components/BackgroundMusic';
 import Logo from './components/Logo';
 import NotificationCenter from './components/NotificationCenter';
-import { flushGamificationQueue, BADGE_UNLOCKED_EVENT } from './services/gamificationService';
-import { flushReviewQueue } from './review/firebaseSync';
-import { clearReviewCache } from './review/localDB';
 import { BADGES, getXpProgress, type BadgeUnlock } from './lib/gamification';
+
+// Same string as BADGE_UNLOCKED_EVENT in services/gamificationService — kept
+// as a local literal so this shell does not statically import the sync stack
+// (Dexie/ts-fsrs) into the entry chunk; the flush functions are loaded
+// lazily below via dynamic import().
+const BADGE_UNLOCKED_EVENT = 'ankilearning:badge';
 
 type ProfileWithProgress = UserProfile & { xp?: number; level?: number };
 
@@ -144,8 +147,14 @@ export default function App() {
 
   useEffect(() => {
     if (!user?.uid) return;
-    flushGamificationQueue().catch((error) => console.warn('Gamification queue sync failed.', error));
-    flushReviewQueue().catch((error) => console.warn('Review queue sync failed.', error));
+    // Lazy: the queue-sync stack (Dexie, ts-fsrs) is only needed after login,
+    // so it stays out of the entry chunk via dynamic import.
+    import('./services/gamificationService')
+      .then(({ flushGamificationQueue }) => flushGamificationQueue())
+      .catch((error) => console.warn('Gamification queue sync failed.', error));
+    import('./review/firebaseSync')
+      .then(({ flushReviewQueue }) => flushReviewQueue())
+      .catch((error) => console.warn('Review queue sync failed.', error));
   }, [user?.uid]);
 
   // Celebrate freshly unlocked badges (gamificationService dispatches
@@ -161,19 +170,6 @@ export default function App() {
     };
     window.addEventListener(BADGE_UNLOCKED_EVENT, onBadge);
     return () => window.removeEventListener(BADGE_UNLOCKED_EVENT, onBadge);
-  }, []);
-
-  useEffect(() => {
-    const shell = document.querySelector('.app-shell');
-    if (!shell) return;
-
-    const syncAnimationState = () => {
-      shell.classList.toggle('app-shell-paused', document.hidden);
-    };
-
-    syncAnimationState();
-    document.addEventListener('visibilitychange', syncAnimationState);
-    return () => document.removeEventListener('visibilitychange', syncAnimationState);
   }, []);
 
   useEffect(() => {
@@ -292,6 +288,7 @@ export default function App() {
     // next account on this machine starts clean. Cleanup failures must never
     // trap the user in the session, hence try/catch around each step.
     try {
+      const { clearReviewCache } = await import('./review/localDB');
       await clearReviewCache();
     } catch (error) {
       console.warn('Không dọn được bộ nhớ đệm học tập khi đăng xuất.', error);
@@ -632,30 +629,25 @@ function AnimatedRoutes({
 
   return (
     <AppErrorBoundary resetKey={location.pathname}>
-      <AnimatePresence mode="wait">
-        <motion.div
-          key={location.pathname}
-          initial={{ opacity: 0, y: 12 }}
-          animate={{ opacity: 1, y: 0 }}
-          exit={{ opacity: 0, y: -8 }}
-          transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
-          className="route-layer animate-page-in"
-        >
-          <Routes location={location}>
-            <Route path="/" element={<Dashboard user={user} profile={profile} recentSessions={recentSessions} />} />
-            <Route path="/decks" element={<Decks user={user} />} />
-            <Route path="/decks/:deckId" element={<DeckDetail user={user} profile={profile} />} />
-            <Route path="/study/:deckId" element={<Study user={user} profile={profile} />} />
-            <Route path="/create-deck" element={<CreateDeck user={user} profile={profile} />} />
-            <Route path="/voice-to-card" element={<VoiceToCard user={user} profile={profile} />} />
-            <Route path="/assessment" element={<Assessment user={user} profile={profile} />} />
-            <Route path="/ai-helper" element={<AIHelper user={user} profile={profile} />} />
-            <Route path="/search" element={<Search user={user} />} />
-            <Route path="/settings" element={<Settings user={user} profile={profile} />} />
-            <Route path="*" element={<Navigate to="/" />} />
-          </Routes>
-        </motion.div>
-      </AnimatePresence>
+      {/* No AnimatePresence/motion wrapper: the old mode="wait" exit (220ms)
+          stacked on top of the CSS pageIn animation made every navigation
+          wait ~0.45s. The keyed div restarts the CSS pageIn animation per
+          route and content shows immediately. */}
+      <div key={location.pathname} className="route-layer animate-page-in">
+        <Routes location={location}>
+          <Route path="/" element={<Dashboard user={user} profile={profile} recentSessions={recentSessions} />} />
+          <Route path="/decks" element={<Decks user={user} />} />
+          <Route path="/decks/:deckId" element={<DeckDetail user={user} profile={profile} />} />
+          <Route path="/study/:deckId" element={<Study user={user} profile={profile} />} />
+          <Route path="/create-deck" element={<CreateDeck user={user} profile={profile} />} />
+          <Route path="/voice-to-card" element={<VoiceToCard user={user} profile={profile} />} />
+          <Route path="/assessment" element={<Assessment user={user} profile={profile} />} />
+          <Route path="/ai-helper" element={<AIHelper user={user} profile={profile} />} />
+          <Route path="/search" element={<Search user={user} />} />
+          <Route path="/settings" element={<Settings user={user} profile={profile} />} />
+          <Route path="*" element={<Navigate to="/" />} />
+        </Routes>
+      </div>
     </AppErrorBoundary>
   );
 }

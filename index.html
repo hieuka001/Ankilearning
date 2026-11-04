@@ -10,6 +10,34 @@
     <link rel="icon" type="image/svg+xml" href="/icon.svg" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <title>AnkiLearning — Học thông minh với thẻ ghi nhớ</title>
+    <script>
+      // Apply the saved theme before first paint so dark-mode users do not
+      // see a light flash while the app bundle loads. Mirrors the theme
+      // resolution in src/contexts/SettingsContext.tsx: the preference lives
+      // in localStorage key "anki_settings" (field "theme": light|dark|system).
+      (function () {
+        try {
+          var theme = 'system';
+          var raw = localStorage.getItem('anki_settings');
+          if (raw) {
+            var parsed = JSON.parse(raw);
+            if (parsed && (parsed.theme === 'dark' || parsed.theme === 'light' || parsed.theme === 'system')) {
+              theme = parsed.theme;
+            }
+          }
+          var dark = theme === 'dark'
+            || (theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+          if (dark) {
+            document.documentElement.classList.add('dark');
+            document.documentElement.style.backgroundColor = '#0f172a';
+          } else {
+            document.documentElement.style.backgroundColor = '#f7f7fb';
+          }
+        } catch (e) {
+          // Storage blocked (private mode etc.) — the app applies the theme itself.
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>
