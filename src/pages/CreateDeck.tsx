@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef } from 'react';
 import { collection, addDoc, serverTimestamp } from 'firebase/firestore';
 import * as pdfjsLib from 'pdfjs-dist';
 import { db, auth } from '../firebase';
@@ -25,6 +25,12 @@ import { generateFlashcardsFromText } from '../services/aiService';
 import { playSound } from '../lib/sounds';
 import { useSettings } from '../contexts/SettingsContext';
 import { createInitialCardSchedule } from '../lib/spacedRepetition';
+import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
+
+// Dùng worker PDF đóng gói cùng app (không phụ thuộc CDN ngoài).
+pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
+
+const EMPTY_CARDS_MESSAGE = 'AI không tạo được thẻ nào từ nội dung này — thử rút gọn/chia nhỏ tài liệu hoặc kiểm tra lại nội dung.';
 
 import { UserProfile } from '../types';
 
@@ -49,11 +55,6 @@ export default function CreateDeck({ user, profile }: CreateDeckProps) {
   const [color, setColor] = useState('#4f46e5');
   const [tags, setTags] = useState('');
   const pdfInputRef = useRef<HTMLInputElement>(null);
-
-  useEffect(() => {
-    // Set up PDF.js worker using a more reliable source
-    pdfjsLib.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.mjs`;
-  }, []);
 
   const addCard = () => {
     setCards([...cards, { front: '', back: '' }]);
@@ -90,11 +91,11 @@ export default function CreateDeck({ user, profile }: CreateDeckProps) {
         setAiText('');
         setAiImage(null);
       } else {
-        toast.error("AI không thể tạo thẻ từ nội dung này.");
+        toast.warning(EMPTY_CARDS_MESSAGE);
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error(error);
-      toast.error("Lỗi khi gọi AI.");
+      toast.error(error?.message || "Lỗi khi gọi AI.");
     } finally {
       setIsGenerating(false);
     }
@@ -122,7 +123,13 @@ export default function CreateDeck({ user, profile }: CreateDeckProps) {
         toast.success("Đã thêm thẻ hình ảnh!");
       } else {
         // Try to parse as JSON for multiple cards
-        const data = await response.json();
+        let data: any;
+        try {
+          data = JSON.parse(await response.text());
+        } catch {
+          toast.error("Nội dung tải về không phải JSON hợp lệ — không đọc được danh sách thẻ. Hãy kiểm tra lại URL (nên là link 'Raw').");
+          return;
+        }
         if (Array.isArray(data)) {
           const newCards = data.map((item: any) => ({
             front: item.front || item.question || '',
@@ -134,16 +141,18 @@ export default function CreateDeck({ user, profile }: CreateDeckProps) {
             setCards([...cards.filter(c => c.front || c.back), ...newCards]);
             toast.success(`Đã nhập thành công ${newCards.length} thẻ!`);
           } else {
-            toast.error("Định dạng JSON không hợp lệ hoặc không có dữ liệu thẻ.");
+            toast.error("Không tìm thấy thẻ hợp lệ nào trong JSON — mỗi thẻ cần có đủ mặt trước (front/question) và mặt sau (back/answer).");
           }
         } else {
           toast.error("URL không trả về danh sách thẻ hợp lệ (JSON Array).");
         }
       }
       input.value = '';
-    } catch (error) {
+    } catch (error: any) {
       console.error(error);
-      toast.error("Lỗi khi tải dữ liệu. Đảm bảo URL là link 'Raw' và cho phép truy cập (CORS).");
+      toast.error(error?.message?.startsWith('Không thể tải')
+        ? error.message
+        : "Lỗi khi tải dữ liệu. Đảm bảo URL là link 'Raw' và cho phép truy cập (CORS).");
     } finally {
       setIsGenerating(false);
       toast.dismiss(toastId);
@@ -184,12 +193,16 @@ export default function CreateDeck({ user, profile }: CreateDeckProps) {
           
           setAiText(prev => (prev ? prev + '\n\n' : '') + fullText.trim());
           toast.success(`Đã thêm ${pdf.numPages} trang PDF vào nội dung AI!`, { id: toastId });
-        } catch (error) {
+        } catch (error: any) {
           console.error(error);
-          toast.error("Lỗi khi đọc file PDF.");
+          toast.error(error?.message ? `Lỗi khi đọc file PDF: ${error.message}` : "Lỗi khi đọc file PDF.");
         } finally {
           setIsProcessingPdf(false);
         }
+      };
+      reader.onerror = () => {
+        setIsProcessingPdf(false);
+        toast.error("Không đọc được file PDF. Vui lòng thử lại với file khác.");
       };
       reader.readAsArrayBuffer(file);
     }

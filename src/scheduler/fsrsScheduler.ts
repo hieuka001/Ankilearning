@@ -1,16 +1,27 @@
 import {
-  addDays,
-  addStep,
+  createEmptyCard,
+  fsrs,
+  Rating,
+  State,
+  type CardInput,
+  type FSRSParameters,
+  type Grade,
+  type Steps,
+} from 'ts-fsrs';
+import {
   calculateRetrievability,
   clamp,
+  DAY_MS,
   daysBetween,
-  intervalForRetention,
+  getStudyDayKey,
+  MINUTE_MS,
   round,
-  stepToDays,
+  stabilityForScheduledDays,
 } from './intervalCalculator';
 import type {
   CardState,
   InitialStability,
+  LeechAction,
   NormalizedSchedulerCard,
   ReviewLog,
   ScheduleReviewOutput,
@@ -22,7 +33,10 @@ import type {
   SchedulerStep,
 } from '../models/fsrs';
 
-const FSRS_VERSION = 'fsrs-dsr-v1';
+// The scheduling engine is ts-fsrs running the FSRS-6 model with its default
+// weights. Everything in this module is a two-way adapter between the app's
+// card/config shapes and the ts-fsrs Card/FSRSParameters shapes.
+export const FSRS_VERSION = 'fsrs-6';
 const VALID_STATES: CardState[] = ['new', 'learning', 'review', 'relearning'];
 
 export const DEFAULT_SCHEDULER_CONFIG: SchedulerConfig = {
@@ -55,6 +69,8 @@ export const DEFAULT_SCHEDULER_CONFIG: SchedulerConfig = {
   hardMultiplier: 1.2,
   easyBonus: 1.3,
   minimumEaseFactor: 1.3,
+  leechThreshold: 8,
+  leechAction: 'suspend',
 };
 
 const toFiniteNumber = (value: unknown, fallback: number) => {
@@ -156,6 +172,8 @@ export const normalizeSchedulerConfig = (config?: SchedulerConfigInput): Schedul
     hardMultiplier: Math.max(1, toFiniteNumber(config?.hardMultiplier, DEFAULT_SCHEDULER_CONFIG.hardMultiplier)),
     easyBonus: Math.max(1, toFiniteNumber(config?.easyBonus, DEFAULT_SCHEDULER_CONFIG.easyBonus)),
     minimumEaseFactor: Math.max(1.3, toFiniteNumber(config?.minimumEaseFactor, DEFAULT_SCHEDULER_CONFIG.minimumEaseFactor)),
+    leechThreshold: Math.max(0, toPositiveInteger(config?.leechThreshold, DEFAULT_SCHEDULER_CONFIG.leechThreshold)),
+    leechAction: (config?.leechAction === 'none' ? 'none' : 'suspend') as LeechAction,
   };
 };
 
@@ -178,6 +196,8 @@ export const createInitialCardSchedule = (now = new Date()) => ({
   dueDate: now.toISOString(),
   nextReview: now.toISOString(),
   stability: 0,
+  // Display placeholder only: ts-fsrs derives the real initial difficulty
+  // from the first rating when the card leaves the 'new' state.
   difficulty: DEFAULT_SCHEDULER_CONFIG.initialDifficulty,
   retrievability: 1,
   elapsedDays: 0,
@@ -213,12 +233,16 @@ export const normalizeCardSchedule = (
     || parseDate(rawCard.dueDate)?.toISOString()
     || parseDate(rawCard.nextReview)?.toISOString()
     || createdAt;
-  const lastReviewDate = parseDate(lastReview) || parseDate(rawCard.updatedAt) || parseDate(createdAt) || now;
-  const elapsedDays = state === 'new'
-    ? 0
-    : round(toFiniteNumber(rawCard.elapsedDays, daysBetween(lastReviewDate, now)), 4);
+  // L1 fix (the audit's most serious bug): elapsed days are ALWAYS recomputed
+  // from the last review timestamp. The stored `elapsedDays` field is never
+  // trusted — the previous engine wrote 0 there after every review, which
+  // pinned retrievability to 1 forever.
+  const lastReviewDate = state === 'new'
+    ? null
+    : parseDate(lastReview) || parseDate(rawCard.updatedAt) || parseDate(createdAt);
+  const elapsedDays = lastReviewDate ? round(daysBetween(lastReviewDate, now), 4) : 0;
   const inferredStability = scheduledDays > 0
-    ? scheduledDays / (9 * (1 / config.desiredRetention - 1) * config.intervalModifier)
+    ? stabilityForScheduledDays(scheduledDays, config.desiredRetention, config.intervalModifier)
     : config.initialStability.good;
   const stability = state === 'new'
     ? Math.max(0, toFiniteNumber(rawCard.stability, 0))
@@ -252,6 +276,7 @@ export const normalizeCardSchedule = (
     reps,
     repetitions: reps,
     lastReview,
+    firstReviewAt: typeof rawCard.firstReviewAt === 'string' ? rawCard.firstReviewAt : undefined,
     createdAt,
     updatedAt: rawCard.updatedAt || now.toISOString(),
     suspended: rawCard.suspended === true,
@@ -262,44 +287,69 @@ export const normalizeCardSchedule = (
   };
 };
 
-const nextDifficulty = (previousDifficulty: number, rating: SchedulerRating, config: SchedulerConfig) => {
-  const ratingDelta: Record<SchedulerRating, number> = {
-    again: 0.9,
-    hard: 0.35,
-    good: -0.05,
-    easy: -0.45,
-  };
-  const meanReversion = (config.initialDifficulty - previousDifficulty) * 0.05;
-  return round(clamp(previousDifficulty + ratingDelta[rating] + meanReversion, config.minimumDifficulty, config.maximumDifficulty), 4);
+// --- ts-fsrs adapter --------------------------------------------------------
+
+const RATING_TO_GRADE: Record<SchedulerRating, Grade> = {
+  again: Rating.Again,
+  hard: Rating.Hard,
+  good: Rating.Good,
+  easy: Rating.Easy,
 };
 
-const initialStabilityFor = (rating: SchedulerRating, config: SchedulerConfig) =>
-  config.initialStability[rating];
+const STATE_TO_FSRS: Record<CardState, State> = {
+  new: State.New,
+  learning: State.Learning,
+  review: State.Review,
+  relearning: State.Relearning,
+};
 
-const nextRecallStability = (
-  card: NormalizedSchedulerCard,
-  rating: Exclude<SchedulerRating, 'again'>,
-  newDifficulty: number,
-  config: SchedulerConfig,
-) => {
-  const stability = Math.max(0.1, card.stability || initialStabilityFor(rating, config));
-  if (rating === 'hard') {
-    return round(clamp(stability * config.hardMultiplier, 0.1, config.maximumInterval), 4);
+const STATE_FROM_FSRS: Record<number, CardState> = {
+  [State.New]: 'new',
+  [State.Learning]: 'learning',
+  [State.Review]: 'review',
+  [State.Relearning]: 'relearning',
+};
+
+const toFsrsSteps = (steps: SchedulerStep[]): Steps =>
+  steps.map((step) => `${step.amount}${step.unit === 'minute' ? 'm' : 'd'}`) as unknown as Steps;
+
+const toFsrsParameters = (config: SchedulerConfig): Partial<FSRSParameters> => ({
+  request_retention: config.desiredRetention,
+  maximum_interval: Math.max(1, Math.trunc(config.maximumInterval)),
+  enable_fuzz: true,
+  enable_short_term: true,
+  learning_steps: toFsrsSteps(config.learningSteps),
+  relearning_steps: toFsrsSteps(config.relearningSteps),
+});
+
+const toFsrsCard = (card: NormalizedSchedulerCard, config: SchedulerConfig): CardInput => {
+  if (card.state === 'new') {
+    // ts-fsrs validates the memory state of non-empty cards and rejects a
+    // prefilled difficulty/stability of an app-side placeholder, so new
+    // cards must enter the engine as a clean empty card.
+    const empty = createEmptyCard(new Date(card.dueDate));
+    return {
+      ...empty,
+      reps: card.reps,
+      lapses: card.lapses,
+    };
   }
 
-  const ratingBoost = rating === 'easy' ? 3 : 2.1;
-  const difficultyFactor = clamp((11 - newDifficulty) / 6, 0.15, 1.7);
-  const stabilityFactor = stability ** -0.18;
-  const retrievabilityGap = 1 + Math.max(0.03, 1 - card.retrievability) * 2;
-  const growth = 1 + ratingBoost * difficultyFactor * stabilityFactor * retrievabilityGap;
-  return round(clamp(stability * growth, 0.1, config.maximumInterval), 4);
+  const steps = card.state === 'relearning' ? config.relearningSteps : config.learningSteps;
+  return {
+    due: new Date(card.dueDate),
+    stability: card.stability,
+    difficulty: card.difficulty,
+    scheduled_days: Math.max(0, Math.round(card.scheduledDays)),
+    learning_steps: Math.min(card.stepIndex, Math.max(0, steps.length - 1)),
+    reps: card.reps,
+    lapses: card.lapses,
+    state: STATE_TO_FSRS[card.state],
+    last_review: card.lastReview ? new Date(card.lastReview) : undefined,
+  };
 };
 
-const nextForgetStability = (card: NormalizedSchedulerCard, config: SchedulerConfig) => {
-  const stability = Math.max(0.1, card.stability || config.initialStability.again);
-  const retrievabilityPenalty = clamp(card.retrievability, 0.25, 1);
-  return round(clamp(stability * 0.45 * retrievabilityPenalty, config.initialStability.again, config.maximumInterval), 4);
-};
+// --- result building --------------------------------------------------------
 
 const buildReviewLog = (
   card: NormalizedSchedulerCard,
@@ -324,65 +374,88 @@ const buildReviewLog = (
   schedulerVersion: FSRS_VERSION,
 });
 
+interface EngineOutcome {
+  state: CardState;
+  stability: number;
+  difficulty: number;
+  scheduledDays: number;
+  stepIndex: number;
+  dueDate: string;
+  lapses: number;
+  reps: number;
+  leech: boolean;
+}
+
 const buildResult = (
   card: NormalizedSchedulerCard,
   rating: SchedulerRating,
-  state: CardState,
-  stability: number,
-  difficulty: number,
-  scheduledDays: number,
-  stepIndex: number,
-  dueDate: string,
-  scheduledDelay: SchedulerResult['scheduledDelay'],
+  outcome: EngineOutcome,
   config: SchedulerConfig,
   now: Date,
-  lapses = card.lapses,
 ): SchedulerResult => {
-  const resultBase = {
+  const dueMs = new Date(outcome.dueDate).getTime() - now.getTime();
+  const scheduledDelay: SchedulerResult['scheduledDelay'] = outcome.state === 'review'
+    ? { amount: outcome.scheduledDays, unit: 'day' }
+    : dueMs < DAY_MS
+      ? { amount: Math.max(1, Math.round(dueMs / MINUTE_MS)), unit: 'minute' }
+      : { amount: round(dueMs / DAY_MS, 2), unit: 'day' };
+  const firstReviewAt = card.firstReviewAt || (card.state === 'new' ? now.toISOString() : undefined);
+  const suspended = card.suspended || (outcome.leech && config.leechAction === 'suspend');
+
+  const resultBase: Omit<SchedulerResult, 'reviewLog' | 'updatedCard'> = {
     rating,
-    state,
-    due: dueDate,
-    dueDate,
-    nextReview: dueDate,
-    stability: round(stability, 4),
-    difficulty: round(difficulty, 4),
+    state: outcome.state,
+    due: outcome.dueDate,
+    dueDate: outcome.dueDate,
+    nextReview: outcome.dueDate,
+    stability: round(outcome.stability, 4),
+    difficulty: round(outcome.difficulty, 4),
     retrievability: 1,
-    elapsedDays: 0,
-    scheduledDays: round(scheduledDays, 4),
-    interval: round(scheduledDays, 4),
-    easeFactor: difficultyToEaseFactor(difficulty, config),
-    stepIndex,
-    lapses,
-    reps: card.reps + 1,
-    repetitions: card.reps + 1,
+    // The elapsed time that actually fed this review (same value the
+    // ReviewLog records). The previous engine always reported 0 here.
+    elapsedDays: card.elapsedDays,
+    scheduledDays: round(outcome.scheduledDays, 4),
+    interval: round(outcome.scheduledDays, 4),
+    easeFactor: difficultyToEaseFactor(outcome.difficulty, config),
+    stepIndex: outcome.stepIndex,
+    lapses: outcome.lapses,
+    reps: outcome.reps,
+    repetitions: outcome.reps,
     previousInterval: card.scheduledDays,
-    newInterval: round(scheduledDays, 4),
+    newInterval: round(outcome.scheduledDays, 4),
     previousStability: card.stability,
-    newStability: round(stability, 4),
+    newStability: round(outcome.stability, 4),
     previousDifficulty: card.difficulty,
-    newDifficulty: round(difficulty, 4),
+    newDifficulty: round(outcome.difficulty, 4),
     previousRetrievability: card.retrievability,
     scheduledDelay,
+    leech: outcome.leech,
+    firstReviewAt,
   };
 
   const updatedCard: NormalizedSchedulerCard = {
     ...card,
-    state,
-    due: dueDate,
-    dueDate,
-    nextReview: dueDate,
+    state: outcome.state,
+    due: outcome.dueDate,
+    dueDate: outcome.dueDate,
+    nextReview: outcome.dueDate,
     stability: resultBase.stability,
     difficulty: resultBase.difficulty,
     retrievability: resultBase.retrievability,
-    elapsedDays: resultBase.elapsedDays,
+    // Freshly reviewed: 0 days have elapsed since this review. Future
+    // normalize calls ignore this stored value and recompute from
+    // lastReview anyway (see the L1 fix in normalizeCardSchedule).
+    elapsedDays: 0,
     scheduledDays: resultBase.scheduledDays,
     interval: resultBase.interval,
     easeFactor: resultBase.easeFactor,
-    stepIndex,
-    lapses,
+    stepIndex: outcome.stepIndex,
+    lapses: outcome.lapses,
     reps: resultBase.reps,
     repetitions: resultBase.repetitions,
     lastReview: now.toISOString(),
+    firstReviewAt,
+    suspended,
     updatedAt: now.toISOString(),
   };
   const reviewLog = buildReviewLog(card, resultBase, now);
@@ -394,46 +467,6 @@ const buildResult = (
   };
 };
 
-const buildStepResult = (
-  card: NormalizedSchedulerCard,
-  rating: SchedulerRating,
-  state: CardState,
-  stepIndex: number,
-  step: SchedulerStep,
-  stability: number,
-  difficulty: number,
-  config: SchedulerConfig,
-  now: Date,
-  lapses = card.lapses,
-) => {
-  const dueDate = addStep(now, step).toISOString();
-  return buildResult(card, rating, state, stability, difficulty, stepToDays(step), stepIndex, dueDate, step, config, now, lapses);
-};
-
-const buildReviewResult = (
-  card: NormalizedSchedulerCard,
-  rating: SchedulerRating,
-  stability: number,
-  difficulty: number,
-  config: SchedulerConfig,
-  now: Date,
-  lapses = card.lapses,
-) => {
-  const scheduledDays = intervalForRetention(stability, config.desiredRetention, config.intervalModifier, config.maximumInterval);
-  const dueDate = addDays(now, scheduledDays).toISOString();
-  return buildResult(card, rating, 'review', stability, difficulty, scheduledDays, 0, dueDate, { amount: scheduledDays, unit: 'day' }, config, now, lapses);
-};
-
-const relearningStep = (
-  card: NormalizedSchedulerCard,
-  rating: SchedulerRating,
-  stability: number,
-  difficulty: number,
-  config: SchedulerConfig,
-  now: Date,
-  lapses = card.lapses,
-) => buildStepResult(card, rating, 'relearning', 0, config.relearningSteps[0], stability, difficulty, config, now, lapses);
-
 export const getRatingOptions = (): SchedulerRating[] => ['again', 'hard', 'good', 'easy'];
 
 export function calculateSchedulerReview(
@@ -444,70 +477,39 @@ export function calculateSchedulerReview(
 ): SchedulerResult {
   const config = normalizeSchedulerConfig(rawConfig);
   const card = normalizeCardSchedule(rawCard, now, config);
-  const difficulty = nextDifficulty(card.difficulty, rating, config);
+  const engine = fsrs(toFsrsParameters(config));
+  const { card: nextCard } = engine.next(toFsrsCard(card, config), now, RATING_TO_GRADE[rating]);
 
-  if (card.state === 'new') {
-    const stability = initialStabilityFor(rating, config);
-    if (rating === 'again') {
-      return buildStepResult(card, rating, 'learning', 0, config.learningSteps[0], stability, difficulty, config, now);
-    }
-    if (rating === 'hard') {
-      const nextStep = Math.min(1, config.learningSteps.length - 1);
-      return buildStepResult(card, rating, 'learning', nextStep, config.learningSteps[nextStep], stability, difficulty, config, now);
-    }
-    return buildReviewResult(card, rating, stability, difficulty, config, now);
-  }
+  const state = STATE_FROM_FSRS[nextCard.state] || 'review';
+  const dueDate = nextCard.due.toISOString();
+  // For (re)learning steps the interval is the sub-day delay until the step
+  // is due; for review cards it is the library's scheduled_days. `interval`
+  // therefore always means "time until the next due" — the previous engine
+  // violated this for Again-from-review (it stored the post-lapse interval).
+  const scheduledDays = state === 'review'
+    ? nextCard.scheduled_days
+    : round(daysBetween(now, nextCard.due), 4);
+  const stepIndex = state === 'learning' || state === 'relearning' ? nextCard.learning_steps : 0;
 
-  if (card.state === 'learning') {
-    if (rating === 'again') {
-      return buildStepResult(card, rating, 'learning', 0, config.learningSteps[0], nextForgetStability(card, config), difficulty, config, now);
-    }
-    if (rating === 'hard') {
-      const stepIndex = Math.min(card.stepIndex, config.learningSteps.length - 1);
-      const stability = Math.max(card.stability, config.initialStability.hard);
-      return buildStepResult(card, rating, 'learning', stepIndex, config.learningSteps[stepIndex], stability, difficulty, config, now);
-    }
-    if (rating === 'easy') {
-      const stability = Math.max(nextRecallStability(card, rating, difficulty, config), config.initialStability.easy);
-      return buildReviewResult(card, rating, stability, difficulty, config, now);
-    }
+  // Leech: a lapse (Again from the review state) that pushes the lifetime
+  // lapse count to the configured threshold flags the card; with the default
+  // 'suspend' action it is also suspended so it leaves every queue.
+  const leech = config.leechThreshold > 0
+    && card.state === 'review'
+    && rating === 'again'
+    && nextCard.lapses >= config.leechThreshold;
 
-    const nextStep = card.stepIndex + 1;
-    const stability = Math.max(card.stability, config.initialStability.good);
-    return config.learningSteps[nextStep]
-      ? buildStepResult(card, rating, 'learning', nextStep, config.learningSteps[nextStep], stability, difficulty, config, now)
-      : buildReviewResult(card, rating, stability, difficulty, config, now);
-  }
-
-  if (card.state === 'relearning') {
-    if (rating === 'again') {
-      return relearningStep(card, rating, nextForgetStability(card, config), difficulty, config, now);
-    }
-    if (rating === 'hard') {
-      const stability = Math.max(card.stability, config.initialStability.hard);
-      return relearningStep(card, rating, stability, difficulty, config, now);
-    }
-    if (rating === 'easy') {
-      const stability = nextRecallStability(card, rating, difficulty, config);
-      return buildReviewResult(card, rating, stability, difficulty, config, now);
-    }
-
-    const nextStep = card.stepIndex + 1;
-    const stability = Math.max(card.stability, config.initialStability.good);
-    return config.relearningSteps[nextStep]
-      ? buildStepResult(card, rating, 'relearning', nextStep, config.relearningSteps[nextStep], stability, difficulty, config, now)
-      : buildReviewResult(card, rating, stability, difficulty, config, now);
-  }
-
-  if (rating === 'again') {
-    const stability = nextForgetStability(card, config);
-    const futureInterval = intervalForRetention(stability, config.desiredRetention, config.intervalModifier, config.maximumInterval);
-    const dueDate = addStep(now, config.relearningSteps[0]).toISOString();
-    return buildResult(card, rating, 'relearning', stability, difficulty, futureInterval, 0, dueDate, config.relearningSteps[0], config, now, card.lapses + 1);
-  }
-
-  const stability = nextRecallStability(card, rating, difficulty, config);
-  return buildReviewResult(card, rating, stability, difficulty, config, now);
+  return buildResult(card, rating, {
+    state,
+    stability: nextCard.stability,
+    difficulty: clamp(nextCard.difficulty, config.minimumDifficulty, config.maximumDifficulty),
+    scheduledDays,
+    stepIndex,
+    dueDate,
+    lapses: nextCard.lapses,
+    reps: nextCard.reps,
+    leech,
+  }, config, now);
 }
 
 export function scheduleReview(
@@ -553,56 +555,10 @@ export const isCardDue = (card: SchedulerCardInput, now = new Date()) => {
   return Number.isFinite(dueDate.getTime()) && dueDate <= now;
 };
 
-export const getNextAvailableTime = (card: SchedulerCardInput, now = new Date()) => {
-  const schedule = normalizeCardSchedule(card, now);
-  const dueCandidates = [schedule.dueDate, schedule.buriedUntil]
-    .filter(Boolean)
-    .map((date) => new Date(date))
-    .filter((date) => Number.isFinite(date.getTime()) && date > now);
-
-  return dueCandidates.length ? new Date(Math.min(...dueCandidates.map((date) => date.getTime()))) : null;
-};
-
 export const getLocalTomorrowIso = (now = new Date()) => {
   const tomorrow = new Date(now);
   tomorrow.setHours(24, 0, 0, 0);
   return tomorrow.toISOString();
 };
 
-export function calculateNextReview(
-  quality: number,
-  repetitions: number,
-  easeFactor: number,
-  interval: number,
-) {
-  const rating: SchedulerRating = quality <= 1 ? 'again' : quality === 3 ? 'hard' : quality >= 5 ? 'easy' : 'good';
-  const result = calculateSchedulerReview(
-    {
-      state: interval > 0 || repetitions > 0 ? 'review' : 'new',
-      repetitions,
-      reps: repetitions,
-      easeFactor,
-      interval,
-      scheduledDays: interval,
-      dueDate: new Date().toISOString(),
-    },
-    rating,
-  );
-
-  return {
-    repetitions: result.repetitions,
-    reps: result.reps,
-    easeFactor: result.easeFactor,
-    interval: result.interval,
-    scheduledDays: result.scheduledDays,
-    stability: result.stability,
-    difficulty: result.difficulty,
-    retrievability: result.retrievability,
-    nextReview: result.nextReview,
-    dueDate: result.dueDate,
-    due: result.due,
-    state: result.state,
-    stepIndex: result.stepIndex,
-    lapses: result.lapses,
-  };
-}
+export { getStudyDayKey };

@@ -14,8 +14,14 @@ function cleanField(value?: string) {
 }
 
 function hasContent(value?: string) {
-  const html = cleanField(value).replace(/<[^>]+>/g, '').replace(/\[sound:[^\]]+\]/gi, '').trim();
-  return Boolean(html);
+  const raw = cleanField(value);
+  if (!raw) return false;
+  // Content that is only media (an <img> tag or an Anki [sound:] reference)
+  // is still real content: the image/audio IS the card payload, so do not
+  // strip it away and then judge the field as empty.
+  if (/<img\b/i.test(raw) || /\[sound:[^\]]+\]/i.test(raw)) return true;
+  const text = raw.replace(/<[^>]+>/g, '').replace(/\[sound:[^\]]+\]/gi, '').trim();
+  return Boolean(text);
 }
 
 function stripScripts(html: string) {

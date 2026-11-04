@@ -29,7 +29,12 @@ import { SettingsProvider } from './contexts/SettingsContext';
 import BackgroundMusic from './components/BackgroundMusic';
 import Logo from './components/Logo';
 import NotificationCenter from './components/NotificationCenter';
-import { flushGamificationQueue } from './services/gamificationService';
+import { flushGamificationQueue, BADGE_UNLOCKED_EVENT } from './services/gamificationService';
+import { flushReviewQueue } from './review/firebaseSync';
+import { clearReviewCache } from './review/localDB';
+import { BADGES, getXpProgress, type BadgeUnlock } from './lib/gamification';
+
+type ProfileWithProgress = UserProfile & { xp?: number; level?: number };
 
 const Dashboard = lazy(() => import('./pages/Dashboard'));
 const Decks = lazy(() => import('./pages/Decks'));
@@ -46,12 +51,39 @@ const navItems = [
   { to: '/', label: 'Tổng quan', icon: <LayoutDashboard size={17} /> },
   { to: '/decks', label: 'Bộ thẻ', icon: <Library size={17} /> },
   { to: '/create-deck', label: 'Tạo bộ thẻ', icon: <PlusCircle size={17} /> },
-  { to: '/voice-to-card', label: 'Voice-to-Card', icon: <Mic size={17} /> },
+  { to: '/voice-to-card', label: 'Thẻ từ giọng nói', icon: <Mic size={17} /> },
   { to: '/assessment', label: 'Kiểm tra', icon: <BrainCircuit size={17} /> },
-  { to: '/ai-helper', label: 'Study Copilot', icon: <Sparkles size={17} /> },
+  { to: '/ai-helper', label: 'Trợ lý AI', icon: <Sparkles size={17} /> },
   { to: '/search', label: 'Tìm kiếm', icon: <SearchIcon size={17} /> },
   { to: '/settings', label: 'Cài đặt', icon: <SettingsIcon size={17} /> },
 ];
+
+const bottomNavItems = [
+  { to: '/', label: 'Tổng quan', icon: <LayoutDashboard size={20} /> },
+  { to: '/decks', label: 'Bộ thẻ', icon: <Library size={20} /> },
+  { to: '/create-deck', label: 'Tạo thẻ', icon: <PlusCircle size={20} /> },
+  { to: '/settings', label: 'Cài đặt', icon: <SettingsIcon size={20} /> },
+];
+
+const pageMeta: { prefix: string; title: string; description: string }[] = [
+  { prefix: '/study', title: 'Học thẻ', description: 'Tập trung ôn các thẻ đến hạn hôm nay.' },
+  { prefix: '/decks/', title: 'Chi tiết bộ thẻ', description: 'Quản lý thẻ, tiến độ và lịch ôn của bộ này.' },
+  { prefix: '/decks', title: 'Bộ thẻ', description: 'Tất cả bộ thẻ của bạn và của cộng đồng.' },
+  { prefix: '/create-deck', title: 'Tạo bộ thẻ', description: 'Tạo thẻ thủ công, bằng AI hoặc nhập từ Anki.' },
+  { prefix: '/voice-to-card', title: 'Thẻ từ giọng nói', description: 'Nói và để AI chuyển thành thẻ ghi nhớ.' },
+  { prefix: '/assessment', title: 'Kiểm tra', description: 'Luyện đề trắc nghiệm từ chính bộ thẻ của bạn.' },
+  { prefix: '/ai-helper', title: 'Trợ lý AI', description: 'Hỏi đáp, tạo thẻ và sơ đồ tư duy bằng Gemini.' },
+  { prefix: '/search', title: 'Tìm kiếm', description: 'Tìm thẻ và bộ thẻ trong toàn bộ thư viện.' },
+  { prefix: '/settings', title: 'Cài đặt', description: 'Thuật toán ôn tập, tài khoản, âm thanh và nhắc học.' },
+];
+
+function getPageMeta(pathname: string) {
+  if (pathname === '/') {
+    return { title: 'Tổng quan', description: 'Tiến độ học, chuỗi ngày học và gợi ý cho hôm nay.' };
+  }
+  return pageMeta.find((item) => pathname.startsWith(item.prefix))
+    || { title: 'AnkiLearning', description: 'Học thông minh với thẻ ghi nhớ.' };
+}
 
 function PageLoader() {
   return (
@@ -113,7 +145,23 @@ export default function App() {
   useEffect(() => {
     if (!user?.uid) return;
     flushGamificationQueue().catch((error) => console.warn('Gamification queue sync failed.', error));
+    flushReviewQueue().catch((error) => console.warn('Review queue sync failed.', error));
   }, [user?.uid]);
+
+  // Celebrate freshly unlocked badges (gamificationService dispatches
+  // 'ankilearning:badge' for every badge unlocked by an activity).
+  useEffect(() => {
+    const onBadge = (event: Event) => {
+      const badge = (event as CustomEvent<BadgeUnlock>).detail;
+      if (!badge?.title) return;
+      const definition = BADGES.find((item) => item.id === badge.id);
+      toast.success(`🏆 Huy hiệu mới: ${badge.title}`, {
+        description: definition?.description || 'Tiếp tục phát huy nhé!',
+      });
+    };
+    window.addEventListener(BADGE_UNLOCKED_EVENT, onBadge);
+    return () => window.removeEventListener(BADGE_UNLOCKED_EVENT, onBadge);
+  }, []);
 
   useEffect(() => {
     const shell = document.querySelector('.app-shell');
@@ -240,8 +288,26 @@ export default function App() {
   };
 
   const handleLogout = async () => {
-    await signOut(auth);
-    toast.info('Đã đăng xuất.');
+    // Wipe local data (review cache, offline queues, local settings) so the
+    // next account on this machine starts clean. Cleanup failures must never
+    // trap the user in the session, hence try/catch around each step.
+    try {
+      await clearReviewCache();
+    } catch (error) {
+      console.warn('Không dọn được bộ nhớ đệm học tập khi đăng xuất.', error);
+    }
+    try {
+      localStorage.removeItem('anki_settings');
+    } catch (error) {
+      console.warn('Không xoá được cài đặt cục bộ khi đăng xuất.', error);
+    }
+    try {
+      await signOut(auth);
+      toast.info('Đã đăng xuất.');
+    } catch (error) {
+      console.error(error);
+      toast.error('Đăng xuất thất bại, vui lòng thử lại.');
+    }
   };
 
   if (loading) {
@@ -262,11 +328,12 @@ export default function App() {
   const sidebarPhotoURL = profile?.photoURL || user.photoURL || '';
   const sidebarInitial = (sidebarDisplayName.trim()[0] || 'U').toUpperCase();
 
+  const xpProgress = getXpProgress((profile as ProfileWithProgress | null)?.xp ?? 0);
+
   return (
-    <SettingsProvider>
+    <SettingsProvider initialTheme={profile?.settings?.theme}>
       <BackgroundMusic />
       <Router>
-        <NotificationCenter user={user} profile={profile} />
         <div className="app-shell font-sans text-foreground">
           {sidebarOpen && (
             <button
@@ -276,19 +343,12 @@ export default function App() {
             />
           )}
 
-          <button
-            aria-label="Mở menu"
-            className="mobile-menu-button"
-            onClick={() => setSidebarOpen(!sidebarOpen)}
-          >
-            {sidebarOpen ? <X size={20} /> : <Menu size={20} />}
-          </button>
-
           <aside className={`app-sidebar ${sidebarCollapsed ? 'app-sidebar-collapsed' : ''} ${sidebarOpen ? 'translate-x-0 sidebar-pinned-open' : '-translate-x-full md:translate-x-0'}`}>
             <div className="sidebar-brand">
               <Logo className="h-10 w-10" />
               <div className="sidebar-text min-w-0">
-                <p className="truncate text-sm font-semibold text-white">Learning Card</p>
+                <p className="brand-gradient-text truncate text-sm font-bold">AnkiLearning</p>
+                <p className="truncate text-[11px] text-white/50">Học thông minh với thẻ ghi nhớ</p>
               </div>
               <button
                 type="button"
@@ -301,7 +361,7 @@ export default function App() {
             </div>
 
             <nav className="flex-1 space-y-1.5 px-3 py-5">
-              <p className="sidebar-text px-3 pb-2 text-[10px] font-semibold uppercase text-white/32">Study Workspace</p>
+              <p className="sidebar-text px-3 pb-2 text-[10px] font-semibold uppercase text-white/50">Không gian học tập</p>
               {navItems.map((item) => (
                 <SidebarLink
                   key={item.to}
@@ -325,8 +385,27 @@ export default function App() {
                     style={{ width: `${sidebarDailyProgress}%` }}
                   />
                 </div>
-                <p className="sidebar-expanded-only mt-2 text-xs text-white/42">
+                <p className="sidebar-expanded-only mt-2 text-xs text-white/60">
                   {cardsReviewedToday}/{dailyGoal} thẻ
+                </p>
+              </div>
+
+              <div className="sidebar-metric">
+                <div className="flex items-center justify-between gap-2 text-white">
+                  <div className="flex items-center gap-2">
+                    <Sparkles size={15} />
+                    <span className="sidebar-expanded-only text-xs font-semibold">Cấp {xpProgress.level}</span>
+                  </div>
+                  <span className="sidebar-expanded-only text-[11px] font-medium text-white/60">{xpProgress.xp} XP</span>
+                </div>
+                <div className="sidebar-expanded-only mt-3 h-1.5 overflow-hidden rounded-full bg-white/10">
+                  <div
+                    className="xp-gradient h-full rounded-full"
+                    style={{ width: `${Math.round(xpProgress.progress * 100)}%` }}
+                  />
+                </div>
+                <p className="sidebar-expanded-only mt-2 text-xs text-white/60">
+                  Còn {Math.max(0, xpProgress.xpForNextLevel - xpProgress.xpIntoLevel)} XP để lên cấp {xpProgress.level + 1}
                 </p>
               </div>
 
@@ -357,12 +436,17 @@ export default function App() {
 
           <main className="relative flex min-w-0 flex-1 flex-col overflow-hidden">
             <header className="app-topbar">
-              <div className="min-w-0">
-                <p className="text-sm font-semibold text-zinc-950 dark:text-white">Study Workspace</p>
-                <p className="truncate text-xs text-muted-foreground">
-                  Học, tạo thẻ và luyện đề trong một không gian tập trung.
-                </p>
+              <div className="flex min-w-0 items-center gap-3">
+                <button
+                  aria-label="Mở menu"
+                  className="topbar-menu-button"
+                  onClick={() => setSidebarOpen(!sidebarOpen)}
+                >
+                  {sidebarOpen ? <X size={20} /> : <Menu size={20} />}
+                </button>
+                <TopbarHeading />
               </div>
+              <NotificationCenter user={user} profile={profile} />
             </header>
 
             <div className="smooth-scroll min-w-0 flex-1 overflow-y-auto">
@@ -374,6 +458,8 @@ export default function App() {
             </div>
           </main>
 
+          <BottomNav />
+
           <Toaster position="top-center" richColors />
         </div>
       </Router>
@@ -381,37 +467,79 @@ export default function App() {
   );
 }
 
+function TopbarHeading() {
+  const location = useLocation();
+  const meta = getPageMeta(location.pathname);
+
+  return (
+    <div className="min-w-0">
+      <p className="truncate text-sm font-semibold text-zinc-950 dark:text-white">{meta.title}</p>
+      <p className="hidden truncate text-xs text-muted-foreground sm:block">
+        {meta.description}
+      </p>
+    </div>
+  );
+}
+
+function BottomNav() {
+  const location = useLocation();
+
+  return (
+    <nav className="bottom-nav" aria-label="Điều hướng chính trên di động">
+      {bottomNavItems.map((item) => {
+        const isActive = item.to === '/'
+          ? location.pathname === '/'
+          : location.pathname.startsWith(item.to);
+        return (
+          <Link
+            key={item.to}
+            to={item.to}
+            aria-current={isActive ? 'page' : undefined}
+            className={`bottom-nav-item ${isActive ? 'bottom-nav-item-active' : ''}`}
+          >
+            {item.icon}
+            <span>{item.label}</span>
+          </Link>
+        );
+      })}
+    </nav>
+  );
+}
+
 function LoginScreen({ onLogin }: { onLogin: () => void }) {
   const previewQuestions = [
     'Dấu hiệu X-quang gợi ý gãy cổ xương đùi?',
     'Chỉ định ECG nào cần xử trí cấp cứu?',
-    'Khi nào chuyển thẻ về relearning?',
+    'Khi nào thẻ quay lại bước học lại?',
   ];
 
   return (
-    <div className="app-surface min-h-screen p-4 font-sans text-foreground md:p-8">
+    <div className="app-surface aurora-bg min-h-screen p-4 font-sans text-foreground md:p-8">
+      <span className="aurora-blob aurora-blob-1" aria-hidden="true" />
+      <span className="aurora-blob aurora-blob-2" aria-hidden="true" />
+      <span className="aurora-blob aurora-blob-3" aria-hidden="true" />
       <div className="login-shell">
-        <section className="flex min-h-[calc(100vh-4rem)] flex-col justify-between p-7 md:p-10">
+        <section className="flex min-h-[calc(100vh-4rem)] min-h-[calc(100dvh-4rem)] flex-col justify-between p-7 md:p-10">
           <div className="flex items-center gap-3">
-            <Logo className="h-11 w-11" />
+            <Logo className="h-12 w-12" />
             <div>
-              <p className="text-base font-semibold text-zinc-950 dark:text-white">Learning Card</p>
-              <p className="text-xs text-muted-foreground">Smart flashcards with Gemini</p>
+              <p className="brand-gradient-text text-lg font-bold">AnkiLearning</p>
+              <p className="text-xs text-muted-foreground">Học thông minh với thẻ ghi nhớ</p>
             </div>
           </div>
 
           <div className="py-12">
             <div className="mb-5 inline-flex items-center gap-2 rounded-full border border-black/[0.08] bg-white/70 px-3 py-1 text-xs font-medium text-zinc-600 shadow-sm backdrop-blur-xl dark:border-white/10 dark:bg-white/[0.06] dark:text-zinc-300">
               <ShieldCheck size={14} />
-              Học thẻ, tạo đề, luyện nhớ trong một workspace
+              Học thẻ, tạo đề, luyện nhớ trong một không gian
             </div>
             <h1 className="max-w-xl text-4xl font-semibold leading-tight text-zinc-950 dark:text-white md:text-5xl">
-              Không gian học tập tối giản, sắc nét và cá nhân hóa.
+              Học thông minh với thẻ ghi nhớ.
             </h1>
             <p className="mt-5 max-w-lg text-base leading-7 text-muted-foreground">
-              Tạo bộ thẻ, ôn tập theo nhịp nhớ, luyện đề từ tài liệu y khoa và đồng bộ dữ liệu bằng tài khoản Google.
+              Tạo bộ thẻ, ôn tập theo nhịp nhớ FSRS, luyện đề bằng AI và đồng bộ dữ liệu bằng tài khoản Google trên mọi thiết bị.
             </p>
-            <Button onClick={onLogin} className="mt-8 h-11 w-full max-w-xs gap-2 bg-zinc-950 text-white hover:bg-zinc-800">
+            <Button onClick={onLogin} className="btn-press mt-8 h-11 w-full max-w-xs gap-2">
               Đăng nhập với Google
               <ArrowRight size={16} />
             </Button>
@@ -421,6 +549,12 @@ function LoginScreen({ onLogin }: { onLogin: () => void }) {
         </section>
 
         <section className="login-preview">
+          <img
+            src="/img/login-hero.webp"
+            alt="Minh hoạ học viên học cùng thẻ ghi nhớ AnkiLearning"
+            className="w-full rounded-2xl object-cover shadow-xl shadow-emerald-900/10 ring-1 ring-black/5 dark:ring-white/10"
+            loading="lazy"
+          />
           <motion.div
             initial={{ opacity: 0, y: 18 }}
             animate={{ opacity: 1, y: 0 }}
@@ -452,7 +586,7 @@ function LoginScreen({ onLogin }: { onLogin: () => void }) {
           </div>
 
           <div className="premium-panel p-5">
-            <p className="mb-4 text-sm font-semibold">Đề thi gợi ý</p>
+            <p className="mb-4 text-sm font-semibold">Đề kiểm tra gợi ý</p>
             <div className="space-y-1">
               {previewQuestions.map((item) => (
                 <div key={item} className="group flex items-center justify-between rounded-md px-2 py-3 text-sm transition-colors hover:bg-zinc-950/[0.035] dark:hover:bg-white/[0.05]">
@@ -500,7 +634,7 @@ function AnimatedRoutes({
           animate={{ opacity: 1, y: 0 }}
           exit={{ opacity: 0, y: -8 }}
           transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
-          className="route-layer"
+          className="route-layer animate-page-in"
         >
           <Routes location={location}>
             <Route path="/" element={<Dashboard user={user} profile={profile} recentSessions={recentSessions} />} />

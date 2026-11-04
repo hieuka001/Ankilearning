@@ -13,7 +13,6 @@ import {
   Copy, 
   Check,
   BrainCircuit,
-  Link as LinkIcon,
   Upload,
   Settings2,
   Save,
@@ -21,13 +20,77 @@ import {
 } from 'lucide-react';
 import { generateFlashcardsFromText } from '../services/aiService';
 import { toast } from 'sonner';
-import axios from 'axios';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { collection, addDoc, serverTimestamp, writeBatch, doc, query, where, getDocs, updateDoc, increment } from 'firebase/firestore';
 import { db } from '../firebase';
 import { useNavigate } from 'react-router-dom';
 import { createInitialCardSchedule } from '../lib/spacedRepetition';
+import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
+
+// Dùng worker PDF đóng gói cùng app (không phụ thuộc CDN ngoài).
+pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
+
+const MAX_PDF_PAGES = 30;
+const MAX_MATERIAL_CHARS = 60000;
+const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+const EMPTY_CARDS_MESSAGE = 'AI không tạo được thẻ nào từ nội dung này — thử rút gọn/chia nhỏ tài liệu hoặc kiểm tra lại nội dung.';
+const TRUNCATED_MESSAGE = `Nội dung quá dài nên đã được cắt còn ${MAX_MATERIAL_CHARS.toLocaleString('vi-VN')} ký tự đầu — hãy chia nhỏ tài liệu nếu cần tạo thẻ từ phần còn lại.`;
+
+// Cắt nội dung ở giới hạn ký tự, trả về cờ để báo cho người dùng khi bị cắt.
+function capMaterialText(text: string): { text: string; truncated: boolean } {
+  if (text.length <= MAX_MATERIAL_CHARS) return { text, truncated: false };
+  return { text: text.slice(0, MAX_MATERIAL_CHARS), truncated: true };
+}
+
+// Trích text từ một trang PDF nhưng giữ cấu trúc dòng/đoạn:
+// xuống dòng khi toạ độ dọc thay đổi, cách đoạn khi khoảng cách dọc lớn.
+function extractPdfPageText(items: any[]): string {
+  let text = '';
+  let lastY: number | null = null;
+  let lastHeight = 12;
+  for (const item of items) {
+    if (typeof item?.str !== 'string') continue;
+    const y = Array.isArray(item.transform) ? Number(item.transform[5]) : null;
+    const height = typeof item.height === 'number' && item.height > 0 ? item.height : lastHeight;
+    if (y !== null && lastY !== null) {
+      const gap = Math.abs(y - lastY);
+      if (gap > Math.max(2, height * 0.5) && text && !text.endsWith('\n')) {
+        text += gap > height * 1.6 ? '\n\n' : '\n';
+      }
+    }
+    if (text && !text.endsWith('\n') && !text.endsWith(' ') && item.str) text += ' ';
+    text += item.str;
+    if (item.hasEOL) text += '\n';
+    if (y !== null) lastY = y;
+    lastHeight = height;
+  }
+  return text.trim();
+}
+
+// Nén ảnh trước khi gửi Vision: cạnh dài tối đa 1600px, JPEG chất lượng 0.85.
+async function compressImageForVision(dataUrl: string): Promise<string> {
+  try {
+    const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const image = new Image();
+      image.onload = () => resolve(image);
+      image.onerror = reject;
+      image.src = dataUrl;
+    });
+    const longestSide = Math.max(img.naturalWidth, img.naturalHeight);
+    if (longestSide <= 1600 && dataUrl.startsWith('data:image/jpeg')) return dataUrl;
+    const scale = Math.min(1, 1600 / longestSide);
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.round(img.naturalWidth * scale);
+    canvas.height = Math.round(img.naturalHeight * scale);
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return dataUrl;
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+    return canvas.toDataURL('image/jpeg', 0.85);
+  } catch {
+    return dataUrl;
+  }
+}
 
 import { UserProfile, Deck } from '../types';
 
@@ -41,12 +104,10 @@ interface AIHelperProps {
 export default function AIHelper({ user, profile }: AIHelperProps) {
   const [image, setImage] = useState<string | null>(null);
   const [ocrText, setOcrText] = useState('');
-  const [url, setUrl] = useState('');
   const [cardCount, setCardCount] = useState(5);
   const [emphasis, setEmphasis] = useState('');
   const [deckName, setDeckName] = useState('Bộ thẻ mới từ AI');
   const [isProcessing, setIsProcessing] = useState(false);
-  const [isFetchingUrl, setIsFetchingUrl] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [useVision, setUseVision] = useState(false);
@@ -58,9 +119,6 @@ export default function AIHelper({ user, profile }: AIHelperProps) {
   const navigate = useNavigate();
 
   useEffect(() => {
-    // Set up PDF.js worker using a more reliable source
-    pdfjsLib.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.mjs`;
-
     // Fetch existing decks
     if (user) {
       const q = query(collection(db, 'decks'), where('ownerId', '==', user.uid));
@@ -73,6 +131,11 @@ export default function AIHelper({ user, profile }: AIHelperProps) {
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
+      if (file.size > MAX_IMAGE_BYTES) {
+        toast.error(`Ảnh "${file.name}" nặng ${(file.size / (1024 * 1024)).toFixed(1)}MB — vượt giới hạn 10MB. Vui lòng chọn ảnh nhỏ hơn.`);
+        e.target.value = '';
+        return;
+      }
       const reader = new FileReader();
       reader.onload = (event) => {
         const imageSrc = event.target?.result as string;
@@ -83,12 +146,18 @@ export default function AIHelper({ user, profile }: AIHelperProps) {
           toast.info("Chế độ Vision đã được bật. Nhấp 'TẠO BỘ THẺ VỚI AI' để phân tích hình ảnh.");
         }
       };
+      reader.onerror = () => toast.error("Không đọc được file ảnh. Vui lòng thử lại với ảnh khác.");
       reader.readAsDataURL(file);
     }
   };
 
   const handlePdfUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
+    if (file && file.type !== 'application/pdf') {
+      toast.error("Vui lòng chọn đúng file PDF.");
+      e.target.value = '';
+      return;
+    }
     if (file && file.type === 'application/pdf') {
       setIsProcessing(true);
       setOcrText('');
@@ -97,25 +166,35 @@ export default function AIHelper({ user, profile }: AIHelperProps) {
         const typedArray = new Uint8Array(event.target?.result as ArrayBuffer);
         try {
           const pdf = await pdfjsLib.getDocument(typedArray).promise;
-          let fullText = '';
-          const toastId = toast.loading(`Đang xử lý PDF: 0/${pdf.numPages} trang...`);
-          
-          for (let i = 1; i <= pdf.numPages; i++) {
+          const totalPages = pdf.numPages;
+          const pagesToRead = Math.min(totalPages, MAX_PDF_PAGES);
+          if (totalPages > MAX_PDF_PAGES) {
+            toast.warning(`PDF có ${totalPages} trang — chỉ trích xuất ${MAX_PDF_PAGES} trang đầu tiên. Hãy tách file nếu cần nội dung các trang sau.`);
+          }
+          const pageTexts: string[] = [];
+          const toastId = toast.loading(`Đang xử lý PDF: 0/${pagesToRead} trang...`);
+
+          for (let i = 1; i <= pagesToRead; i++) {
             const page = await pdf.getPage(i);
             const content = await page.getTextContent();
-            const strings = content.items.map((item: any) => item.str);
-            fullText += strings.join(' ') + '\n\n';
-            toast.loading(`Đang xử lý PDF: ${i}/${pdf.numPages} trang...`, { id: toastId });
+            pageTexts.push(extractPdfPageText(content.items as any[]));
+            toast.loading(`Đang xử lý PDF: ${i}/${pagesToRead} trang...`, { id: toastId });
           }
-          
-          setOcrText(fullText.trim());
-          toast.success(`Đã trích xuất xong ${pdf.numPages} trang PDF!`, { id: toastId });
-        } catch (error) {
+
+          const capped = capMaterialText(pageTexts.join('\n\n').trim());
+          setOcrText(capped.text);
+          if (capped.truncated) toast.warning(TRUNCATED_MESSAGE);
+          toast.success(`Đã trích xuất xong ${pagesToRead}${totalPages > pagesToRead ? `/${totalPages}` : ''} trang PDF!`, { id: toastId });
+        } catch (error: any) {
           console.error(error);
-          toast.error("Lỗi khi đọc file PDF.");
+          toast.error(error?.message ? `Lỗi khi đọc file PDF: ${error.message}` : "Lỗi khi đọc file PDF.");
         } finally {
           setIsProcessing(false);
         }
+      };
+      reader.onerror = () => {
+        setIsProcessing(false);
+        toast.error("Không đọc được file PDF. Vui lòng thử lại với file khác.");
       };
       reader.readAsArrayBuffer(file);
     }
@@ -123,15 +202,21 @@ export default function AIHelper({ user, profile }: AIHelperProps) {
 
   const performOCR = async (imageSrc: string) => {
     setIsProcessing(true);
+    let worker: any = null;
     try {
-      const worker = await createWorker('vie+eng');
+      worker = await createWorker('vie+eng');
       const { data: { text } } = await worker.recognize(imageSrc);
-      setOcrText(text);
-      await worker.terminate();
+      const capped = capMaterialText(text);
+      setOcrText(capped.text);
+      if (capped.truncated) toast.warning(TRUNCATED_MESSAGE);
       toast.success("Đã quét văn bản thành công!");
-    } catch {
-      toast.error("Lỗi khi quét hình ảnh.");
+    } catch (error: any) {
+      console.error(error);
+      toast.error(error?.message ? `Lỗi khi quét hình ảnh: ${error.message}` : "Lỗi khi quét hình ảnh.");
     } finally {
+      if (worker) {
+        try { await worker.terminate(); } catch { /* bỏ qua lỗi khi đóng worker */ }
+      }
       setIsProcessing(false);
     }
   };
@@ -140,33 +225,27 @@ export default function AIHelper({ user, profile }: AIHelperProps) {
     if (!ocrText.trim() && !image) return;
     setIsGenerating(true);
     try {
+      const capped = capMaterialText(ocrText);
+      if (capped.truncated) toast.warning(TRUNCATED_MESSAGE);
+      const visionImage = useVision && image ? await compressImageForVision(image) : undefined;
       const cards = await generateFlashcardsFromText(
-        ocrText, 
-        cardCount, 
-        emphasis, 
-        { geminiApiKey: profile?.settings?.geminiApiKey || profile?.settings?.aiApiKey }, 
-        useVision ? image || undefined : undefined
+        capped.text,
+        cardCount,
+        emphasis,
+        { geminiApiKey: profile?.settings?.geminiApiKey || profile?.settings?.aiApiKey },
+        visionImage
       );
       setGeneratedCards(cards);
-      toast.success(`Đã tạo ${cards.length} thẻ từ AI!`);
+      if (cards.length === 0) {
+        toast.warning(EMPTY_CARDS_MESSAGE);
+      } else {
+        toast.success(`Đã tạo ${cards.length} thẻ từ AI!`);
+      }
     } catch (error: any) {
+      console.error(error);
       toast.error(error.message || "Lỗi khi tạo thẻ bằng AI.");
     } finally {
       setIsGenerating(false);
-    }
-  };
-
-  const handleFetchUrl = async () => {
-    if (!url.trim()) return;
-    setIsFetchingUrl(true);
-    try {
-      const response = await axios.post('/api/fetch-url', { url });
-      setOcrText(response.data.text || "");
-      toast.success("Đã lấy nội dung từ link thành công!");
-    } catch {
-      toast.error("Lỗi khi lấy nội dung từ link.");
-    } finally {
-      setIsFetchingUrl(false);
     }
   };
 
@@ -270,35 +349,6 @@ export default function AIHelper({ user, profile }: AIHelperProps) {
               </div>
             </CardHeader>
             <CardContent className="p-6 md:p-10 space-y-6 md:space-y-10">
-              {/* URL Input */}
-              <div className="space-y-3 md:space-y-4">
-                <label className="text-[9px] md:text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] flex items-center gap-2">
-                  <LinkIcon className="w-3 h-3 md:w-3.5 md:h-3.5" />
-                  Nhập địa chỉ website (URL)
-                </label>
-                <div className="flex flex-col sm:flex-row gap-2 md:gap-4">
-                  <input 
-                    type="url"
-                    placeholder="https://example.com/..."
-                    value={url}
-                    onChange={(e) => setUrl(e.target.value)}
-                    className="flex-1 h-12 md:h-14 px-4 md:px-6 rounded-xl md:rounded-2xl border-2 border-slate-100 dark:border-white/5 bg-slate-50 dark:bg-white/5 dark:text-white focus:border-primary outline-none transition-all font-medium text-sm md:text-base"
-                  />
-                  <Button 
-                    onClick={handleFetchUrl}
-                    disabled={!url.trim() || isFetchingUrl}
-                    className="w-full sm:w-auto bg-primary hover:bg-primary/90 h-12 md:h-14 rounded-xl md:rounded-2xl px-6 md:px-10 font-black shadow-xl shadow-primary/20 transition-all active:scale-95 text-xs md:text-sm"
-                  >
-                    {isFetchingUrl ? <Loader2 className="animate-spin w-5 h-5 md:w-6 md:h-6" /> : 'Lấy dữ liệu'}
-                  </Button>
-                </div>
-              </div>
-
-              <div className="relative py-2 md:py-4">
-                <div className="absolute inset-0 flex items-center"><span className="w-full border-t border-slate-100 dark:border-white/5" /></div>
-                <div className="relative flex justify-center text-[8px] md:text-[10px] uppercase tracking-[0.4em]"><span className="bg-white dark:bg-[#0C0D0E] px-4 md:px-6 text-slate-400 font-black">Hoặc</span></div>
-              </div>
-
               <div className="space-y-4">
                 <label className="text-[9px] md:text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] flex items-center gap-2">
                   <FileText className="w-3.5 h-3.5" />
@@ -314,7 +364,7 @@ export default function AIHelper({ user, profile }: AIHelperProps) {
                     </div>
                     <div className="text-left">
                       <p className="text-sm font-black text-slate-700 dark:text-slate-200 uppercase tracking-widest">Tải lên file PDF</p>
-                      <p className="text-[10px] text-slate-400 font-medium">Hỗ trợ trích xuất văn bản từng trang</p>
+                      <p className="text-[10px] text-slate-400 font-medium">Trích xuất văn bản tối đa 30 trang đầu, giữ cấu trúc đoạn</p>
                     </div>
                   </div>
                   <input 
@@ -430,9 +480,9 @@ export default function AIHelper({ user, profile }: AIHelperProps) {
                   />
                 </div>
 
-                <Button 
+                <Button
                   onClick={handleGenerateCards}
-                  disabled={!ocrText.trim() || isGenerating}
+                  disabled={(!ocrText.trim() && !image) || isGenerating}
                   className="w-full bg-primary hover:bg-primary/90 gap-3 md:gap-4 h-16 md:h-20 rounded-2xl md:rounded-[2rem] font-black text-base md:text-xl shadow-2xl shadow-primary/30 transition-all active:scale-[0.98] group"
                 >
                   {isGenerating ? <Loader2 className="animate-spin w-6 h-6 md:w-7 md:h-7" /> : <Sparkles className="group-hover:animate-pulse w-6 h-6 md:w-7 md:h-7" />}

@@ -40,6 +40,16 @@ const ratingMeta: Record<SchedulerRating, { label: string; color: string; text: 
   easy: { label: 'Dễ', color: 'bg-emerald-600 hover:bg-emerald-700', text: 'text-emerald-600' },
 };
 
+/** Vietnamese labels for the FSRS card states (engine values stay English). */
+const stateLabels: Record<string, string> = {
+  new: 'Mới',
+  learning: 'Đang học',
+  review: 'Ôn tập',
+  relearning: 'Học lại',
+};
+
+const stateLabelFor = (state: string) => stateLabels[state] ?? state;
+
 const escapeHtml = (value: string) =>
   value
     .replace(/&/g, '&amp;')
@@ -213,16 +223,21 @@ function ReviewImage({
   src,
   alt,
   onZoom,
+  tabIndex = 0,
 }: {
   src?: string;
   alt: string;
   onZoom: (src: string) => void;
+  tabIndex?: number;
 }) {
   if (!src) return null;
   return (
     <button
       type="button"
       data-no-card-swipe="true"
+      tabIndex={tabIndex}
+      aria-label={`Phóng to ảnh: ${alt}`}
+      title="Phóng to ảnh"
       className="mx-auto block max-w-full overflow-hidden rounded-xl border border-zinc-200 bg-zinc-50 dark:border-white/10 dark:bg-white/5"
       onClick={(event) => {
         event.stopPropagation();
@@ -245,11 +260,14 @@ function RatingButton({
   rating,
   preview,
   disabled,
+  shortcut,
   onRate,
 }: {
   rating: SchedulerRating;
   preview: string;
   disabled?: boolean;
+  /** 1-based keyboard shortcut (keys 1-4), in ratingPreviews order. */
+  shortcut?: number;
   onRate: (rating: SchedulerRating) => void;
 }) {
   const meta = ratingMeta[rating];
@@ -258,6 +276,8 @@ function RatingButton({
       type="button"
       disabled={disabled}
       onClick={() => onRate(rating)}
+      aria-label={shortcut ? `${meta.label} (phím ${shortcut})` : meta.label}
+      title={shortcut ? `Phím tắt: ${shortcut}` : undefined}
       className={`${meta.color} h-16 flex-1 rounded-xl text-white shadow-lg shadow-zinc-950/10 transition-transform active:scale-95 disabled:opacity-60`}
     >
       <span className="flex flex-col items-center leading-none">
@@ -287,7 +307,7 @@ export const ReviewCard = memo(function ReviewCard({
   const frontHtml = useMemo(() => sanitizeReviewHtml(contentForSide(card, false)), [card]);
   const backHtml = useMemo(() => sanitizeReviewHtml(contentForSide(card, true)), [card]);
   const imageUrl = isFlipped ? card.backImageUrl : card.imageUrl;
-  const contentLabel = isFlipped ? 'Answer' : 'Question';
+  const contentLabel = isFlipped ? 'Đáp án' : 'Câu hỏi';
 
   const handleRate = useCallback((rating: SchedulerRating) => {
     if (busy) return;
@@ -313,13 +333,13 @@ export const ReviewCard = memo(function ReviewCard({
     <section className="mx-auto flex min-h-[calc(100vh-148px)] w-full flex-col items-center justify-center gap-4 px-3 py-4">
       <div className="flex w-full max-w-[420px] items-center justify-between gap-3">
         <div className="flex items-center gap-2">
-          <Button type="button" variant="ghost" size="icon" className="h-10 w-10 rounded-xl" onClick={onClose}>
+          <Button type="button" variant="ghost" size="icon" className="h-10 w-10 rounded-xl" onClick={onClose} aria-label="Đóng phiên học" title="Đóng phiên học">
             <X className="h-5 w-5" />
           </Button>
-          <Button type="button" variant="ghost" size="icon" className="h-10 w-10 rounded-xl" onClick={onBury}>
+          <Button type="button" variant="ghost" size="icon" className="h-10 w-10 rounded-xl" onClick={onBury} aria-label="Bury thẻ đến ngày mai" title="Bury — để thẻ này sang ngày mai">
             <Archive className="h-4 w-4" />
           </Button>
-          <Button type="button" variant="ghost" size="icon" className="h-10 w-10 rounded-xl" onClick={onSuspend}>
+          <Button type="button" variant="ghost" size="icon" className="h-10 w-10 rounded-xl" onClick={onSuspend} aria-label="Tạm dừng thẻ" title="Suspend — tạm dừng thẻ, không ôn nữa cho tới khi mở lại">
             <Ban className="h-4 w-4" />
           </Button>
         </div>
@@ -359,6 +379,11 @@ export const ReviewCard = memo(function ReviewCard({
             animate={{ rotateY: isFlipped ? 180 : 0 }}
             transition={{ duration: 0.36, ease: [0.22, 1, 0.36, 1] }}
             onClick={onFlip}
+            tabIndex={0}
+            role="button"
+            aria-label={isFlipped
+              ? 'Mặt đáp án của thẻ. Nhấn Space hoặc Enter để lật lại mặt câu hỏi.'
+              : 'Mặt câu hỏi của thẻ. Nhấn Space hoặc Enter để lật thẻ xem đáp án.'}
           >
             {(['front', 'back'] as const).map((side) => {
               const sideFlipped = side === 'back';
@@ -371,12 +396,13 @@ export const ReviewCard = memo(function ReviewCard({
                     sideFlipped ? '[transform:rotateY(180deg)]' : ''
                   }`}
                   aria-hidden={!visible}
+                  inert={!visible}
                 >
                   <div className="flex shrink-0 items-center justify-between gap-3 border-b border-zinc-200 px-5 py-4 dark:border-white/10">
                     <div>
-                      <p className="text-[10px] font-black uppercase tracking-[0.22em] text-zinc-400">{sideFlipped ? 'Answer' : 'Question'}</p>
+                      <p className="text-[10px] font-black uppercase tracking-[0.22em] text-zinc-400">{sideFlipped ? 'Đáp án' : 'Câu hỏi'}</p>
                       <p className="mt-1 text-xs font-medium text-zinc-500 dark:text-zinc-400">
-                        {schedule.state} · S {schedule.stability.toFixed(1)} · D {schedule.difficulty.toFixed(1)}
+                        {stateLabelFor(schedule.state)} · S {schedule.stability.toFixed(1)} · D {schedule.difficulty.toFixed(1)}
                       </p>
                     </div>
                     <div className="flex items-center gap-1">
@@ -395,11 +421,13 @@ export const ReviewCard = memo(function ReviewCard({
                           variant="ghost"
                           size="icon"
                           className="h-10 w-10 rounded-xl"
+                          tabIndex={visible ? 0 : -1}
                           onClick={(event) => {
                             event.stopPropagation();
                             onSpeak(sideFlipped ? card.back : card.front);
                           }}
-                          aria-label="Read card aloud"
+                          aria-label="Đọc thẻ"
+                          title="Đọc thẻ thành tiếng"
                         >
                           <Volume2 className="h-4 w-4" />
                         </Button>
@@ -411,7 +439,7 @@ export const ReviewCard = memo(function ReviewCard({
                     className="review-card-scroll review-card-html flex-1 overflow-y-auto overflow-x-hidden px-5 py-5 text-center chinese-review"
                     onClick={handleHtmlClick}
                   >
-                    <ReviewImage src={sideFlipped ? card.backImageUrl : card.imageUrl} alt={contentLabel} onZoom={setZoomImage} />
+                    <ReviewImage src={sideFlipped ? card.backImageUrl : card.imageUrl} alt={contentLabel} onZoom={setZoomImage} tabIndex={visible ? 0 : -1} />
                     <div
                       className="mt-4 text-lg font-semibold leading-8"
                       dangerouslySetInnerHTML={{ __html: sideFlipped ? backHtml : frontHtml }}
@@ -425,16 +453,21 @@ export const ReviewCard = memo(function ReviewCard({
       </div>
 
       <div className="grid w-full max-w-[420px] grid-cols-4 gap-2 rounded-2xl border border-zinc-200 bg-white/85 p-2 shadow-xl backdrop-blur-xl dark:border-white/10 dark:bg-[#101113]/85">
-        {ratingPreviews.map(({ rating, result }) => (
+        {ratingPreviews.map(({ rating, result }, index) => (
           <RatingButton
             key={rating}
             rating={rating}
             preview={formatScheduledDelay(result.scheduledDelay)}
             disabled={busy || !isFlipped}
+            shortcut={index + 1}
             onRate={handleRate}
           />
         ))}
       </div>
+
+      <p className="w-full max-w-[420px] text-center text-[11px] leading-4 text-zinc-400 dark:text-zinc-500">
+        Vuốt trái: Quên · Vuốt phải: Dễ · Phím 1–4 để chấm · Space để lật thẻ · U để hoàn tác
+      </p>
 
       {!isFlipped && (
         <button

@@ -21,7 +21,7 @@ import {
   Play
 } from 'lucide-react';
 import { toast } from 'sonner';
-import { generateClinicalFlashcardsFromVoice, generateClinicalFlashcardsFromMedia } from '../services/aiService';
+import { generateClinicalFlashcardsFromVoice, generateClinicalFlashcardsFromMedia, generateFlashcardsFromText } from '../services/aiService';
 import { db } from '../firebase';
 import { collection, addDoc, writeBatch, doc, query, where, getDocs, updateDoc, increment } from 'firebase/firestore';
 import { User } from 'firebase/auth';
@@ -37,6 +37,18 @@ interface VoiceToCardProps {
   profile: UserProfile | null;
 }
 
+type Domain = 'medical' | 'language' | 'general';
+
+const MAX_MEDIA_BYTES = 10 * 1024 * 1024;
+const CARD_COUNT = 8;
+const EMPTY_CARDS_MESSAGE = 'AI không tạo được thẻ nào từ nội dung này — thử rút gọn/chia nhỏ tài liệu hoặc kiểm tra lại nội dung.';
+
+const DOMAIN_OPTIONS: { id: Domain; label: string; defaultDeckName: string; category: string }[] = [
+  { id: 'medical', label: 'Y khoa', defaultDeckName: 'Case lâm sàng mới', category: 'Cận lâm sàng' },
+  { id: 'language', label: 'Ngoại ngữ', defaultDeckName: 'Bộ thẻ ngoại ngữ mới', category: 'Ngoại ngữ' },
+  { id: 'general', label: 'Chung', defaultDeckName: 'Bộ thẻ mới từ ghi âm', category: 'Chung' },
+];
+
 declare global {
   interface Window {
     SpeechRecognition: any;
@@ -46,6 +58,7 @@ declare global {
 
 export default function VoiceToCard({ user, profile }: VoiceToCardProps) {
   const { settings } = useSettings();
+  const [domain, setDomain] = useState<Domain>('medical');
   const [isListening, setIsListening] = useState(false);
   const [transcript, setTranscript] = useState('');
   const [interimTranscript, setInterimTranscript] = useState('');
@@ -64,6 +77,16 @@ export default function VoiceToCard({ user, profile }: VoiceToCardProps) {
   const recognitionRef = useRef<any>(null);
   const navigate = useNavigate();
   const recognitionLang = speechRecognitionLanguage(profile?.settings?.language || settings.language);
+  const domainConfig = DOMAIN_OPTIONS.find(option => option.id === domain) || DOMAIN_OPTIONS[0];
+  const isMedical = domain === 'medical';
+
+  const handleDomainChange = (next: Domain) => {
+    setDomain(next);
+    // Chỉ đổi tên bộ thẻ mặc định nếu người dùng chưa tự sửa tên.
+    if (DOMAIN_OPTIONS.some(option => option.defaultDeckName === deckName)) {
+      setDeckName(DOMAIN_OPTIONS.find(option => option.id === next)?.defaultDeckName || deckName);
+    }
+  };
 
   useEffect(() => {
     // Check browser support for SpeechRecognition
@@ -126,15 +149,16 @@ export default function VoiceToCard({ user, profile }: VoiceToCardProps) {
       setFileBase64(null);
       setIsListening(true);
       recognitionRef.current.start();
-      toast.info("Đang ghi âm lâm sàng...");
+      toast.info("Đang ghi âm...");
     }
   };
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
-      if (file.size > 20 * 1024 * 1024) { // 20MB limit for better experience
-        toast.error("Vui lòng chọn tệp nhỏ hơn 20MB.");
+      if (file.size > MAX_MEDIA_BYTES) {
+        toast.error(`Tệp "${file.name}" nặng ${(file.size / (1024 * 1024)).toFixed(1)}MB — vượt giới hạn 10MB. Vui lòng chọn tệp nhỏ hơn.`);
+        e.target.value = '';
         return;
       }
       
@@ -169,18 +193,32 @@ export default function VoiceToCard({ user, profile }: VoiceToCardProps) {
 
     setIsGenerating(true);
     try {
-      let cards = [];
+      let cards: any[] = [];
       const keys = { geminiApiKey: profile?.settings?.geminiApiKey || profile?.settings?.aiApiKey };
-      
+
       if (fileBase64 && selectedFile) {
-        cards = await generateClinicalFlashcardsFromMedia(fileBase64, selectedFile.type, keys as any);
+        if (isMedical) {
+          cards = await generateClinicalFlashcardsFromMedia(fileBase64, selectedFile.type, keys as any, CARD_COUNT);
+        } else if (selectedFile.type.startsWith('image/')) {
+          cards = await generateFlashcardsFromText('', CARD_COUNT, '', keys as any, `data:${selectedFile.type};base64,${fileBase64}`);
+        } else {
+          toast.warning(`Lĩnh vực ${domainConfig.label} hiện chỉ tạo thẻ từ lời ghi âm trực tiếp hoặc file ảnh. File audio/video chỉ phân tích được ở lĩnh vực Y khoa.`);
+          return;
+        }
+      } else if (isMedical) {
+        cards = await generateClinicalFlashcardsFromVoice(fullTranscript, keys as any, CARD_COUNT);
       } else {
-        cards = await generateClinicalFlashcardsFromVoice(fullTranscript, keys as any);
+        cards = await generateFlashcardsFromText(fullTranscript, CARD_COUNT, '', keys as any);
       }
-      
+
       setGeneratedCards(cards);
-      toast.success(`AI đã phân tích và tạo ${cards.length} thẻ y khoa!`);
+      if (cards.length === 0) {
+        toast.warning(EMPTY_CARDS_MESSAGE);
+      } else {
+        toast.success(`AI đã phân tích và tạo ${cards.length} thẻ!`);
+      }
     } catch (error: any) {
+      console.error(error);
       toast.error(error.message || "Lỗi khi xử lý bằng AI.");
     } finally {
       setIsGenerating(false);
@@ -203,8 +241,10 @@ export default function VoiceToCard({ user, profile }: VoiceToCardProps) {
         const deckRef = await addDoc(collection(db, 'decks'), {
           ownerId: user.uid,
           name: deckName,
-          description: `Ghi chú âm thanh từ môi trường lâm sàng thực tế.`,
-          category: 'Cận lâm sàng',
+          description: isMedical
+            ? `Ghi chú âm thanh từ môi trường lâm sàng thực tế.`
+            : `Tạo từ ghi âm bằng Voice-to-Card (lĩnh vực: ${domainConfig.label}).`,
+          category: domainConfig.category,
           cardCount: generatedCards.length,
           createdAt: new Date().toISOString(),
           isPublic: false,
@@ -224,17 +264,17 @@ export default function VoiceToCard({ user, profile }: VoiceToCardProps) {
         batch.set(cardRef, {
           deckId: deckId,
           ownerId: user.uid,
-          type: 'basic',
+          type: card.type || 'basic',
           front: card.front,
           back: card.back,
-          tags: ['voice-capture', 'clinical-pearl'],
+          tags: isMedical ? ['voice-capture', 'clinical-pearl'] : ['voice-capture'],
           ...createInitialCardSchedule(),
           createdAt: new Date().toISOString(),
         });
       });
 
       await batch.commit();
-      toast.success("Đã lưu thẻ y khoa thành công!");
+      toast.success("Đã lưu thẻ thành công!");
       navigate('/decks');
     } catch {
       toast.error("Lỗi khi lưu dữ liệu.");
@@ -252,8 +292,31 @@ export default function VoiceToCard({ user, profile }: VoiceToCardProps) {
         <div className="space-y-2">
           <h1 className="text-3xl md:text-5xl font-black text-slate-900 dark:text-white tracking-tighter">Voice-to-Card</h1>
           <p className="text-slate-500 dark:text-slate-400 text-lg md:text-xl font-medium max-w-2xl mx-auto leading-relaxed">
-            Ghi lời bình lâm sàng ngay tại giường bệnh. <span className="text-red-500 font-bold">AI Assistant</span> sẽ tự động trích xuất thành flashcards y khoa súc tích.
+            {isMedical ? (
+              <>Ghi lời bình lâm sàng ngay tại giường bệnh. <span className="text-red-500 font-bold">AI Assistant</span> sẽ tự động trích xuất thành flashcards y khoa súc tích.</>
+            ) : domain === 'language' ? (
+              <>Nói hoặc tải lên bản ghi ngoại ngữ. <span className="text-red-500 font-bold">AI Assistant</span> sẽ trích xuất từ vựng, mẫu câu và ý chính thành flashcards.</>
+            ) : (
+              <>Ghi âm hoặc tải lên bản ghi bất kỳ. <span className="text-red-500 font-bold">AI Assistant</span> sẽ trích xuất các ý chính thành flashcards.</>
+            )}
           </p>
+          <div className="flex flex-wrap items-center justify-center gap-2 pt-2">
+            <span className="text-[10px] font-black uppercase tracking-widest text-slate-400 mr-1">Lĩnh vực</span>
+            {DOMAIN_OPTIONS.map(option => (
+              <button
+                key={option.id}
+                type="button"
+                onClick={() => handleDomainChange(option.id)}
+                className={`h-10 px-5 rounded-full text-xs font-black uppercase tracking-widest transition-all ${
+                  domain === option.id
+                    ? 'bg-red-500 text-white shadow-lg shadow-red-500/25'
+                    : 'bg-slate-100 dark:bg-white/5 text-slate-500 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-white/10'
+                }`}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
           <div className="mx-auto grid max-w-3xl grid-cols-2 gap-2 pt-4 text-left md:grid-cols-5">
             {['Audio', 'Transcript', 'AI Summary', 'Flashcards', 'Quiz'].map((step, index) => (
               <div key={step} className="workflow-step p-3">
@@ -325,7 +388,9 @@ export default function VoiceToCard({ user, profile }: VoiceToCardProps) {
 
                     <div className="space-y-2">
                       <p className="text-slate-400 font-bold text-sm">Ghi âm trực tiếp hoặc tải tệp lên</p>
-                      <p className="text-slate-300 dark:text-slate-700 text-xs italic">Hỗ trợ Audio/Video phân tích lâm sàng</p>
+                      <p className="text-slate-300 dark:text-slate-700 text-xs italic">
+                        {isMedical ? 'Hỗ trợ Audio/Video phân tích lâm sàng' : domain === 'language' ? 'Hỗ trợ Audio/Video học ngoại ngữ' : 'Hỗ trợ Audio/Video mọi chủ đề'} • Tối đa 10MB/tệp
+                      </p>
                     </div>
                   </div>
                 ) : selectedFile ? (
@@ -340,10 +405,10 @@ export default function VoiceToCard({ user, profile }: VoiceToCardProps) {
                         <p className="text-lg font-black text-slate-900 dark:text-white truncate max-w-[200px]">{selectedFile.name}</p>
                         <p className="text-[10px] font-bold text-slate-400">{(selectedFile.size / (1024 * 1024)).toFixed(2)} MB • {selectedFile.type}</p>
                       </div>
-                      <Button 
-                        variant="ghost" 
-                        size="icon" 
-                        onClick={() => setSelectedFile(null)}
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        onClick={() => { setSelectedFile(null); setFileBase64(null); }}
                         className="absolute -top-2 -right-2 bg-red-500 text-white rounded-full hover:bg-red-600 shadow-lg"
                       >
                         <XIcon size={14} />
@@ -407,7 +472,7 @@ export default function VoiceToCard({ user, profile }: VoiceToCardProps) {
                 className="w-full bg-slate-900 dark:bg-white dark:text-slate-900 hover:bg-slate-800 dark:hover:bg-slate-100 h-16 md:h-20 rounded-2xl md:rounded-[2rem] font-black text-base md:text-xl shadow-2xl transition-all active:scale-95 gap-3"
               >
                 {isGenerating ? <Loader2 className="animate-spin w-6 h-6" /> : <Zap className="w-6 h-6" />}
-                TẠO FLASHCARDS Y KHOA
+                {isMedical ? 'TẠO FLASHCARDS Y KHOA' : 'TẠO FLASHCARDS'}
               </Button>
             </CardContent>
           </Card>
@@ -430,8 +495,8 @@ export default function VoiceToCard({ user, profile }: VoiceToCardProps) {
                         <Sparkles size={20} />
                       </div>
                       <div>
-                        <h3 className="text-white text-xl font-black tracking-tight">AI Clinical Cards</h3>
-                        <p className="text-[10px] font-black text-white/40 uppercase tracking-widest">Medical Extraction</p>
+                        <h3 className="text-white text-xl font-black tracking-tight">{isMedical ? 'AI Clinical Cards' : 'AI Cards'}</h3>
+                        <p className="text-[10px] font-black text-white/40 uppercase tracking-widest">{isMedical ? 'Medical Extraction' : `${domainConfig.label} Extraction`}</p>
                       </div>
                     </div>
                     <Button 
@@ -467,7 +532,7 @@ export default function VoiceToCard({ user, profile }: VoiceToCardProps) {
                             value={deckName}
                             onChange={(e) => setDeckName(e.target.value)}
                             className="w-full bg-transparent border-none p-0 focus:ring-0 font-black text-lg text-white placeholder:text-white/20"
-                            placeholder="Clinical Case Name..."
+                            placeholder={isMedical ? 'Tên ca lâm sàng...' : 'Tên bộ thẻ...'}
                           />
                         </div>
                       )}
@@ -505,9 +570,11 @@ export default function VoiceToCard({ user, profile }: VoiceToCardProps) {
                   </div>
                 </div>
                 <div className="space-y-2">
-                  <h4 className="text-xl font-black text-slate-800 dark:text-slate-200 tracking-tight">Results will appear here</h4>
+                  <h4 className="text-xl font-black text-slate-800 dark:text-slate-200 tracking-tight">Kết quả sẽ hiện ở đây</h4>
                   <p className="text-sm font-medium text-slate-500 dark:text-slate-400 max-w-xs mx-auto leading-relaxed">
-                    AI will extract key clinical pearls from your voice notes.
+                    {isMedical
+                      ? 'AI sẽ trích xuất các điểm lâm sàng quan trọng từ ghi chú giọng nói của bạn.'
+                      : 'AI sẽ trích xuất các ý chính từ bản ghi của bạn thành thẻ học.'}
                   </p>
                 </div>
                 

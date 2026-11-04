@@ -9,7 +9,6 @@ import { Input } from '@/components/ui/input';
 import { 
   Plus, 
   Search, 
-  Library, 
   BookOpen, 
   MoreVertical,
   ArrowRight,
@@ -32,6 +31,7 @@ interface DecksProps {
 
 interface DeckStudyStats {
   learned: number;
+  mastered: number;
   due: number;
   lastStudied?: string;
 }
@@ -72,13 +72,14 @@ export default function Decks({ user }: DecksProps) {
           const cardsSnap = await getDocs(collection(db, `decks/${deck.id}/cards`));
           const cards = cardsSnap.docs.map((cardDoc) => ({ id: cardDoc.id, ...cardDoc.data() } as Flashcard));
           const learned = cards.filter((card) => (card.reps || card.repetitions || 0) > 0 || card.state === 'review').length;
+          const mastered = cards.filter((card) => card.state === 'review').length;
           const due = cards.filter((card) => isCardDue(card)).length;
           const lastStudied = cards
             .map((card) => typeof card.lastReview === 'string' ? card.lastReview : card.lastReview?.reviewTime)
             .filter(Boolean)
             .sort((a, b) => new Date(String(b)).getTime() - new Date(String(a)).getTime())[0];
 
-          return [deck.id, { learned, due, lastStudied }] as const;
+          return [deck.id, { learned, mastered, due, lastStudied }] as const;
         })
       )
         .then((entries) => {
@@ -134,15 +135,29 @@ export default function Decks({ user }: DecksProps) {
           }
         },
       });
-      if (ankiDecks.length === 0) {
-        toast.error("Không tìm thấy thẻ nào trong tệp Anki.", { id: toastId });
+      const totalDuplicates = ankiDecks.reduce((sum, deck) => sum + (deck.duplicatesSkipped || 0), 0);
+      const importWarnings = Array.from(new Set(ankiDecks.flatMap((deck) => deck.warnings || [])));
+      const importableDecks = ankiDecks.filter((deck) => deck.cards.length > 0);
+
+      if (importableDecks.length === 0) {
+        toast.error(
+          totalDuplicates > 0
+            ? `Không nhập thêm được thẻ nào: toàn bộ thẻ trong tệp đều bị trùng (đã bỏ qua ${totalDuplicates} thẻ trùng).`
+            : "Không tìm thấy thẻ hợp lệ nào trong tệp Anki.",
+          { id: toastId }
+        );
+        if (importWarnings.length > 0) {
+          toast.warning(importWarnings.join('\n'), { duration: 8000 });
+        }
         return;
       }
 
-      for (const ankiDeck of ankiDecks) {
+      let importedCardTotal = 0;
+      for (const ankiDeck of importableDecks) {
+        importedCardTotal += ankiDeck.cards.length;
         const deckRef = await addDoc(collection(db, 'decks'), {
           ownerId: user.uid,
-          authorName: user.displayName || 'User',
+          authorName: user.displayName || 'Người dùng',
           name: ankiDeck.name,
           description: `Nhập từ Anki (${ankiDeck.cards.length} thẻ)`,
           category: "Tiếng Trung",
@@ -169,7 +184,8 @@ export default function Decks({ user }: DecksProps) {
             backAudio: card.backAudio || [],
             audioUrls: card.audioUrls || [...(card.frontAudio || []), ...(card.backAudio || [])],
             tags: card.tags || [],
-            ...createInitialCardSchedule(),
+            // Giữ tiến độ học từ Anki (nếu có) thay vì đặt lại mọi thẻ thành thẻ mới.
+            ...(card.schedule ?? createInitialCardSchedule()),
             createdAt: new Date().toISOString()
           })
         );
@@ -177,7 +193,13 @@ export default function Decks({ user }: DecksProps) {
         await Promise.all(cardPromises);
       }
 
-      toast.success(`Đã nhập thành công ${ankiDecks.length} bộ thẻ từ Anki.`, { id: toastId });
+      toast.success(`Đã nhập thành công ${importableDecks.length} bộ thẻ (${importedCardTotal} thẻ) từ Anki.`, { id: toastId });
+      const importNotes: string[] = [];
+      if (totalDuplicates > 0) importNotes.push(`Đã bỏ qua ${totalDuplicates} thẻ trùng.`);
+      importNotes.push(...importWarnings);
+      if (importNotes.length > 0) {
+        toast.info(importNotes.join('\n'), { duration: 8000 });
+      }
       const importedAudioCount = ankiDecks.reduce((sum, deck) => sum + (deck.importedAudioCount || 0), 0);
       const skippedAudioCount = ankiDecks.reduce((sum, deck) => sum + (deck.skippedAudioCount || 0), 0);
       const importedImageCount = ankiDecks.reduce((sum, deck) => sum + (deck.importedImageCount || 0), 0);
@@ -207,7 +229,22 @@ export default function Decks({ user }: DecksProps) {
 
   const allTags = Array.from(new Set(decks.flatMap(d => d.tags || [])));
 
-  if (loading) return <div>Đang tải...</div>;
+  if (loading) {
+    return (
+      <div className="space-y-10 font-sans" aria-busy="true">
+        <div className="space-y-3 border-b border-slate-200 dark:border-white/5 pb-8">
+          <div className="skeleton-block animate-pulse h-10 w-64 rounded-xl bg-slate-200/70 dark:bg-white/10" />
+          <div className="skeleton-block animate-pulse h-4 w-96 max-w-full rounded-lg bg-slate-200/50 dark:bg-white/5" />
+        </div>
+        <div className="skeleton-block animate-pulse h-14 w-full rounded-2xl bg-slate-200/50 dark:bg-white/5" />
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
+          {[0, 1, 2].map((i) => (
+            <div key={i} className="skeleton-block animate-pulse h-72 rounded-[2rem] bg-slate-200/50 dark:bg-white/5" />
+          ))}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-10 animate-in fade-in slide-in-from-bottom-8 duration-700 font-sans">
@@ -242,7 +279,7 @@ export default function Decks({ user }: DecksProps) {
               Làm mới
             </Button>
             <Link to="/create-deck" className="w-full md:w-auto">
-              <Button className="w-full md:w-auto bg-primary hover:bg-primary/90 gap-2 h-11 md:h-12 px-6 md:px-8 rounded-xl md:rounded-2xl font-black shadow-xl shadow-primary/20 transition-all active:scale-95 text-xs md:text-sm">
+              <Button className="btn-press w-full md:w-auto bg-primary hover:bg-primary/90 gap-2 h-11 md:h-12 px-6 md:px-8 rounded-xl md:rounded-2xl font-black shadow-xl shadow-primary/20 transition-all active:scale-95 text-xs md:text-sm">
                 <Plus className="w-4.5 h-4.5 md:w-5 md:h-5" />
                 Tạo bộ thẻ
               </Button>
@@ -285,16 +322,16 @@ export default function Decks({ user }: DecksProps) {
         )}
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
+      <div className="stagger-children grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
         {filteredDecks.length > 0 ? (
           filteredDecks.map(deck => {
-            const stats = deckStats[deck.id] || { learned: 0, due: 0 };
+            const stats = deckStats[deck.id] || { learned: 0, mastered: 0, due: 0 };
             const totalCards = Math.max(deck.cardCount || 0, 1);
-            const progress = Math.min(100, Math.round((stats.learned / totalCards) * 100));
+            const progress = Math.min(100, Math.round((stats.mastered / totalCards) * 100));
 
             return (
             <Link key={deck.id} to={`/decks/${deck.id}`}>
-              <Card className="deck-card-premium hover:shadow-2xl hover:-translate-y-2 transition-all duration-500 border shadow-xl group overflow-hidden h-full flex flex-col rounded-[2rem]">
+              <Card className="card-hover deck-card-premium hover:shadow-2xl hover:-translate-y-2 transition-all duration-500 border shadow-xl group overflow-hidden h-full flex flex-col rounded-[2rem]">
                 <div className="h-2 w-full opacity-40 group-hover:opacity-100 transition-opacity" style={{ backgroundColor: deck.color || '#4f46e5' }} />
                 <CardHeader className="pb-4 p-8">
                   <div className="flex justify-between items-start">
@@ -335,7 +372,7 @@ export default function Decks({ user }: DecksProps) {
                   </p>
                   <div className="mb-6 space-y-3 rounded-2xl border border-indigo-500/10 bg-indigo-500/[0.035] p-4 dark:border-white/10 dark:bg-white/[0.035]">
                     <div className="flex items-center justify-between text-xs font-bold text-slate-500 dark:text-slate-400">
-                      <span>Tiến độ học</span>
+                      <span>Đã thuộc</span>
                       <span className="font-mono text-primary">{progress}%</span>
                     </div>
                     <div className="h-2 overflow-hidden rounded-full bg-slate-200/70 dark:bg-white/10">
@@ -383,20 +420,50 @@ export default function Decks({ user }: DecksProps) {
             </Link>
             );
           })
+        ) : decks.length === 0 ? (
+          <div className="premium-panel col-span-full py-32 text-center">
+            <img
+              src="/img/empty-decks.webp"
+              alt="Minh hoạ chồng thẻ ghi nhớ đang chờ được tạo"
+              loading="lazy"
+              className="mx-auto mb-6 w-56 max-w-full"
+            />
+            <h3 className="text-3xl font-black text-slate-900 dark:text-white tracking-tighter">Thư viện trống</h3>
+            <p className="text-slate-500 dark:text-slate-400 mt-2 font-medium max-w-md mx-auto">Bạn chưa có bộ thẻ nào. Hãy tạo bộ thẻ đầu tiên hoặc nhập một tệp Anki (.apkg) để bắt đầu học.</p>
+
+            <div className="flex flex-wrap justify-center gap-4 mt-12">
+              <Button
+                variant="outline"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={isImporting}
+                className="gap-2 h-12 px-8 rounded-2xl font-bold border-slate-200 dark:border-white/10 dark:text-white"
+              >
+                <FileUp size={18} />
+                Nhập file Anki
+              </Button>
+              <Link to="/create-deck">
+                <Button className="btn-press bg-primary hover:bg-primary/90 h-12 px-10 rounded-2xl font-black shadow-xl shadow-primary/20">Tạo bộ thẻ đầu tiên</Button>
+              </Link>
+            </div>
+          </div>
         ) : (
-          <div className="col-span-full py-32 text-center bg-white dark:bg-[#0C0D0E] rounded-[3rem] border border-dashed border-slate-200 dark:border-white/10 shadow-sm">
+          <div className="premium-panel col-span-full py-32 text-center">
             <div className="flex justify-center mb-6">
               <div className="p-8 bg-slate-50 dark:bg-white/5 rounded-full text-slate-200 dark:text-slate-800">
-                <Library size={80} />
+                <Search size={80} />
               </div>
             </div>
-            <h3 className="text-3xl font-black text-slate-900 dark:text-white tracking-tighter">Thư viện trống</h3>
-            <p className="text-slate-500 dark:text-slate-400 mt-2 font-medium max-w-md mx-auto">Hãy tạo bộ thẻ đầu tiên để bắt đầu hành trình chinh phục kiến thức.</p>
-            
+            <h3 className="text-3xl font-black text-slate-900 dark:text-white tracking-tighter">Không tìm thấy bộ thẻ phù hợp</h3>
+            <p className="text-slate-500 dark:text-slate-400 mt-2 font-medium max-w-md mx-auto">Không có bộ thẻ nào khớp với từ khóa hoặc thẻ nhãn đang chọn. Thử thay đổi điều kiện lọc.</p>
+
             <div className="flex justify-center gap-4 mt-12">
-              <Button variant="outline" onClick={handleRefresh} className="gap-2 h-12 px-8 rounded-2xl font-bold border-slate-200 dark:border-white/10 dark:text-white">
+              <Button
+                variant="outline"
+                onClick={() => { setSearchTerm(''); setSelectedTag(null); }}
+                className="gap-2 h-12 px-8 rounded-2xl font-bold border-slate-200 dark:border-white/10 dark:text-white"
+              >
                 <RotateCcw size={18} />
-                Làm mới
+                Xóa bộ lọc
               </Button>
               <Link to="/create-deck">
                 <Button className="bg-primary hover:bg-primary/90 h-12 px-10 rounded-2xl font-black shadow-xl shadow-primary/20">Tạo bộ thẻ mới</Button>

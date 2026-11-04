@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ChangeEvent, type ReactNode } from 'react';
 import { updateProfile, type User } from 'firebase/auth';
-import { doc, updateDoc } from 'firebase/firestore';
+import { doc, setDoc, updateDoc } from 'firebase/firestore';
 import { motion } from 'motion/react';
 import {
   BadgeCheck,
@@ -159,7 +159,7 @@ function SettingRow({ icon, title, description, action }: SettingRowProps) {
 }
 
 export default function Settings({ user, profile }: SettingsProps) {
-  const { settings, updateSettings, toggleDarkMode } = useSettings();
+  const { settings, updateSettings } = useSettings();
   const [geminiApiKey, setGeminiApiKey] = useState(profile?.settings?.geminiApiKey || profile?.settings?.aiApiKey || '');
   const [isSaving, setIsSaving] = useState(false);
   const [isSavingReminder, setIsSavingReminder] = useState(false);
@@ -181,15 +181,11 @@ export default function Settings({ user, profile }: SettingsProps) {
   const [schedulerDraft, setSchedulerDraft] = useState({
     learningSteps: serializeSchedulerSteps(schedulerConfig.learningSteps),
     relearningSteps: serializeSchedulerSteps(schedulerConfig.relearningSteps),
-    desiredRetention: String(schedulerConfig.desiredRetention),
-    initialDifficulty: String(schedulerConfig.initialDifficulty),
-    initialAgain: String(schedulerConfig.initialStability.again),
-    initialHard: String(schedulerConfig.initialStability.hard),
-    initialGood: String(schedulerConfig.initialStability.good),
-    initialEasy: String(schedulerConfig.initialStability.easy),
+    desiredRetentionPercent: String(Math.round(schedulerConfig.desiredRetention * 100)),
     newCardsPerDay: String(schedulerConfig.newCardsPerDay),
     reviewsPerDay: String(schedulerConfig.reviewsPerDay),
     maximumInterval: String(schedulerConfig.maximumInterval),
+    leechThreshold: String(schedulerConfig.leechThreshold),
     intervalModifier: String(schedulerConfig.intervalModifier),
     burySiblings: schedulerConfig.burySiblings,
   });
@@ -215,15 +211,11 @@ export default function Settings({ user, profile }: SettingsProps) {
     setSchedulerDraft({
       learningSteps: serializeSchedulerSteps(schedulerConfig.learningSteps),
       relearningSteps: serializeSchedulerSteps(schedulerConfig.relearningSteps),
-      desiredRetention: String(schedulerConfig.desiredRetention),
-      initialDifficulty: String(schedulerConfig.initialDifficulty),
-      initialAgain: String(schedulerConfig.initialStability.again),
-      initialHard: String(schedulerConfig.initialStability.hard),
-      initialGood: String(schedulerConfig.initialStability.good),
-      initialEasy: String(schedulerConfig.initialStability.easy),
+      desiredRetentionPercent: String(Math.round(schedulerConfig.desiredRetention * 100)),
       newCardsPerDay: String(schedulerConfig.newCardsPerDay),
       reviewsPerDay: String(schedulerConfig.reviewsPerDay),
       maximumInterval: String(schedulerConfig.maximumInterval),
+      leechThreshold: String(schedulerConfig.leechThreshold),
       intervalModifier: String(schedulerConfig.intervalModifier),
       burySiblings: schedulerConfig.burySiblings,
     });
@@ -322,10 +314,12 @@ export default function Settings({ user, profile }: SettingsProps) {
         updatedAt: new Date().toISOString(),
       });
 
-      updateDoc(doc(db, 'leaderboards', 'global', 'users', user.uid), {
+      // setDoc + merge (not updateDoc): the leaderboard entry may not exist
+      // yet, and the rules allow creating it.
+      setDoc(doc(db, 'leaderboards', 'global', 'users', user.uid), {
         username: nextDisplayName,
         avatar: nextPhotoURL,
-      }).catch(() => undefined);
+      }, { merge: true }).catch((error) => console.warn('Không đồng bộ được bảng xếp hạng.', error));
 
       toast.success('Đã cập nhật tên và avatar.');
     } catch (error) {
@@ -346,10 +340,8 @@ export default function Settings({ user, profile }: SettingsProps) {
         'settings.geminiApiKey': trimmedKey,
         'settings.aiApiKey': trimmedKey
       });
-      updateSettings({
-        geminiApiKey: trimmedKey,
-        aiApiKey: trimmedKey
-      });
+      // The key intentionally stays only in the Firestore profile (read back
+      // via profile.settings); it is no longer mirrored into local settings.
       toast.success('Đã lưu Gemini API Key.');
     } catch {
       toast.error('Không thể lưu Gemini API Key.');
@@ -380,20 +372,18 @@ export default function Settings({ user, profile }: SettingsProps) {
 
   const handleSaveScheduler = async () => {
     try {
+      // Start from the current normalized config so fields the new engine no
+      // longer exposes (legacy tuning values) are preserved untouched in
+      // storage; only the controls shown below are edited.
       const nextScheduler = normalizeSchedulerConfig({
+        ...schedulerConfig,
         learningSteps: parseSchedulerSteps(schedulerDraft.learningSteps, DEFAULT_SCHEDULER_CONFIG.learningSteps),
         relearningSteps: parseSchedulerSteps(schedulerDraft.relearningSteps, DEFAULT_SCHEDULER_CONFIG.relearningSteps),
-        desiredRetention: Number(schedulerDraft.desiredRetention),
-        initialDifficulty: Number(schedulerDraft.initialDifficulty),
-        initialStability: {
-          again: Number(schedulerDraft.initialAgain),
-          hard: Number(schedulerDraft.initialHard),
-          good: Number(schedulerDraft.initialGood),
-          easy: Number(schedulerDraft.initialEasy),
-        },
+        desiredRetention: Number(schedulerDraft.desiredRetentionPercent) / 100,
         newCardsPerDay: Number(schedulerDraft.newCardsPerDay),
         reviewsPerDay: Number(schedulerDraft.reviewsPerDay),
         maximumInterval: Number(schedulerDraft.maximumInterval),
+        leechThreshold: Number(schedulerDraft.leechThreshold),
         intervalModifier: Number(schedulerDraft.intervalModifier),
         burySiblings: schedulerDraft.burySiblings,
       });
@@ -406,9 +396,9 @@ export default function Settings({ user, profile }: SettingsProps) {
         });
       }
 
-      toast.success('Đã lưu cấu hình scheduler.');
+      toast.success('Đã lưu cấu hình thuật toán ôn tập.');
     } catch {
-      toast.error('Không thể lưu cấu hình scheduler.');
+      toast.error('Không thể lưu cấu hình thuật toán ôn tập.');
     }
   };
 
@@ -597,7 +587,7 @@ export default function Settings({ user, profile }: SettingsProps) {
           <div className="mt-6 grid grid-cols-2 gap-3">
             <div className="rounded-lg border border-zinc-200 bg-zinc-50 p-4 dark:border-white/10 dark:bg-white/5">
               <Flame className="mb-4 h-4 w-4 text-amber-600 dark:text-amber-400" />
-              <p className="font-mono text-2xl font-semibold text-zinc-950 dark:text-white">{profile?.streak || 0}</p>
+              <p className="font-mono text-2xl font-semibold text-zinc-950 dark:text-white">{profile?.streakDays ?? profile?.streak ?? 0}</p>
               <p className="mt-1 text-xs font-medium text-zinc-500">Ngày liên tục</p>
             </div>
             <div className="rounded-lg border border-zinc-200 bg-zinc-50 p-4 dark:border-white/10 dark:bg-white/5">
@@ -620,9 +610,20 @@ export default function Settings({ user, profile }: SettingsProps) {
           <div className="mt-5 divide-y divide-zinc-200/70 dark:divide-white/10">
             <SettingRow
               icon={settings.darkMode ? <Moon className="h-4 w-4" /> : <Sun className="h-4 w-4" />}
-              title="Chế độ tối"
-              description="Nền graphite, ít chói và hợp khi học lâu vào buổi tối."
-              action={<Switch checked={settings.darkMode} onCheckedChange={toggleDarkMode} />}
+              title="Giao diện sáng / tối"
+              description="Chọn thủ công hoặc để app tự theo giao diện hệ điều hành của thiết bị."
+              action={
+                <select
+                  value={settings.theme}
+                  onChange={(event) => updateSettings({ theme: event.target.value as 'light' | 'dark' | 'system' })}
+                  className="h-10 min-w-40 rounded-lg border border-zinc-200 bg-white px-3 text-sm font-semibold text-zinc-900 outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/20 dark:border-white/10 dark:bg-white/5 dark:text-white"
+                  aria-label="Chọn giao diện"
+                >
+                  <option value="light">Sáng</option>
+                  <option value="dark">Tối</option>
+                  <option value="system">Theo hệ thống</option>
+                </select>
+              }
             />
             <SettingRow
               icon={<Languages className="h-4 w-4" />}
@@ -665,7 +666,7 @@ export default function Settings({ user, profile }: SettingsProps) {
             <SettingRow
               icon={<Music className="h-4 w-4" />}
               title="Nhạc nền tập trung"
-              description="Lớp âm trầm rất nhẹ được tạo ngay trong trình duyệt, không phụ thuộc file nhạc ngoài."
+              description="Nhạc nền là một file âm thanh phát lặp nhẹ nhàng; file chỉ được tải về khi bạn bật tính năng này."
               action={<Switch checked={settings.backgroundMusic} onCheckedChange={handleBackgroundMusicChange} />}
             />
             <div className="py-5">
@@ -696,6 +697,9 @@ export default function Settings({ user, profile }: SettingsProps) {
             <h2 className="mt-2 text-2xl font-semibold text-zinc-950 dark:text-white">Thông báo ôn tập trên web</h2>
             <p className="mt-2 max-w-2xl text-sm leading-6 text-zinc-500 dark:text-zinc-400">
               App sẽ tạo thông báo trong hộp thông báo mỗi ngày vào khoảng 21:00 nếu bạn bật nhắc học. Khi đăng nhập lại, thông báo chưa xem sẽ tự hiện lên để xác nhận.
+            </p>
+            <p className="mt-2 max-w-2xl text-sm font-medium leading-6 text-amber-700 dark:text-amber-300">
+              Lưu ý: thông báo nhắc học hiện chỉ hoạt động khi app đang mở (chưa có thông báo đẩy khi đóng app).
             </p>
           </div>
           <Button type="button" onClick={handleSaveReminder} disabled={isSavingReminder} className="h-10 px-5">
@@ -733,21 +737,21 @@ export default function Settings({ user, profile }: SettingsProps) {
       <section className="premium-panel p-6 dark:bg-zinc-950/70">
         <div className="flex flex-col gap-5 border-b border-zinc-200/70 pb-5 dark:border-white/10 md:flex-row md:items-start md:justify-between">
           <div>
-            <p className="text-xs font-semibold uppercase text-zinc-500 dark:text-zinc-400">Scheduler</p>
+            <p className="text-xs font-semibold uppercase text-zinc-500 dark:text-zinc-400">Thuật toán ôn tập</p>
             <h2 className="mt-2 text-2xl font-semibold text-zinc-950 dark:text-white">Thời gian học thẻ</h2>
             <p className="mt-2 max-w-2xl text-sm leading-6 text-zinc-500 dark:text-zinc-400">
-              FSRS dùng Stability, Difficulty, Retrievability và retention mục tiêu. Bước học nhập dạng <span className="font-mono">1m, 10m, 1d</span>.
+              Thuật toán FSRS-6 tính khoảng ôn từ độ ổn định, độ khó và khả năng nhớ lại của từng thẻ. Bước học nhập dạng <span className="font-mono">1m, 10m, 1d</span>.
             </p>
           </div>
           <Button type="button" onClick={handleSaveScheduler} className="h-10 px-5">
             <Save className="h-4 w-4" />
-            Lưu scheduler
+            Lưu cấu hình
           </Button>
         </div>
 
         <div className="mt-6 grid gap-4 lg:grid-cols-2">
           <div>
-            <label className="text-xs font-semibold uppercase text-zinc-500 dark:text-zinc-400">Learning steps</label>
+            <label className="text-xs font-semibold uppercase text-zinc-500 dark:text-zinc-400">Bước học (thẻ mới)</label>
             <Input
               value={schedulerDraft.learningSteps}
               onChange={(event) => setSchedulerDraft((draft) => ({ ...draft, learningSteps: event.target.value }))}
@@ -756,7 +760,7 @@ export default function Settings({ user, profile }: SettingsProps) {
             />
           </div>
           <div>
-            <label className="text-xs font-semibold uppercase text-zinc-500 dark:text-zinc-400">Relearning steps</label>
+            <label className="text-xs font-semibold uppercase text-zinc-500 dark:text-zinc-400">Bước học lại (khi quên)</label>
             <Input
               value={schedulerDraft.relearningSteps}
               onChange={(event) => setSchedulerDraft((draft) => ({ ...draft, relearningSteps: event.target.value }))}
@@ -766,18 +770,37 @@ export default function Settings({ user, profile }: SettingsProps) {
           </div>
         </div>
 
+        <div className="mt-6 rounded-lg border border-zinc-200 bg-zinc-50/80 p-4 dark:border-white/10 dark:bg-white/[0.04]">
+          <div className="mb-3 flex items-center justify-between gap-4">
+            <div>
+              <p className="text-sm font-semibold text-zinc-950 dark:text-white">Tỷ lệ nhớ mục tiêu (retention)</p>
+              <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">Càng cao ôn càng dày. Khuyến nghị 85–92% cho học đều mỗi ngày.</p>
+            </div>
+            <span className="font-mono text-sm font-semibold text-zinc-950 dark:text-white">{schedulerDraft.desiredRetentionPercent}%</span>
+          </div>
+          <input
+            type="range"
+            min="70"
+            max="98"
+            step="1"
+            value={schedulerDraft.desiredRetentionPercent}
+            onChange={(event) => setSchedulerDraft((draft) => ({ ...draft, desiredRetentionPercent: event.target.value }))}
+            className="h-1.5 w-full cursor-pointer appearance-none rounded-full bg-zinc-200 accent-primary dark:bg-white/10"
+            aria-label="Tỷ lệ nhớ mục tiêu"
+          />
+          <div className="mt-2 flex justify-between text-xs text-zinc-500">
+            <span>70%</span>
+            <span>98%</span>
+          </div>
+        </div>
+
         <div className="mt-5 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
           {([
-            ['desiredRetention', 'Desired retention', '0.01'],
-            ['initialDifficulty', 'Initial difficulty', '0.1'],
-            ['initialAgain', 'Initial S Again', '0.1'],
-            ['initialHard', 'Initial S Hard', '0.1'],
-            ['initialGood', 'Initial S Good', '0.1'],
-            ['initialEasy', 'Initial S Easy', '0.1'],
-            ['newCardsPerDay', 'New / day', '1'],
-            ['reviewsPerDay', 'Reviews / day', '1'],
-            ['maximumInterval', 'Max interval', '1'],
-            ['intervalModifier', 'Interval modifier', '0.05'],
+            ['newCardsPerDay', 'Thẻ mới mỗi ngày', '1'],
+            ['reviewsPerDay', 'Lượt ôn tối đa mỗi ngày', '1'],
+            ['maximumInterval', 'Khoảng ôn tối đa (ngày)', '1'],
+            ['leechThreshold', 'Ngưỡng thẻ khó (số lần quên)', '1'],
+            ['intervalModifier', 'Hệ số khoảng ôn', '0.05'],
           ] as const).map(([key, label, step]) => (
             <div key={key}>
               <label className="text-xs font-semibold uppercase text-zinc-500 dark:text-zinc-400">{label}</label>
@@ -792,9 +815,12 @@ export default function Settings({ user, profile }: SettingsProps) {
             </div>
           ))}
         </div>
+        <p className="mt-3 text-xs leading-5 text-zinc-500 dark:text-zinc-400">
+          Thẻ đạt ngưỡng thẻ khó (quên quá số lần trên) sẽ tự tạm dừng để bạn sửa lại nội dung thẻ thay vì ôn tiếp.
+        </p>
         <div className="mt-5 flex items-center justify-between rounded-lg border border-zinc-200 bg-zinc-50 p-4 dark:border-white/10 dark:bg-white/5">
           <div>
-            <p className="text-sm font-semibold text-zinc-950 dark:text-white">Bury siblings</p>
+            <p className="text-sm font-semibold text-zinc-950 dark:text-white">Ẩn thẻ cùng gốc trong ngày</p>
             <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">Ẩn các thẻ cùng note trong cùng một phiên học để giảm gợi nhớ giả.</p>
           </div>
           <Switch
@@ -810,10 +836,13 @@ export default function Settings({ user, profile }: SettingsProps) {
             <div className="flex h-11 w-11 items-center justify-center rounded-lg bg-zinc-950 text-white shadow-sm dark:bg-white dark:text-zinc-950">
               <Key className="h-5 w-5" />
             </div>
-            <p className="mt-6 text-xs font-semibold uppercase text-zinc-500 dark:text-zinc-400">AI engine</p>
+            <p className="mt-6 text-xs font-semibold uppercase text-zinc-500 dark:text-zinc-400">Công cụ AI</p>
             <h2 className="mt-2 text-2xl font-semibold text-zinc-950 dark:text-white">Gemini API</h2>
             <p className="mt-3 max-w-md text-sm leading-6 text-zinc-500 dark:text-zinc-400">
-              App dùng cùng một key Gemini cho tạo thẻ, trợ lý học tập và luyện đề. Key được lưu theo tài khoản Firebase để đồng bộ giữa các thiết bị.
+              App dùng cùng một key Gemini cho tạo thẻ, trợ lý học tập và luyện đề.
+            </p>
+            <p className="mt-3 max-w-md text-sm leading-6 text-zinc-600 dark:text-zinc-300">
+              Key được lưu trong tài khoản Firestore của chính bạn để đồng bộ giữa các thiết bị; không còn lưu ở localStorage của trình duyệt.
             </p>
             <a
               href="https://aistudio.google.com/apikey"

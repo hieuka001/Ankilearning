@@ -27,6 +27,9 @@ import { Deck, StudySession, UserProfile } from '../types';
 import { suggestStudyPath } from '../services/aiService';
 import { fetchMultipleDeckInsights, mergeForecastCounts } from '../lib/deckAnalytics';
 import { buildSessionCountByDay } from '../lib/studySessions';
+import { getXpProgress } from '../lib/gamification';
+
+type ProfileWithProgress = UserProfile & { xp?: number; level?: number };
 
 const DashboardChart = lazy(() => import('../components/charts/DashboardChart'));
 
@@ -92,7 +95,9 @@ export default function Dashboard({ user, profile, recentSessions }: DashboardPr
     const diffDays = Math.round((currentDate.getTime() - lastDate.getTime()) / (1000 * 60 * 60 * 24));
 
     if (diffDays > 1) {
-      updateDoc(doc(db, 'users', userId), { streak: 0 }).catch(() => undefined);
+      // Reset BOTH streak fields: the UI reads streakDays ?? streak, so
+      // clearing only one of them leaves the broken streak on screen.
+      updateDoc(doc(db, 'users', userId), { streak: 0, streakDays: 0 }).catch(() => undefined);
     }
   }, [profile?.lastStudyDate, profile?.streak, userId]);
 
@@ -184,12 +189,39 @@ export default function Dashboard({ user, profile, recentSessions }: DashboardPr
   const dueToday = recentDecks.reduce((sum, deck) => sum + deck.dueCount, 0);
   const streakDays = profile?.streakDays ?? profile?.streak ?? 0;
   const cardsReviewed = profile?.totalCardsReviewed ?? profile?.totalCardsLearned ?? 0;
+  const xpProgress = getXpProgress((profile as ProfileWithProgress | null)?.xp ?? 0);
+  // "Study time" comes from real session data (sum of StudySession.duration
+  // in seconds across the loaded recent sessions), not the profile counter
+  // that never increased. Fall back to the profile value only when it is a
+  // real positive number; otherwise show a dash instead of a wrong 0.
+  const sessionStudyMinutes = useMemo(
+    () =>
+      recentSessions.reduce((sum, session) => {
+        const duration = typeof session.duration === 'number' && Number.isFinite(session.duration) ? session.duration : 0;
+        return sum + duration;
+      }, 0) / 60,
+    [recentSessions],
+  );
+  const profileStudyMinutes = profile?.totalStudyTimeMinutes ?? 0;
+  const studyTimeLabel = sessionStudyMinutes > 0
+    ? `${Math.round(sessionStudyMinutes)} phút`
+    : profileStudyMinutes > 0
+      ? `${Math.round(profileStudyMinutes)} phút`
+      : '—';
   const milestoneItems = [
     { label: '100 thẻ đầu tiên', done: cardsReviewed >= 100, value: Math.min(cardsReviewed, 100), target: 100 },
     { label: '500 thẻ đầu tiên', done: cardsReviewed >= 500, value: Math.min(cardsReviewed, 500), target: 500 },
-    { label: '7 ngày streak', done: streakDays >= 7, value: Math.min(streakDays, 7), target: 7 },
-    { label: '30 ngày streak', done: streakDays >= 30, value: Math.min(streakDays, 30), target: 30 },
+    { label: 'Chuỗi 7 ngày', done: streakDays >= 7, value: Math.min(streakDays, 7), target: 7 },
+    { label: 'Chuỗi 30 ngày', done: streakDays >= 30, value: Math.min(streakDays, 30), target: 30 },
   ];
+
+  // Welcome banner: greeting follows the local time of day; the CTA jumps
+  // straight into the first deck that still has due cards when one is known.
+  const greetingHour = new Date().getHours();
+  const greetingLabel = greetingHour < 12 ? 'Chào buổi sáng' : greetingHour < 18 ? 'Chào buổi chiều' : 'Chào buổi tối';
+  const greetingName = profile?.displayName || 'bạn';
+  const firstDueDeck = recentDecks.find((deck) => deck.dueCount > 0);
+  const studyNowTarget = firstDueDeck ? `/study/${firstDueDeck.id}` : '/decks';
 
   const handleGetAiSuggestion = async () => {
     if (!profile) return;
@@ -214,10 +246,15 @@ export default function Dashboard({ user, profile, recentSessions }: DashboardPr
 
   if (loading) {
     return (
-      <div className="flex min-h-[64vh] items-center justify-center">
-        <div className="premium-panel flex items-center gap-4 rounded-lg px-5 py-4">
-          <Loader2 className="h-5 w-5 animate-spin text-primary" />
-          <p className="text-sm font-medium text-muted-foreground">Đang đồng bộ dữ liệu học tập...</p>
+      <div className="space-y-6" aria-label="Đang tải dữ liệu học tập">
+        <div className="skeleton-block h-64 w-full" />
+        <div className="grid gap-6 xl:grid-cols-[1.45fr_0.85fr]">
+          <div className="skeleton-block h-[340px] w-full" />
+          <div className="skeleton-block h-[340px] w-full" />
+        </div>
+        <div className="grid gap-6 xl:grid-cols-2">
+          <div className="skeleton-block h-56 w-full" />
+          <div className="skeleton-block h-56 w-full" />
         </div>
       </div>
     );
@@ -236,6 +273,38 @@ export default function Dashboard({ user, profile, recentSessions }: DashboardPr
       <motion.section
         variants={cardMotion}
         transition={{ duration: 0.42, ease: [0.22, 1, 0.36, 1] }}
+        className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-emerald-600 via-emerald-500 to-teal-500 text-white shadow-xl shadow-emerald-600/25"
+      >
+        <div className="relative flex items-center gap-6 p-6 md:p-8">
+          <div className="min-w-0 flex-1">
+            <h2 className="text-2xl font-bold md:text-3xl">
+              {greetingLabel}, {greetingName}!
+            </h2>
+            <p className="mt-2 max-w-md text-sm leading-6 text-white/85">
+              {dueToday > 0
+                ? `Hôm nay bạn có ${dueToday} thẻ đến hạn. Ôn ngay khi trí nhớ còn tươi nhé!`
+                : 'Bạn đang giữ nhịp học rất tốt. Bắt đầu một phiên học mới nào!'}
+            </p>
+            <Link to={studyNowTarget} className="mt-5 inline-block">
+              <Button className="btn-press h-11 gap-2 bg-white px-5 font-semibold text-emerald-700 shadow-lg shadow-emerald-900/20 hover:bg-emerald-50">
+                Học ngay
+                <ArrowRight size={16} />
+              </Button>
+            </Link>
+          </div>
+          <img
+            src="/img/login-hero.webp"
+            alt=""
+            aria-hidden="true"
+            loading="lazy"
+            className="hidden w-52 shrink-0 rounded-2xl object-cover shadow-lg shadow-emerald-900/25 ring-1 ring-white/30 md:block lg:w-64"
+          />
+        </div>
+      </motion.section>
+
+      <motion.section
+        variants={cardMotion}
+        transition={{ duration: 0.42, ease: [0.22, 1, 0.36, 1] }}
         className="study-hero premium-panel overflow-hidden rounded-lg"
       >
         <div className="grid gap-0 lg:grid-cols-[1.35fr_0.65fr]">
@@ -243,7 +312,7 @@ export default function Dashboard({ user, profile, recentSessions }: DashboardPr
             <div className="mb-8 flex flex-wrap items-center gap-3">
               <span className="inline-flex items-center gap-2 rounded-full border border-black/[0.08] bg-white/70 px-3 py-1 text-xs font-medium text-zinc-600 shadow-sm">
                 <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
-                Gemini 2.5 Flash active
+                Gemini 2.5 Flash đang hoạt động
               </span>
             </div>
 
@@ -276,13 +345,13 @@ export default function Dashboard({ user, profile, recentSessions }: DashboardPr
 
               <div className="flex gap-2">
                 <Link to="/create-deck">
-                  <Button className="h-10 gap-2 px-4">
+                  <Button className="btn-press h-10 gap-2 px-4">
                     <Plus size={16} />
                     Tạo thẻ
                   </Button>
                 </Link>
                 <Link to="/assessment">
-                  <Button variant="outline" className="h-10 gap-2 bg-white/70 px-4">
+                  <Button variant="outline" className="btn-press h-10 gap-2 bg-white/70 px-4">
                     <BrainCircuit size={16} />
                     Luyện đề
                   </Button>
@@ -291,11 +360,52 @@ export default function Dashboard({ user, profile, recentSessions }: DashboardPr
             </div>
           </div>
 
-          <div className="grid grid-cols-2 divide-x divide-y divide-black/[0.07] dark:divide-white/10">
+          <div className="stagger-children grid grid-cols-2 divide-x divide-y divide-black/[0.07] dark:divide-white/10">
             <StatTile label="Đến hạn" value={dueToday} icon={<Target size={18} />} tone="blue" />
-            <StatTile label="Streak" value={streakDays} icon={<Flame size={18} />} tone="amber" />
+            <StatTile label="Chuỗi ngày học" value={streakDays} icon={<Flame size={18} />} tone="amber" />
             <StatTile label="Bộ thẻ" value={totalDeckCount} icon={<Layers3 size={18} />} tone="neutral" />
             <StatTile label="Đã học" value={cardsReviewed} icon={<CheckCircle2 size={18} />} tone="emerald" />
+          </div>
+        </div>
+      </motion.section>
+
+      <motion.section
+        variants={cardMotion}
+        transition={{ duration: 0.42, ease: [0.22, 1, 0.36, 1] }}
+        className="premium-panel flex flex-col gap-4 p-5 md:flex-row md:items-center md:gap-8"
+      >
+        <div className="flex items-center gap-3">
+          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-emerald-500/10 text-emerald-700 dark:text-emerald-300">
+            <Sparkles size={19} />
+          </div>
+          <div>
+            <p className="text-sm font-semibold text-zinc-950 dark:text-white">Cấp {xpProgress.level}</p>
+            <p className="text-xs text-muted-foreground">{xpProgress.xp} XP tích lũy</p>
+          </div>
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="mb-2 flex items-center justify-between gap-4">
+            <p className="text-xs font-medium text-zinc-600 dark:text-zinc-300">
+              Còn {Math.max(0, xpProgress.xpForNextLevel - xpProgress.xpIntoLevel)} XP để lên cấp {xpProgress.level + 1}
+            </p>
+            <p className="font-mono text-xs font-semibold text-muted-foreground">
+              {xpProgress.xpIntoLevel}/{xpProgress.xpForNextLevel} XP
+            </p>
+          </div>
+          <div className="h-2 overflow-hidden rounded-full bg-black/[0.06] dark:bg-white/10">
+            <motion.div
+              initial={{ width: 0 }}
+              animate={{ width: `${Math.round(xpProgress.progress * 100)}%` }}
+              transition={{ duration: 0.8, ease: [0.22, 1, 0.36, 1] }}
+              className="xp-gradient h-full rounded-full"
+            />
+          </div>
+        </div>
+        <div className="flex items-center gap-3 md:border-l md:border-black/[0.07] md:pl-8 dark:md:border-white/10">
+          <Clock className="h-5 w-5 text-muted-foreground" />
+          <div>
+            <p className="text-sm font-semibold text-zinc-950 dark:text-white">{studyTimeLabel}</p>
+            <p className="text-xs text-muted-foreground">Thời gian học (các phiên gần đây)</p>
           </div>
         </div>
       </motion.section>
@@ -305,7 +415,7 @@ export default function Dashboard({ user, profile, recentSessions }: DashboardPr
           <Card className="premium-panel overflow-hidden border-0 bg-transparent">
             <CardHeader className="flex flex-row items-start justify-between gap-4 p-6 pb-0">
               <div>
-                <p className="mb-2 text-xs font-semibold uppercase text-primary">Analytics</p>
+                <p className="mb-2 text-xs font-semibold uppercase text-primary">Thống kê</p>
                 <CardTitle className="text-xl font-semibold">Nhịp học 7 ngày</CardTitle>
               </div>
               <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10 text-primary">
@@ -325,7 +435,7 @@ export default function Dashboard({ user, profile, recentSessions }: DashboardPr
             <CardHeader className="p-6 pb-2">
               <div className="flex items-start justify-between gap-4">
                 <div>
-                  <p className="mb-2 text-xs font-semibold uppercase text-amber-700 dark:text-amber-300">Forecast</p>
+                  <p className="mb-2 text-xs font-semibold uppercase text-amber-700 dark:text-amber-300">Dự báo</p>
                   <CardTitle className="text-xl font-semibold">Dự báo ôn tập</CardTitle>
                 </div>
                 <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-amber-500/10 text-amber-700 dark:text-amber-300">
@@ -346,7 +456,7 @@ export default function Dashboard({ user, profile, recentSessions }: DashboardPr
             <div>
               <div className="mb-5 flex items-start justify-between gap-4">
                 <div>
-                  <p className="mb-2 text-xs font-semibold uppercase text-primary">Study Map</p>
+                  <p className="mb-2 text-xs font-semibold uppercase text-primary">Bản đồ học tập</p>
                   <h2 className="text-xl font-semibold text-zinc-950 dark:text-white">Heatmap 90 ngày gần nhất</h2>
                 </div>
                 <div className="achievement-badge">
@@ -357,14 +467,14 @@ export default function Dashboard({ user, profile, recentSessions }: DashboardPr
               <LearningHeatmap sessionCountByDay={sessionCountByDay} />
             </div>
             <div className="space-y-3">
-              <p className="text-xs font-semibold uppercase text-muted-foreground">Milestones</p>
+              <p className="text-xs font-semibold uppercase text-muted-foreground">Cột mốc</p>
               {milestoneItems.map((item) => {
                 const progress = Math.min(100, (item.value / item.target) * 100);
                 return (
                   <div key={item.label} className="workflow-step p-4">
                     <div className="mb-2 flex items-center justify-between gap-3">
                       <div className="flex items-center gap-2">
-                        <Award className={item.done ? 'h-4 w-4 text-violet-600' : 'h-4 w-4 text-muted-foreground'} />
+                        <Award className={item.done ? 'h-4 w-4 text-emerald-600' : 'h-4 w-4 text-muted-foreground'} />
                         <p className="text-sm font-semibold text-zinc-950 dark:text-white">{item.label}</p>
                       </div>
                       <span className={item.done ? 'achievement-badge' : 'text-xs font-semibold text-muted-foreground'}>
@@ -392,7 +502,7 @@ export default function Dashboard({ user, profile, recentSessions }: DashboardPr
           <Card className="premium-panel h-full border-0 bg-transparent">
             <CardHeader className="flex flex-row items-start justify-between gap-4 p-6 pb-3">
               <div>
-                <p className="mb-2 text-xs font-semibold uppercase text-emerald-700 dark:text-emerald-300">Focus</p>
+                <p className="mb-2 text-xs font-semibold uppercase text-emerald-700 dark:text-emerald-300">Tập trung</p>
                 <CardTitle className="text-xl font-semibold">Bộ thẻ gần đây</CardTitle>
               </div>
               <Link to="/decks">
@@ -412,7 +522,7 @@ export default function Dashboard({ user, profile, recentSessions }: DashboardPr
           <Card className="premium-panel h-full border-0 bg-transparent">
             <CardHeader className="flex flex-row items-start justify-between gap-4 p-6 pb-3">
               <div>
-                <p className="mb-2 text-xs font-semibold uppercase text-zinc-500">Timeline</p>
+                <p className="mb-2 text-xs font-semibold uppercase text-zinc-500">Dòng thời gian</p>
                 <CardTitle className="text-xl font-semibold">Hoạt động học</CardTitle>
               </div>
               <div className="hidden items-center gap-1 sm:flex">
@@ -434,13 +544,13 @@ export default function Dashboard({ user, profile, recentSessions }: DashboardPr
                 <Sparkles size={20} />
               </div>
               <div>
-                <p className="mb-2 text-xs font-semibold uppercase text-primary">AI Coach</p>
+                <p className="mb-2 text-xs font-semibold uppercase text-primary">Huấn luyện viên AI</p>
                 <h2 className="text-2xl font-semibold text-zinc-950 dark:text-white">Gợi ý học tập cá nhân</h2>
               </div>
               <p className="max-w-md text-sm leading-6 text-muted-foreground">
                 Gemini phân tích dữ liệu ôn tập và đề xuất ưu tiên học tiếp theo.
               </p>
-              <Button onClick={handleGetAiSuggestion} disabled={isGeneratingSuggestion} className="gap-2 bg-zinc-950 text-white hover:bg-zinc-800">
+              <Button onClick={handleGetAiSuggestion} disabled={isGeneratingSuggestion} className="btn-press gap-2 bg-zinc-950 text-white hover:bg-zinc-800">
                 {isGeneratingSuggestion ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles size={16} />}
                 Phân tích ngay
               </Button>
@@ -491,14 +601,14 @@ function StatTile({
   tone: 'blue' | 'amber' | 'emerald' | 'neutral';
 }) {
   const toneClass = {
-    blue: 'bg-indigo-500/10 text-indigo-700 dark:text-indigo-300',
-    amber: 'bg-violet-500/10 text-violet-700 dark:text-violet-300',
-    emerald: 'bg-purple-500/10 text-purple-700 dark:text-purple-300',
+    blue: 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300',
+    amber: 'bg-amber-500/10 text-amber-700 dark:text-amber-300',
+    emerald: 'bg-teal-500/10 text-teal-700 dark:text-teal-300',
     neutral: 'bg-zinc-950/[0.06] text-zinc-700 dark:bg-white/10 dark:text-white',
   }[tone];
 
   return (
-    <div className="stat-tile">
+    <div className="stat-tile card-hover">
       <div className={`mb-5 flex h-9 w-9 items-center justify-center rounded-lg ${toneClass}`}>
         {icon}
       </div>
@@ -659,10 +769,10 @@ function LearningHeatmap({
             day.count === 0
               ? 'bg-black/[0.08] dark:bg-white/10'
               : day.count === 1
-                ? 'bg-indigo-400/35'
+                ? 'bg-emerald-400/35'
                 : day.count === 2
-                ? 'bg-violet-500/[0.65]'
-                  : 'bg-purple-500'
+                ? 'bg-emerald-500/[0.65]'
+                  : 'bg-emerald-600'
           }`}
         />
       ))}

@@ -28,12 +28,18 @@ export const createOfflineReviewEvent = (
   clientId,
 });
 
+// Already dedupes by log id (later copies win) and orders by review time;
+// rebuildCardFromLogs relies on this so merged online/offline logs replay
+// each review exactly once.
 export const mergeReviewLogs = (logs: ReviewLog[]) => {
   const byId = new Map<string, ReviewLog>();
   logs.forEach((log) => byId.set(log.id, log));
   return [...byId.values()].sort((a, b) => a.reviewTime.localeCompare(b.reviewTime));
 };
 
+// Replays the merged logs through the current engine (ts-fsrs / FSRS-6).
+// Replay is deterministic — the engine's fuzz is seeded from the card — so
+// rebuilding from the same logs always yields the same card.
 export const rebuildCardFromLogs = (
   baseCard: SchedulerCardInput,
   logs: ReviewLog[],

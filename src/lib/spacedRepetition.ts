@@ -1,6 +1,7 @@
 export type {
   CardState,
   InitialStability,
+  LeechAction,
   NormalizedSchedulerCard,
   ReviewLog,
   ScheduleReviewOutput,
@@ -14,15 +15,15 @@ export type {
 } from '../models/fsrs';
 
 export {
-  calculateNextReview,
   calculateSchedulerReview,
   createInitialCardSchedule,
   DEFAULT_SCHEDULER_CONFIG,
+  FSRS_VERSION,
   getCardDueDate,
   getLocalTomorrowIso,
-  getNextAvailableTime,
   getRatingOptions,
   getRatingPreviews,
+  getStudyDayKey,
   isCardBuried,
   isCardDue,
   normalizeCardSchedule,
@@ -34,18 +35,15 @@ export {
 
 export {
   buildStudyQueues,
-  selectNextCard,
+  countIntroducedToday,
   sortCardsForStudy,
+  type StudyQueueLimits,
   type StudyQueues,
 } from '../scheduler/queue';
-
-export {
-  simulateReviews,
-  type ReviewSimulationStep,
-} from '../scheduler/simulation';
 
 export {
   calculateRetrievability,
   formatScheduledDelay,
   intervalForRetention,
+  stabilityForScheduledDays,
 } from '../scheduler/intervalCalculator';

@@ -19,33 +19,37 @@ export default function Search({ user }: SearchProps) {
   const [searchTerm, setSearchTerm] = useState('');
   const [results, setResults] = useState<Deck[]>([]);
   const [loading, setLoading] = useState(false);
+  const [hasSearched, setHasSearched] = useState(false);
   const [syncingId, setSyncingId] = useState<string | null>(null);
 
+  const fetchInitialDecks = async () => {
+    setLoading(true);
+    try {
+      const q = query(
+        collection(db, 'decks'),
+        where('isPublic', '==', true),
+        limit(20)
+      );
+      const snap = await getDocs(q);
+      const allPublic = snap.docs.map(doc => ({ id: doc.id, ...doc.data() } as Deck));
+      setResults(allPublic);
+      setHasSearched(false);
+    } catch (error) {
+      console.error("Error fetching initial decks:", error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   useEffect(() => {
-    // Load public decks by default
-    const fetchInitialDecks = async () => {
-      setLoading(true);
-      try {
-        const q = query(
-          collection(db, 'decks'),
-          where('isPublic', '==', true),
-          limit(20)
-        );
-        const snap = await getDocs(q);
-        const allPublic = snap.docs.map(doc => ({ id: doc.id, ...doc.data() } as Deck));
-        setResults(allPublic);
-      } catch (error) {
-        console.error("Error fetching initial decks:", error);
-      } finally {
-        setLoading(false);
-      }
-    };
+    // Tải các bộ thẻ công khai mặc định
     fetchInitialDecks();
   }, []);
 
   const handleSearch = async () => {
     if (!searchTerm.trim()) return;
     setLoading(true);
+    setHasSearched(true);
     try {
       // Search public decks
       const q = query(
@@ -105,7 +109,7 @@ export default function Search({ user }: SearchProps) {
           deckId: newDeckRef.id,
           ownerId: user.uid,
           createdAt: new Date().toISOString(),
-          // Reset spaced repetition data
+          // Đặt lại dữ liệu ôn tập ngắt quãng cho bản sao
           ...createInitialCardSchedule(),
         })
       );
@@ -145,9 +149,10 @@ export default function Search({ user }: SearchProps) {
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
         {loading ? (
-          <div className="col-span-full py-32 text-center">
-            <div className="animate-spin rounded-full h-16 w-16 border-b-2 border-primary mx-auto"></div>
-            <p className="mt-6 text-slate-500 font-black uppercase tracking-[0.2em] text-xs">Đang tìm kiếm...</p>
+          <div className="col-span-full grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8" aria-busy="true">
+            {[0, 1, 2].map((i) => (
+              <div key={i} className="skeleton-block animate-pulse h-80 rounded-[2rem] bg-slate-200/50 dark:bg-white/5" />
+            ))}
           </div>
         ) : results.length > 0 ? (
           results.map(deck => (
@@ -201,8 +206,28 @@ export default function Search({ user }: SearchProps) {
               </CardContent>
             </Card>
           ))
+        ) : hasSearched ? (
+          <div className="premium-panel col-span-full py-32 text-center">
+            <div className="flex justify-center mb-6">
+              <div className="p-8 bg-slate-50 dark:bg-white/5 rounded-full">
+                <SearchIcon size={80} className="text-slate-200 dark:text-slate-800" />
+              </div>
+            </div>
+            <h3 className="text-3xl font-black text-slate-900 dark:text-white tracking-tight">Không tìm thấy bộ thẻ nào</h3>
+            <p className="text-slate-500 dark:text-slate-400 mt-4 text-lg font-medium max-w-md mx-auto">Không có bộ thẻ công khai nào khớp với từ khóa “{searchTerm}”. Thử từ khóa ngắn hơn hoặc kiểm tra lại chính tả.</p>
+            <div className="flex justify-center mt-10">
+              <Button
+                variant="outline"
+                onClick={() => { setSearchTerm(''); fetchInitialDecks(); }}
+                className="gap-2 h-12 px-8 rounded-2xl font-bold border-slate-200 dark:border-white/10 dark:text-white"
+              >
+                <Library size={18} />
+                Xem tất cả bộ thẻ công khai
+              </Button>
+            </div>
+          </div>
         ) : (
-          <div className="col-span-full py-32 text-center bg-white dark:bg-[#0C0D0E] rounded-[3rem] border-2 border-dashed border-slate-200 dark:border-white/5">
+          <div className="premium-panel col-span-full py-32 text-center">
             <div className="flex justify-center mb-6">
               <div className="p-8 bg-slate-50 dark:bg-white/5 rounded-full">
                 <Library size={80} className="text-slate-200 dark:text-slate-800" />

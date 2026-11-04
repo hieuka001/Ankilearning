@@ -23,7 +23,7 @@ test('unlocks badges from learning stats', () => {
 
   assert.deepEqual(
     badges.map((badge) => badge.id).sort(),
-    ['cards_100', 'first_review', 'quiz_master', 'streak_7'].sort(),
+    ['cards_100', 'first_review', 'quiz_master', 'streak_3', 'streak_7'].sort(),
   );
 });
 

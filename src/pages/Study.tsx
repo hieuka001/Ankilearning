@@ -1,16 +1,30 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { User } from 'firebase/auth';
-import { addDoc, collection, doc, getDoc, getDocs, query, setDoc, updateDoc, where } from 'firebase/firestore';
+import {
+  addDoc,
+  arrayRemove,
+  collection,
+  deleteDoc,
+  doc,
+  getDoc,
+  getDocs,
+  query,
+  setDoc,
+  updateDoc,
+  where,
+} from 'firebase/firestore';
 import { motion } from 'motion/react';
-import { BrainCircuit, Trophy } from 'lucide-react';
+import { BrainCircuit, CloudOff, Home, RotateCcw, Trophy, Undo2 } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
 import { db } from '../firebase';
-import { Deck, Flashcard, UserProfile } from '../types';
+import { Deck, Flashcard, ReviewLog, UserProfile } from '../types';
 import {
   buildStudyQueues,
+  countIntroducedToday,
   getLocalTomorrowIso,
+  getStudyDayKey,
   isCardBuried,
   normalizeCardSchedule,
   sortCardsForStudy,
@@ -22,7 +36,7 @@ import { useSettings } from '../contexts/SettingsContext';
 import { toast } from 'sonner';
 import { ReviewCard } from '../review/ReviewCard';
 import { enqueueReviewSync, flushReviewQueue, progressDocId } from '../review/firebaseSync';
-import { cacheCards, getCachedCards, upsertCachedCard } from '../review/localDB';
+import { cacheCards, getCachedCards, localDB, upsertCachedCard } from '../review/localDB';
 import { useScheduler } from '../review/useScheduler';
 import { speechLanguageForText } from '../lib/language';
 
@@ -31,24 +45,138 @@ interface StudyProps {
   profile?: UserProfile | null;
 }
 
+type LoadState = 'loading' | 'ready' | 'empty-deck' | 'no-due' | 'error';
+type SaveStatus = 'idle' | 'saving' | 'saved' | 'error';
+
+interface UndoSnapshot {
+  /** The card exactly as it was before the rating being undone. */
+  cardBefore: Flashcard;
+  statsBefore: { reviewed: number; correct: number };
+  historyEntry: ReviewLog;
+  wasCorrect: boolean;
+}
+
+/**
+ * A rated card whose new due time still falls inside this window (learning /
+ * relearning steps, "again" lapses) is appended to the end of the session
+ * queue so the learner meets it again in the same session, like Anki.
+ */
+const SESSION_REQUEUE_WINDOW_MS = 25 * 60 * 1000;
+
 const stripHtml = (value: string) => value.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+
+const readLastReviewTime = (card: Flashcard): Date | null => {
+  const raw = typeof card.lastReview === 'string' ? card.lastReview : card.lastReview?.reviewTime;
+  if (!raw) return null;
+  const parsed = new Date(raw);
+  return Number.isFinite(parsed.getTime()) ? parsed : null;
+};
+
+/**
+ * Deck-level approximation for the daily review cap: counts cards whose
+ * LAST review happened on the given local study day. A card reviewed three
+ * times today counts once — the queue builder only needs an estimate of how
+ * much of today's review budget this deck has already consumed.
+ */
+const countReviewedToday = (cards: Flashcard[], now: Date) => {
+  const todayKey = getStudyDayKey(now);
+  return cards.reduce((count, card) => {
+    const lastReview = readLastReviewTime(card);
+    return count + (lastReview && getStudyDayKey(lastReview) === todayKey ? 1 : 0);
+  }, 0);
+};
+
+/**
+ * Scheduler fields of a card, as a Firestore-safe update object (undefined
+ * values stripped — Firestore rejects them). Used to overwrite a card's
+ * server state with its pre-rating state when undoing an already-flushed
+ * rating.
+ */
+const buildRestoreUpdate = (card: Flashcard) => {
+  const withFirstReview = card as Flashcard & { firstReviewAt?: string };
+  const source: Record<string, unknown> = {
+    state: card.state,
+    due: card.due,
+    interval: card.interval,
+    easeFactor: card.easeFactor,
+    stability: card.stability,
+    difficulty: card.difficulty,
+    retrievability: card.retrievability,
+    elapsedDays: card.elapsedDays,
+    scheduledDays: card.scheduledDays,
+    stepIndex: card.stepIndex,
+    dueDate: card.dueDate,
+    nextReview: card.nextReview,
+    lapses: card.lapses,
+    reps: card.reps,
+    repetitions: card.repetitions,
+    suspended: card.suspended,
+    lastReview: card.lastReview,
+    firstReviewAt: withFirstReview.firstReviewAt,
+    updatedAt: new Date().toISOString(),
+  };
+  Object.keys(source).forEach((key) => {
+    if (source[key] === undefined) delete source[key];
+  });
+  return source as Partial<Flashcard>;
+};
 
 export default function Study({ user, profile }: StudyProps) {
   const { settings } = useSettings();
   const { deckId } = useParams();
   const navigate = useNavigate();
   const [deck, setDeck] = useState<Deck | null>(null);
-  const [cards, setCards] = useState<Flashcard[]>([]);
-  const [currentIndex, setCurrentIndex] = useState(0);
+  const [cards, setCardsState] = useState<Flashcard[]>([]);
+  const [currentIndex, setCurrentIndexState] = useState(0);
   const [isFlipped, setIsFlipped] = useState(false);
-  const [loading, setLoading] = useState(true);
+  const [loadState, setLoadState] = useState<LoadState>('loading');
   const [isFinished, setIsFinished] = useState(false);
   const [sessionStats, setSessionStats] = useState({ reviewed: 0, correct: 0 });
-  const [startTime, setStartTime] = useState(Date.now());
   const [now, setNow] = useState(() => new Date());
   const [cloudScheduler, setCloudScheduler] = useState<SchedulerConfigInput | null>(null);
+  const [undoSnapshot, setUndoSnapshot] = useState<UndoSnapshot | null>(null);
+  const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle');
+  const [reloadKey, setReloadKey] = useState(0);
+
+  // The session queue lives in a ref as well as state: rating handlers must
+  // make advance/finish decisions against the queue AS UPDATED by the
+  // current rating (re-queue appends), which React state cannot guarantee
+  // synchronously.
+  const cardsRef = useRef<Flashcard[]>([]);
+  const currentIndexRef = useRef(0);
+  const sessionStatsRef = useRef({ reviewed: 0, correct: 0 });
+  const startTimeRef = useRef(Date.now());
+  const finishStatsRef = useRef<{ reviewed: number; correct: number } | null>(null);
+  const reviewAllRef = useRef(false);
   const prefetchedImages = useRef<Set<string>>(new Set());
   const ratingLockRef = useRef(false);
+
+  // Latest scheduler settings, read by the loader through a ref so a fresh
+  // profile snapshot (new object identity, same content) does NOT refetch
+  // and wipe the live session queue mid-study.
+  const schedulerSettingsRef = useRef({
+    profile: profile?.settings?.scheduler,
+    local: settings.scheduler,
+  });
+  schedulerSettingsRef.current = {
+    profile: profile?.settings?.scheduler,
+    local: settings.scheduler,
+  };
+
+  const setCards = useCallback((updater: Flashcard[] | ((previous: Flashcard[]) => Flashcard[])) => {
+    const next = typeof updater === 'function'
+      ? (updater as (previous: Flashcard[]) => Flashcard[])(cardsRef.current)
+      : updater;
+    cardsRef.current = next;
+    setCardsState(next);
+  }, []);
+
+  const setCurrentIndex = useCallback((value: number) => {
+    currentIndexRef.current = value;
+    setCurrentIndexState(value);
+  }, []);
+
+  const loading = loadState === 'loading';
   const schedulerConfig = cloudScheduler || profile?.settings?.scheduler || settings.scheduler;
   const { previewRatings, reviewCard } = useScheduler(schedulerConfig);
   const currentCard = cards[currentIndex];
@@ -57,14 +185,33 @@ export default function Study({ user, profile }: StudyProps) {
     [currentCard, now, previewRatings],
   );
 
-  const resetStudy = () => {
-    setCurrentIndex(0);
+  const beginSession = useCallback((queue: Flashcard[]) => {
+    cardsRef.current = queue;
+    setCardsState(queue);
+    currentIndexRef.current = 0;
+    setCurrentIndexState(0);
     setIsFlipped(false);
-    setLoading(false);
     setIsFinished(false);
+    sessionStatsRef.current = { reviewed: 0, correct: 0 };
     setSessionStats({ reviewed: 0, correct: 0 });
-    setStartTime(Date.now());
-  };
+    startTimeRef.current = Date.now();
+    finishStatsRef.current = null;
+    setUndoSnapshot(null);
+    setSaveStatus('idle');
+    setLoadState('ready');
+  }, []);
+
+  const resetStudy = useCallback(() => {
+    setUndoSnapshot(null);
+    setSaveStatus('idle');
+    finishStatsRef.current = null;
+    setIsFinished(false);
+    sessionStatsRef.current = { reviewed: 0, correct: 0 };
+    setSessionStats({ reviewed: 0, correct: 0 });
+    startTimeRef.current = Date.now();
+    setIsFlipped(false);
+    setCurrentIndex(0);
+  }, [setCurrentIndex]);
 
   useEffect(() => {
     if (!isFlipped) return;
@@ -93,10 +240,11 @@ export default function Study({ user, profile }: StudyProps) {
   }, [currentIndex, cards]);
 
   useEffect(() => {
-    const fetchData = async () => {
-      if (!deckId || !user) return;
+    if (!deckId || !user) return;
+    let cancelled = false;
 
-      setLoading(true);
+    const fetchData = async () => {
+      setLoadState('loading');
       try {
         const deckSnap = await getDoc(doc(db, 'decks', deckId));
         if (!deckSnap.exists()) {
@@ -105,6 +253,7 @@ export default function Study({ user, profile }: StudyProps) {
         }
 
         const deckData = { id: deckSnap.id, ...deckSnap.data() } as Deck;
+        if (cancelled) return;
         setDeck(deckData);
 
         const cardsSnap = await getDocs(collection(db, `decks/${deckId}/cards`));
@@ -138,60 +287,166 @@ export default function Study({ user, profile }: StudyProps) {
         if (userSnap.exists()) {
           const userData = userSnap.data() as UserProfile;
           remoteScheduler = userData.settings?.scheduler || null;
-          setCloudScheduler(remoteScheduler);
+          if (!cancelled) setCloudScheduler(remoteScheduler);
         }
 
-        const activeScheduler = remoteScheduler || profile?.settings?.scheduler || settings.scheduler;
+        if (cancelled) return;
+        const activeScheduler = remoteScheduler
+          || schedulerSettingsRef.current.profile
+          || schedulerSettingsRef.current.local;
         const currentTime = new Date();
-        const studyableCards = allCards.filter((card) => {
-          const schedule = normalizeCardSchedule(card, currentTime);
-          return !schedule.suspended && !isCardBuried(card, currentTime);
-        });
-        const dueCards = buildStudyQueues(studyableCards, activeScheduler, currentTime).all;
 
-        if (dueCards.length === 0 && allCards.length > 0) {
-          if (window.confirm('Bạn đã hoàn thành các thẻ cần ôn tập hôm nay. Bạn có muốn ôn lại tất cả không?')) {
-            setCards(sortCardsForStudy(studyableCards, activeScheduler, currentTime));
-          } else {
-            navigate(`/decks/${deckId}`);
-          }
-        } else {
-          setCards(dueCards);
+        if (reviewAllRef.current) {
+          const studyableCards = allCards.filter((card) => {
+            const schedule = normalizeCardSchedule(card, currentTime);
+            return !schedule.suspended && !isCardBuried(card, currentTime);
+          });
+          beginSession(sortCardsForStudy(studyableCards, activeScheduler, currentTime));
+          return;
         }
+
+        // Real per-day limits (see countReviewedToday for the deck-level
+        // approximation used for reviewedToday).
+        const limits = {
+          introducedToday: countIntroducedToday(allCards, currentTime),
+          reviewedToday: countReviewedToday(allCards, currentTime),
+        };
+        const dueCards = buildStudyQueues(allCards, activeScheduler, currentTime, limits).all;
+
+        if (dueCards.length > 0) {
+          beginSession(dueCards);
+          return;
+        }
+
+        setCards([]);
+        setLoadState(allCards.length === 0 ? 'empty-deck' : 'no-due');
       } catch (error) {
         console.error(error);
-        const cached = user && deckId ? await getCachedCards(user.uid, deckId).catch(() => []) : [];
+        if (cancelled) return;
+        const cached = await getCachedCards(user.uid, deckId).catch(() => []);
         if (cached.length > 0) {
-          setCards(cached as Flashcard[]);
-          toast.warning('Đang dùng dữ liệu đã lưu trên thiết bị.');
+          const currentTime = new Date();
+          const fallbackScheduler = schedulerSettingsRef.current.profile
+            || schedulerSettingsRef.current.local;
+          const cachedCards = cached as Flashcard[];
+          const limits = {
+            introducedToday: countIntroducedToday(cachedCards, currentTime),
+            reviewedToday: countReviewedToday(cachedCards, currentTime),
+          };
+          // The offline fallback goes through the SAME queue builder as the
+          // online path, so due/suspended/buried filtering and the daily
+          // limits apply identically — the raw cache is never studied as-is.
+          const dueCards = buildStudyQueues(cachedCards, fallbackScheduler, currentTime, limits).all;
+          if (dueCards.length > 0) {
+            toast.warning('Đang học ngoại tuyến bằng dữ liệu đã lưu trên thiết bị.');
+            beginSession(dueCards);
+            return;
+          }
+          setCards([]);
+          setLoadState('no-due');
+          return;
         }
-      } finally {
-        setLoading(false);
+        setCards([]);
+        setLoadState('error');
       }
     };
 
     fetchData();
-  }, [deckId, navigate, profile?.settings?.scheduler, settings.scheduler, user]);
+    return () => {
+      cancelled = true;
+    };
+  }, [beginSession, deckId, navigate, reloadKey, setCards, user]);
 
-  const advanceCard = useCallback((finalStats = sessionStats) => {
-    if (currentIndex < cards.length - 1) {
-      setIsFlipped(false);
-      setCurrentIndex((index) => index + 1);
-    } else {
-      finishSession(finalStats);
+  const finishSession = useCallback(async (finalStats: { reviewed: number; correct: number }) => {
+    finishStatsRef.current = finalStats;
+    setIsFinished(true);
+    setSaveStatus('saving');
+    flushReviewQueue().catch((error) => console.warn('Review queue sync failed.', error));
+    const duration = Math.round((Date.now() - startTimeRef.current) / 1000);
+
+    try {
+      if (!user) {
+        setSaveStatus('saved');
+        return;
+      }
+      const userRef = doc(db, 'users', user.uid);
+      const userSnap = await getDoc(userRef);
+
+      if (userSnap.exists()) {
+        const userData = userSnap.data() as UserProfile;
+        const today = new Date();
+        // One day-boundary convention for streaks: the local study-day key.
+        const todayKey = getStudyDayKey(today);
+        const lastKey = userData.lastStudyDate ? getStudyDayKey(new Date(userData.lastStudyDate)) : null;
+        let newStreak = userData.streak || 0;
+        let shouldUpdateStreak = false;
+
+        if (!lastKey) {
+          newStreak = 1;
+          shouldUpdateStreak = true;
+        } else if (lastKey !== todayKey) {
+          const dayStartMs = (key: string) => {
+            const [year, month, day] = key.split('-').map(Number);
+            return new Date(year, (month || 1) - 1, day || 1).getTime();
+          };
+          const diffDays = Math.round((dayStartMs(todayKey) - dayStartMs(lastKey)) / (1000 * 60 * 60 * 24));
+          if (diffDays === 1) {
+            newStreak += 1;
+            shouldUpdateStreak = true;
+          } else if (diffDays > 1) {
+            newStreak = 1;
+            shouldUpdateStreak = true;
+          }
+        } else if (newStreak === 0) {
+          newStreak = 1;
+          shouldUpdateStreak = true;
+        }
+
+        await updateDoc(userRef, {
+          lastStudyDate: today.toISOString(),
+          // Invariant: `streak` and `streakDays` always move together, with
+          // the same value, so no reader can show a stale streakDays.
+          ...(shouldUpdateStreak ? { streak: newStreak, streakDays: newStreak } : {}),
+        });
+      }
+
+      await addDoc(collection(db, `users/${user.uid}/sessions`), {
+        userId: user.uid,
+        deckId,
+        cardsReviewed: finalStats.reviewed,
+        correctCount: finalStats.correct,
+        duration,
+        timestamp: new Date().toISOString(),
+      });
+      setSaveStatus('saved');
+    } catch (error) {
+      console.error('Error finishing session:', error);
+      // Honest finish screen: only claim "saved" on success; the retry
+      // button calls finishSession again with the same final stats.
+      setSaveStatus('error');
     }
-  }, [cards.length, currentIndex, sessionStats]);
+  }, [deckId, user]);
+
+  const advanceCard = useCallback((finalStats = sessionStatsRef.current) => {
+    if (currentIndexRef.current < cardsRef.current.length - 1) {
+      setIsFlipped(false);
+      setCurrentIndex(currentIndexRef.current + 1);
+    } else {
+      void finishSession(finalStats);
+    }
+  }, [finishSession, setCurrentIndex]);
 
   const handleRate = useCallback((rating: SchedulerRating) => {
     if (ratingLockRef.current || !currentCard || !user || !deckId) return;
     ratingLockRef.current = true;
 
     const reviewTime = new Date();
-    const { schedulerUpdate, historyEntry } = reviewCard(currentCard, rating, reviewTime);
+    const { schedulerUpdate, historyEntry, leech } = reviewCard(currentCard, rating, reviewTime);
     const isCorrect = rating !== 'again';
+    const statsBefore = sessionStatsRef.current;
     const nextStats = {
-      reviewed: sessionStats.reviewed + 1,
-      correct: sessionStats.correct + (isCorrect ? 1 : 0),
+      reviewed: statsBefore.reviewed + 1,
+      correct: statsBefore.correct + (isCorrect ? 1 : 0),
     };
     const updatedCard = {
       ...currentCard,
@@ -202,7 +457,9 @@ export default function Study({ user, profile }: StudyProps) {
       ],
     } as Flashcard;
 
-    setCards((existingCards) => existingCards.map((card) => card.id === currentCard.id ? updatedCard : card));
+    // Snapshot for Undo BEFORE any state moves on.
+    setUndoSnapshot({ cardBefore: currentCard, statsBefore, historyEntry, wasCorrect: isCorrect });
+    sessionStatsRef.current = nextStats;
     setSessionStats(nextStats);
     setIsFlipped(false);
     playSound(isCorrect ? 'correct' : 'wrong', settings.volume);
@@ -221,11 +478,109 @@ export default function Study({ user, profile }: StudyProps) {
       toast.warning('Chưa thể lưu tiến độ vào cache cục bộ.');
     });
 
+    if (leech) {
+      toast.warning('Thẻ này đã quên quá nhiều lần nên đã tự tạm dừng (leech). Bạn có thể sửa lại thẻ trong chi tiết bộ thẻ.');
+    }
+
+    // Re-queue inside the session: a card still due within the session
+    // window returns at the END of the queue instead of vanishing until its
+    // next due date. Graduated cards (due far ahead) and suspended/leech
+    // cards are not re-queued, and a card already waiting later in the
+    // queue is never duplicated.
+    const dueTime = new Date(schedulerUpdate.dueDate || updatedCard.dueDate || '').getTime();
+    const stillDueInSession = !schedulerUpdate.suspended
+      && Number.isFinite(dueTime)
+      && dueTime <= reviewTime.getTime() + SESSION_REQUEUE_WINDOW_MS;
+    setCards((previous) => {
+      const mapped = previous.map((card) => card.id === currentCard.id ? updatedCard : card);
+      if (!stillDueInSession) return mapped;
+      const waitingLater = mapped.slice(currentIndexRef.current + 1);
+      if (waitingLater.some((card) => card.id === currentCard.id)) return mapped;
+      return [...mapped, updatedCard];
+    });
+
     advanceCard(nextStats);
     window.setTimeout(() => {
       ratingLockRef.current = false;
     }, 180);
-  }, [advanceCard, currentCard, deck?.ownerId, deckId, reviewCard, sessionStats, settings.volume, user]);
+  }, [advanceCard, currentCard, deck?.ownerId, deckId, reviewCard, setCards, settings.volume, user]);
+
+  const handleUndo = useCallback(async () => {
+    if (ratingLockRef.current || !undoSnapshot || !user || !deckId) return;
+    ratingLockRef.current = true;
+    const snapshot = undoSnapshot;
+    const restored = snapshot.cardBefore;
+
+    try {
+      // 1. Local state: drop the re-queued copy waiting later in the queue,
+      //    restore the pre-rating card in its slot, rewind the session
+      //    stats, and put the card back in front of the learner.
+      setCards((previous) => {
+        const withoutLaterCopies = previous.filter(
+          (card, index) => index <= currentIndexRef.current || card.id !== restored.id,
+        );
+        return withoutLaterCopies.map((card) => card.id === restored.id ? restored : card);
+      });
+      const restoredIndex = cardsRef.current.findIndex((card) => card.id === restored.id);
+      if (restoredIndex >= 0) setCurrentIndex(restoredIndex);
+      sessionStatsRef.current = snapshot.statsBefore;
+      setSessionStats(snapshot.statsBefore);
+      setIsFlipped(false);
+      setUndoSnapshot(null);
+
+      // 2. Device cache: an offline reload must not resurrect the rating.
+      await upsertCachedCard(user.uid, deckId, restored).catch(() => undefined);
+
+      // 3. Sync record for the undone rating. The queue id formula mirrors
+      //    firebaseSync's queueId (userId-deckId-cardId-historyEntryId).
+      const queueRecordId = `${user.uid}-${deckId}-${restored.id}-${snapshot.historyEntry.id}`;
+      const record = await localDB.reviewResults.get(queueRecordId).catch(() => undefined);
+
+      if (record && record.status !== 'synced') {
+        // Not flushed yet (the common case: flush runs after ~3s or 5
+        // records, and 'dead' records never flush) — deleting the outbox
+        // record means the rating never reaches the server at all.
+        await localDB.reviewResults.delete(queueRecordId).catch(() => undefined);
+      } else {
+        // Already flushed (or the local record is gone): overwrite the
+        // server state with the pre-rating scheduler fields and try to
+        // remove the appended history entry / review sub-document.
+        // Known limits: gamification counters already credited by that
+        // flush cannot be decremented through the queue, and if the undone
+        // rating was the card's first ever review, a stamped
+        // `firstReviewAt` may remain on the server copy.
+        const restoreUpdate = buildRestoreUpdate(restored);
+        const isOwner = deck?.ownerId === user.uid || restored.ownerId === user.uid;
+        try {
+          if (isOwner) {
+            await updateDoc(doc(db, `decks/${deckId}/cards`, restored.id), {
+              ...restoreUpdate,
+              reviewHistory: arrayRemove(snapshot.historyEntry),
+            });
+            await deleteDoc(
+              doc(db, `decks/${deckId}/cards`, restored.id, 'reviews', snapshot.historyEntry.id),
+            ).catch(() => undefined);
+          } else {
+            await setDoc(doc(db, `users/${user.uid}/cardProgress`, progressDocId(deckId, restored.id)), {
+              ...restoreUpdate,
+              reviewHistory: arrayRemove(snapshot.historyEntry),
+              userId: user.uid,
+              deckId,
+              cardId: restored.id,
+              sourceDeckOwnerId: deck?.ownerId || restored.ownerId || '',
+            }, { merge: true });
+          }
+        } catch (syncError) {
+          console.warn('Undo server correction failed.', syncError);
+          toast.warning('Đã hoàn tác trên thiết bị, nhưng chưa đồng bộ được bản hiệu chỉnh lên máy chủ.');
+        }
+      }
+
+      toast.success('Đã hoàn tác lần chấm vừa rồi.');
+    } finally {
+      ratingLockRef.current = false;
+    }
+  }, [deck?.ownerId, deckId, setCards, setCurrentIndex, undoSnapshot, user]);
 
   const saveControlUpdate = useCallback(async (card: Flashcard, update: Partial<Flashcard>) => {
     if (!deckId || !user) return;
@@ -245,7 +600,7 @@ export default function Study({ user, profile }: StudyProps) {
       cardId: card.id,
       sourceDeckOwnerId: deck?.ownerId || card.ownerId || '',
     }, { merge: true });
-  }, [deck?.ownerId, deckId, user]);
+  }, [deck?.ownerId, deckId, setCards, user]);
 
   const handleBuryCurrentCard = useCallback(async () => {
     if (!currentCard) return;
@@ -261,60 +616,45 @@ export default function Study({ user, profile }: StudyProps) {
     advanceCard();
   }, [advanceCard, currentCard, saveControlUpdate]);
 
-  const finishSession = async (finalStats = sessionStats) => {
-    setIsFinished(true);
-    flushReviewQueue().catch((error) => console.warn('Review queue sync failed.', error));
-    const duration = Math.round((Date.now() - startTime) / 1000);
+  const flipCard = useCallback(() => {
+    setIsFlipped((value) => !value);
+    playSound('flip', settings.volume);
+  }, [settings.volume]);
 
-    try {
-      if (!user) return;
-      const userRef = doc(db, 'users', user.uid);
-      const userSnap = await getDoc(userRef);
+  // Keyboard shortcuts: Space/Enter flips, 1-4 rate (only once flipped),
+  // U undoes the last rating. Ignored while typing, with modifier keys, or
+  // when focus sits on a native button/link (those activate themselves).
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (loadState !== 'ready' || isFinished || !currentCard || event.repeat) return;
+      if (event.metaKey || event.ctrlKey || event.altKey) return;
+      const target = event.target as HTMLElement | null;
+      if (target?.closest('input, textarea, select, [contenteditable="true"]')) return;
+      const tagName = target?.tagName;
+      if (tagName === 'BUTTON' || tagName === 'A') return;
 
-      if (userSnap.exists()) {
-        const userData = userSnap.data() as UserProfile;
-        const today = new Date();
-        const currentDate = new Date(today.getFullYear(), today.getMonth(), today.getDate());
-        const lastStudyDate = userData.lastStudyDate ? new Date(userData.lastStudyDate) : null;
-        const lastDate = lastStudyDate ? new Date(lastStudyDate.getFullYear(), lastStudyDate.getMonth(), lastStudyDate.getDate()) : null;
-        let newStreak = userData.streak || 0;
-        let shouldUpdateStreak = false;
-
-        if (!lastDate) {
-          newStreak = 1;
-          shouldUpdateStreak = true;
-        } else {
-          const diffDays = Math.round((currentDate.getTime() - lastDate.getTime()) / (1000 * 60 * 60 * 24));
-          if (diffDays === 1) {
-            newStreak += 1;
-            shouldUpdateStreak = true;
-          } else if (diffDays > 1) {
-            newStreak = 1;
-            shouldUpdateStreak = true;
-          } else if (diffDays === 0 && newStreak === 0) {
-            newStreak = 1;
-            shouldUpdateStreak = true;
-          }
-        }
-
-        await updateDoc(userRef, {
-          lastStudyDate: today.toISOString(),
-          ...(shouldUpdateStreak ? { streak: newStreak, streakDays: newStreak } : {}),
-        });
+      if (event.key === ' ' || event.key === 'Enter') {
+        event.preventDefault();
+        flipCard();
+        return;
       }
+      if (event.key.toLowerCase() === 'u' && undoSnapshot) {
+        event.preventDefault();
+        void handleUndo();
+        return;
+      }
+      if (isFlipped && ['1', '2', '3', '4'].includes(event.key)) {
+        const preview = ratingPreviews[Number(event.key) - 1];
+        if (preview) {
+          event.preventDefault();
+          handleRate(preview.rating);
+        }
+      }
+    };
 
-      await addDoc(collection(db, `users/${user.uid}/sessions`), {
-        userId: user.uid,
-        deckId,
-        cardsReviewed: finalStats.reviewed,
-        correctCount: finalStats.correct,
-        duration,
-        timestamp: new Date().toISOString(),
-      });
-    } catch (error) {
-      console.error('Error finishing session:', error);
-    }
-  };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [currentCard, flipCard, handleRate, handleUndo, isFinished, isFlipped, loadState, ratingPreviews, undoSnapshot]);
 
   const speak = useCallback((text: string) => {
     if (!('speechSynthesis' in window)) return;
@@ -325,6 +665,20 @@ export default function Study({ user, profile }: StudyProps) {
     window.speechSynthesis.speak(utterance);
   }, [profile?.settings?.language, settings.language]);
 
+  const startReviewAll = useCallback(() => {
+    reviewAllRef.current = true;
+    setReloadKey((key) => key + 1);
+  }, []);
+
+  const retryLoad = useCallback(() => {
+    setReloadKey((key) => key + 1);
+  }, []);
+
+  const handleRetrySave = useCallback(() => {
+    const stats = finishStatsRef.current;
+    if (stats) void finishSession(stats);
+  }, [finishSession]);
+
   if (loading) return (
     <div className="flex min-h-[60vh] flex-col items-center justify-center space-y-4">
       <div className="h-12 w-12 animate-spin rounded-full border-b-2 border-zinc-950 dark:border-white" />
@@ -332,16 +686,47 @@ export default function Study({ user, profile }: StudyProps) {
     </div>
   );
 
-  if (cards.length === 0 || !currentCard) return (
+  if (loadState === 'error') return (
+    <div className="flex min-h-[60vh] flex-col items-center justify-center space-y-6 text-center">
+      <div className="rounded-full bg-rose-100 p-6 dark:bg-rose-500/10">
+        <CloudOff className="h-12 w-12 text-rose-500" />
+      </div>
+      <h2 className="text-2xl font-bold text-zinc-950 dark:text-white">Không tải được dữ liệu học</h2>
+      <p className="max-w-sm text-zinc-500">
+        Kết nối hoặc máy chủ đang gặp sự cố, và thiết bị này chưa có bản sao của bộ thẻ để học ngoại tuyến.
+        Kiểm tra mạng rồi thử lại.
+      </p>
+      <div className="flex flex-wrap items-center justify-center gap-3">
+        <Button onClick={retryLoad} className="gap-2">
+          <RotateCcw className="h-4 w-4" />
+          Thử lại
+        </Button>
+        <Link to="/decks">
+          <Button variant="outline">Quay lại danh sách</Button>
+        </Link>
+      </div>
+    </div>
+  );
+
+  if (loadState === 'empty-deck') return (
     <div className="flex min-h-[60vh] flex-col items-center justify-center space-y-6 text-center">
       <div className="rounded-full bg-zinc-100 p-6 dark:bg-white/5">
         <BrainCircuit className="h-12 w-12 text-zinc-400" />
       </div>
-      <h2 className="text-2xl font-bold text-zinc-950 dark:text-white">Không có thẻ nào để học</h2>
-      <p className="max-w-xs text-zinc-500">Bộ thẻ này đang trống hoặc bạn đã hoàn thành các thẻ cần ôn tập.</p>
-      <Link to="/decks">
-        <Button variant="outline">Quay lại danh sách</Button>
-      </Link>
+      <h2 className="text-2xl font-bold text-zinc-950 dark:text-white">Bộ thẻ chưa có thẻ nào</h2>
+      <p className="max-w-sm text-zinc-500">
+        Bộ thẻ này đang trống. Hãy thêm thẻ vào bộ rồi quay lại học.
+      </p>
+      <div className="flex flex-wrap items-center justify-center gap-3">
+        {deckId && (
+          <Link to={`/decks/${deckId}`}>
+            <Button>Mở chi tiết bộ thẻ</Button>
+          </Link>
+        )}
+        <Link to="/decks">
+          <Button variant="outline">Danh sách bộ thẻ</Button>
+        </Link>
+      </div>
     </div>
   );
 
@@ -359,7 +744,32 @@ export default function Study({ user, profile }: StudyProps) {
           </motion.div>
           <div>
             <h1 className="text-4xl font-semibold text-zinc-950 dark:text-white">Hoàn thành</h1>
-            <p className="mt-2 text-zinc-500 dark:text-zinc-400">Phiên học đã được lưu theo cơ chế local-first.</p>
+            {saveStatus === 'saving' && (
+              <p className="mt-2 text-zinc-500 dark:text-zinc-400">Đang lưu phiên học...</p>
+            )}
+            {saveStatus === 'saved' && (
+              <p className="mt-2 text-zinc-500 dark:text-zinc-400">Phiên học đã được lưu.</p>
+            )}
+            {saveStatus === 'idle' && (
+              <p className="mt-2 text-zinc-500 dark:text-zinc-400">Phiên học đã hoàn thành.</p>
+            )}
+            {saveStatus === 'error' && (
+              <div className="mt-3 rounded-lg border border-rose-200 bg-rose-50 p-3 text-left text-sm text-rose-700 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-300">
+                <p>
+                  Chưa lưu được phiên học lên máy chủ. Tiến độ từng thẻ vẫn nằm trong hàng đợi
+                  đồng bộ trên thiết bị và sẽ tự đẩy lên khi có mạng.
+                </p>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleRetrySave}
+                  className="mt-3 w-full gap-2 bg-white dark:bg-transparent"
+                >
+                  <RotateCcw className="h-4 w-4" />
+                  Lưu lại
+                </Button>
+              </div>
+            )}
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div className="rounded-lg border border-zinc-200 bg-zinc-50 p-5 dark:border-white/10 dark:bg-white/5">
@@ -386,6 +796,38 @@ export default function Study({ user, profile }: StudyProps) {
     );
   }
 
+  if (loadState === 'no-due' || !currentCard) return (
+    <div className="flex min-h-[60vh] flex-col items-center justify-center space-y-6 text-center">
+      <div className="rounded-full bg-emerald-100 p-6 dark:bg-emerald-500/10">
+        <Trophy className="h-12 w-12 text-emerald-600 dark:text-emerald-400" />
+      </div>
+      <h2 className="text-2xl font-bold text-zinc-950 dark:text-white">Đã ôn xong phần đến hạn hôm nay</h2>
+      <p className="max-w-sm text-zinc-500">
+        {deck?.name
+          ? `Bộ thẻ «${deck.name}» không còn thẻ nào đến hạn. `
+          : 'Bộ thẻ này không còn thẻ nào đến hạn. '}
+        Bạn có thể ôn lại toàn bộ thẻ trong bộ, hoặc quay lại khi tới hạn ôn tiếp theo.
+      </p>
+      <div className="flex flex-wrap items-center justify-center gap-3">
+        <Button onClick={startReviewAll} className="gap-2">
+          <RotateCcw className="h-4 w-4" />
+          Ôn lại tất cả thẻ
+        </Button>
+        <Link to="/">
+          <Button variant="outline" className="gap-2">
+            <Home className="h-4 w-4" />
+            Về trang tổng quan
+          </Button>
+        </Link>
+        {deckId && (
+          <Link to={`/decks/${deckId}`}>
+            <Button variant="ghost">Quay lại bộ thẻ</Button>
+          </Link>
+        )}
+      </div>
+    </div>
+  );
+
   return (
     <div className="focus-study-active focus-study-shell">
       <ReviewCard
@@ -396,16 +838,30 @@ export default function Study({ user, profile }: StudyProps) {
         totalCards={cards.length}
         ratingPreviews={ratingPreviews}
         busy={ratingLockRef.current}
-        onFlip={() => {
-          setIsFlipped((value) => !value);
-          playSound('flip', settings.volume);
-        }}
+        onFlip={flipCard}
         onRate={handleRate}
         onClose={() => navigate(`/decks/${deckId}`)}
         onBury={handleBuryCurrentCard}
         onSuspend={handleSuspendCurrentCard}
         onSpeak={speak}
       />
+      {undoSnapshot && (
+        <div className="flex justify-center px-3 pb-5">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => void handleUndo()}
+            className="gap-2 rounded-full shadow-sm"
+          >
+            <Undo2 className="h-4 w-4" />
+            Hoàn tác lần chấm vừa rồi
+            <kbd className="rounded border border-zinc-300 px-1.5 py-0.5 text-[10px] font-semibold text-zinc-500 dark:border-white/20 dark:text-zinc-400">
+              U
+            </kbd>
+          </Button>
+        </div>
+      )}
     </div>
   );
 }

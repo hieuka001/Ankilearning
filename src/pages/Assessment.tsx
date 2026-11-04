@@ -46,6 +46,7 @@ interface AIQuestion {
   options: string[];
   correctAnswer: number;
   explanation: string;
+  source?: string;
   imageUrl?: string;
   imageAlt?: string;
 }
@@ -249,7 +250,8 @@ export default function Assessment({ user, profile }: AssessmentProps) {
       );
       
       if (questions.length === 0) {
-        throw new Error("AI không thể tạo đề thi lúc này. Hãy thử lại hoặc kiểm tra API Key.");
+        toast.warning("AI không tạo được câu hỏi nào từ dữ liệu này — thử chọn bộ thẻ khác, giảm số câu hỏi hoặc kiểm tra lại nội dung thẻ/ghi chú.");
+        return;
       }
 
       const emptyAnswers = new Array(questions.length).fill(null);
@@ -290,7 +292,8 @@ export default function Assessment({ user, profile }: AssessmentProps) {
       );
 
       if (!questions || questions.length === 0) {
-        throw new Error("AI không thể tạo danh sách câu hỏi. Vui lòng kiểm tra lại API Key hoặc thử mức độ/chuyên khoa khác.");
+        toast.warning("AI không tạo được câu hỏi nào — thử chuyên khoa hoặc mức độ khác, hoặc kiểm tra lại API Key.");
+        return;
       }
 
       const emptyAnswers = new Array(questions.length).fill(null);
@@ -597,6 +600,11 @@ export default function Assessment({ user, profile }: AssessmentProps) {
                           <p className="italic text-slate-400">AI chưa cung cấp giải thích cho câu hỏi này.</p>
                         )}
                       </div>
+                      {q.source && (
+                        <p className="text-sm text-slate-400 dark:text-slate-500 font-medium">
+                          Nguồn: {q.source}
+                        </p>
+                      )}
                     </div>
                   </CardContent>
                 </Card>

@@ -38,7 +38,8 @@ import { vi } from 'date-fns/locale';
 import ReactMarkdown from 'react-markdown';
 import { Switch } from '@/components/ui/switch';
 import { generateFlashcardsFromText, generateMindmap } from '../services/aiService';
-import { exportAnkiApkg } from '../services/ankiService';
+import { exportAnkiApkgDetailed } from '../services/ankiService';
+import { ConfirmDialog } from '../components/ConfirmDialog';
 import AudioButton from '../components/AudioButton';
 import {
   createInitialCardSchedule,
@@ -51,6 +52,17 @@ interface DeckDetailProps {
   user: User | null;
   profile: UserProfile | null;
 }
+
+type DeckWithAiMindmap = Deck & { aiMindmap?: string };
+
+const STATE_LABELS: Record<string, string> = {
+  new: 'Mới',
+  learning: 'Đang học',
+  review: 'Ôn tập',
+  relearning: 'Học lại',
+};
+
+const CARDS_PAGE_SIZE = 50;
 
 export default function DeckDetail({ user, profile }: DeckDetailProps) {
   const { deckId } = useParams();
@@ -73,7 +85,14 @@ export default function DeckDetail({ user, profile }: DeckDetailProps) {
   const [aiText, setAiText] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
   const [mindmap, setMindmap] = useState('');
+  const [aiMindmap, setAiMindmap] = useState('');
   const [showMindmap, setShowMindmap] = useState(true);
+  const [visibleCardCount, setVisibleCardCount] = useState(CARDS_PAGE_SIZE);
+  const [confirmAction, setConfirmAction] = useState<
+    | { kind: 'deck' }
+    | { kind: 'card'; cardId: string }
+    | null
+  >(null);
   const [isSavingMindmap, setIsSavingMindmap] = useState(false);
   const [isGeneratingMindmap, setIsGeneratingMindmap] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
@@ -84,16 +103,18 @@ export default function DeckDetail({ user, profile }: DeckDetailProps) {
 
   useEffect(() => {
     if (!deckId || !user) return;
-    
+
     setLoading(true);
+    setVisibleCardCount(CARDS_PAGE_SIZE);
     
     // Listen to deck changes
     const deckRef = doc(db, 'decks', deckId);
     const unsubscribeDeck = onSnapshot(deckRef, (snap) => {
       if (snap.exists()) {
-        const deckData = { id: snap.id, ...snap.data() } as Deck;
+        const deckData = { id: snap.id, ...snap.data() } as DeckWithAiMindmap;
         setDeck(deckData);
         setMindmap(deckData.mindmap || '');
+        setAiMindmap(deckData.aiMindmap || '');
         setEditedDeck({ 
           name: deckData.name, 
           category: deckData.category, 
@@ -127,9 +148,13 @@ export default function DeckDetail({ user, profile }: DeckDetailProps) {
     };
   }, [deckId, user, navigate]);
 
-  const handleDelete = async () => {
-    if (!deckId || !window.confirm("Bạn có chắc chắn muốn xóa bộ thẻ này?")) return;
+  const handleDelete = () => {
+    if (!deckId) return;
+    setConfirmAction({ kind: 'deck' });
+  };
 
+  const performDeleteDeck = async () => {
+    if (!deckId) return;
     try {
       await deleteDoc(doc(db, 'decks', deckId));
       toast.success("Đã xóa bộ thẻ.");
@@ -177,8 +202,13 @@ export default function DeckDetail({ user, profile }: DeckDetailProps) {
     }
   };
 
-  const handleDeleteCard = async (cardId: string) => {
-    if (!deckId || !window.confirm("Bạn có chắc chắn muốn xóa thẻ này?")) return;
+  const handleDeleteCard = (cardId: string) => {
+    if (!deckId) return;
+    setConfirmAction({ kind: 'card', cardId });
+  };
+
+  const performDeleteCard = async (cardId: string) => {
+    if (!deckId) return;
     try {
       await deleteDoc(doc(db, `decks/${deckId}/cards`, cardId));
       await updateDoc(doc(db, 'decks', deckId), {
@@ -191,6 +221,17 @@ export default function DeckDetail({ user, profile }: DeckDetailProps) {
     }
   };
 
+  const handleConfirmAction = async () => {
+    const action = confirmAction;
+    setConfirmAction(null);
+    if (!action) return;
+    if (action.kind === 'deck') {
+      await performDeleteDeck();
+    } else {
+      await performDeleteCard(action.cardId);
+    }
+  };
+
   const handleToggleSuspendCard = async (card: Flashcard) => {
     if (!deckId) return;
     const schedule = normalizeCardSchedule(card);
@@ -198,7 +239,7 @@ export default function DeckDetail({ user, profile }: DeckDetailProps) {
       suspended: !schedule.suspended,
       buriedUntil: schedule.suspended ? '' : card.buriedUntil || '',
     });
-    toast.success(schedule.suspended ? 'Đã mở suspend thẻ.' : 'Đã suspend thẻ.');
+    toast.success(schedule.suspended ? 'Đã bỏ tạm dừng thẻ.' : 'Đã tạm dừng thẻ.');
   };
 
   const handleBuryCard = async (card: Flashcard) => {
@@ -210,7 +251,7 @@ export default function DeckDetail({ user, profile }: DeckDetailProps) {
     await updateDoc(doc(db, `decks/${deckId}/cards`, card.id), {
       buriedUntil: currentlyBuried ? '' : tomorrow.toISOString(),
     });
-    toast.success(currentlyBuried ? 'Đã bỏ bury thẻ.' : 'Đã bury thẻ đến ngày mai.');
+    toast.success(currentlyBuried ? 'Đã bỏ hoãn thẻ.' : 'Đã hoãn thẻ đến ngày mai.');
   };
 
   const handleAddCard = async () => {
@@ -296,17 +337,22 @@ export default function DeckDetail({ user, profile }: DeckDetailProps) {
   };
 
   const handleGenerateMindmap = async () => {
-    if (!mindmap.trim() && cards.length === 0) {
+    if (!deckId) return;
+    if (!mindmap.trim() && !aiMindmap.trim() && cards.length === 0) {
       toast.error("Vui lòng nhập nội dung ghi chú hoặc thêm thẻ trước.");
       return;
     }
-    
+
     setIsGeneratingMindmap(true);
     try {
-      const context = mindmap.trim() || cards.map(c => `${c.front}: ${c.back}`).join('\n');
+      const context = mindmap.trim() || aiMindmap.trim() || cards.map(c => `${c.front}: ${c.back}`).join('\n');
       const generated = await generateMindmap(context, { geminiApiKey: profile?.settings?.geminiApiKey || profile?.settings?.aiApiKey });
-      setMindmap(generated);
-      toast.success("AI đã cấu trúc lại nội dung thành Mindmap!");
+      // Mindmap AI lưu ở field riêng (aiMindmap) — ghi chú gốc của người dùng giữ nguyên.
+      setAiMindmap(generated);
+      await updateDoc(doc(db, 'decks', deckId), {
+        aiMindmap: generated
+      });
+      toast.success("AI đã tạo mindmap mới! Ghi chú gốc của bạn được giữ nguyên.");
     } catch (error) {
       console.error(error);
       toast.error("Lỗi khi tạo Mindmap AI.");
@@ -322,7 +368,7 @@ export default function DeckDetail({ user, profile }: DeckDetailProps) {
       await updateDoc(doc(db, 'decks', deckId), {
         mindmap: mindmap
       });
-      toast.success("Đã lưu Mindmap & Ghi chú.");
+      toast.success("Đã lưu ghi chú.");
     } catch (error) {
       console.error(error);
       toast.error("Lỗi khi lưu Mindmap.");
@@ -355,7 +401,7 @@ export default function DeckDetail({ user, profile }: DeckDetailProps) {
         audioUrls: c.audioUrls,
       }));
 
-      const blob = await exportAnkiApkg(deck.name, ankiCards);
+      const { blob, warnings } = await exportAnkiApkgDetailed(deck.name, ankiCards);
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
@@ -366,6 +412,9 @@ export default function DeckDetail({ user, profile }: DeckDetailProps) {
       URL.revokeObjectURL(url);
       
       toast.success("Đã xuất tệp Anki thành công!", { id: toastId });
+      if (warnings.length > 0) {
+        toast.warning(warnings.join('\n'), { duration: 9000 });
+      }
     } catch (error: any) {
       console.error("Anki Export Error:", error);
       toast.error("Lỗi khi xuất tệp Anki: " + (error.message || "Lỗi không xác định"), { id: toastId });
@@ -411,6 +460,7 @@ export default function DeckDetail({ user, profile }: DeckDetailProps) {
         category: deck.category,
         cardCount: deck.cardCount,
         mindmap: deck.mindmap || '',
+        aiMindmap: (deck as DeckWithAiMindmap).aiMindmap || '',
         color: deck.color || '#4f46e5',
         tags: deck.tags || [],
         createdAt: new Date().toISOString(),
@@ -453,7 +503,29 @@ export default function DeckDetail({ user, profile }: DeckDetailProps) {
     }
   };
 
-  if (loading) return <div>Đang tải...</div>;
+  if (loading) {
+    return (
+      <div className="space-y-8" aria-busy="true">
+        <div className="flex items-center gap-4">
+          <div className="skeleton-block animate-pulse h-12 w-12 rounded-2xl bg-slate-200/70 dark:bg-white/10" />
+          <div className="space-y-2 flex-1">
+            <div className="skeleton-block animate-pulse h-8 w-72 max-w-full rounded-xl bg-slate-200/70 dark:bg-white/10" />
+            <div className="skeleton-block animate-pulse h-4 w-48 rounded-lg bg-slate-200/50 dark:bg-white/5" />
+          </div>
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 md:gap-8">
+          {[0, 1, 2].map((i) => (
+            <div key={i} className="skeleton-block animate-pulse h-36 rounded-[2rem] bg-slate-200/50 dark:bg-white/5" />
+          ))}
+        </div>
+        <div className="space-y-5">
+          {[0, 1].map((i) => (
+            <div key={i} className="skeleton-block animate-pulse h-44 rounded-[2rem] bg-slate-200/50 dark:bg-white/5" />
+          ))}
+        </div>
+      </div>
+    );
+  }
   if (!deck) return null;
 
   const dueCards = cards.filter(card => isCardDue(card)).length;
@@ -519,7 +591,7 @@ export default function DeckDetail({ user, profile }: DeckDetailProps) {
               {isExporting ? <Loader2 className="animate-spin text-indigo-500 w-4.5 h-4.5 md:w-5 md:h-5" /> : <FileDown className="w-4.5 h-4.5 md:w-5 md:h-5 text-slate-400 group-hover:text-indigo-500 transition-colors" />}
             </Button>
             {deck.ownerId === user?.uid ? (
-              <Button variant="outline" size="icon" className="h-10 w-10 md:h-12 md:w-12 rounded-xl md:rounded-2xl border-slate-200 dark:border-slate-800 dark:bg-slate-900 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors group" onClick={handleDelete}>
+              <Button variant="outline" size="icon" title="Xóa bộ thẻ" aria-label="Xóa bộ thẻ" className="h-10 w-10 md:h-12 md:w-12 rounded-xl md:rounded-2xl border-slate-200 dark:border-slate-800 dark:bg-slate-900 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors group" onClick={handleDelete}>
                 <Trash2 className="w-4.5 h-4.5 md:w-5 md:h-5 text-slate-400 group-hover:text-red-500 transition-colors" />
               </Button>
             ) : deck.isPublic && (
@@ -665,7 +737,7 @@ export default function DeckDetail({ user, profile }: DeckDetailProps) {
                   className="flex-1 sm:flex-none border-primary/20 text-primary hover:bg-primary/5 h-10 px-5 rounded-xl font-bold gap-2 transition-all active:scale-95 text-xs"
                 >
                   {isGeneratingMindmap ? <Loader2 className="animate-spin" size={16} /> : <Sparkles size={16} />}
-                  AI CẤU TRÚC LẠI
+                  TẠO MINDMAP AI
                 </Button>
                 <Button 
                   onClick={handleSaveMindmap} 
@@ -681,6 +753,7 @@ export default function DeckDetail({ user, profile }: DeckDetailProps) {
         </div>
         
         {showMindmap && (
+          <div className="space-y-4">
           <Card className="bg-white dark:bg-slate-900 border-none shadow-2xl rounded-2xl md:rounded-[2rem] overflow-hidden animate-in fade-in zoom-in duration-300">
             <div className="p-1 bg-slate-50 dark:bg-slate-800/50 border-b border-slate-100 dark:border-white/5 flex items-center gap-2 px-4 md:px-6 py-2 md:py-3">
               <div className="flex gap-1">
@@ -709,6 +782,20 @@ export default function DeckDetail({ user, profile }: DeckDetailProps) {
               </div>
             )}
           </Card>
+          {aiMindmap.trim() && (
+            <Card className="premium-panel border-none shadow-2xl rounded-2xl md:rounded-[2rem] overflow-hidden animate-in fade-in zoom-in duration-300">
+              <div className="p-1 bg-primary/5 dark:bg-primary/10 border-b border-primary/10 flex items-center gap-2 px-4 md:px-6 py-2 md:py-3">
+                <Sparkles size={14} className="text-primary" />
+                <span className="text-[8px] md:text-[10px] font-black text-primary uppercase tracking-[0.2em]">Mindmap do AI tạo — tách riêng khỏi ghi chú của bạn</span>
+              </div>
+              <div className="p-6 md:p-10">
+                <div className="markdown-body prose prose-slate dark:prose-invert max-w-none prose-headings:font-black prose-headings:tracking-tight prose-p:font-medium prose-p:leading-relaxed prose-li:font-medium prose-strong:text-primary dark:prose-strong:text-primary">
+                  <ReactMarkdown>{aiMindmap}</ReactMarkdown>
+                </div>
+              </div>
+            </Card>
+          )}
+          </div>
         )}
       </section>
 
@@ -723,11 +810,11 @@ export default function DeckDetail({ user, profile }: DeckDetailProps) {
         </div>
 
         <div className="grid gap-5">
-          {cards.map((card) => {
+          {cards.slice(0, visibleCardCount).map((card) => {
             const schedule = normalizeCardSchedule(card);
             const due = isCardDue(card);
             const buried = isCardBuried(card);
-            const statusLabel = schedule.suspended ? 'Suspend' : buried ? 'Bury hôm nay' : due ? 'Cần ôn ngay' : schedule.state;
+            const statusLabel = schedule.suspended ? 'Đã tạm dừng' : buried ? 'Hoãn hôm nay' : due ? 'Cần ôn ngay' : (STATE_LABELS[schedule.state] || schedule.state);
             const statusClass = schedule.suspended
               ? 'bg-zinc-200 text-zinc-700 dark:bg-white/10 dark:text-zinc-300'
               : buried
@@ -747,7 +834,7 @@ export default function DeckDetail({ user, profile }: DeckDetailProps) {
                     <div className="flex flex-col gap-2">
                       {card.imageUrl && (
                         <div className="w-24 h-24 rounded-2xl overflow-hidden flex-shrink-0 border-2 border-slate-50 dark:border-slate-800 shadow-md">
-                          <img src={card.imageUrl} alt="" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                          <img src={card.imageUrl} alt="" loading="lazy" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
                         </div>
                       )}
                       {!card.imageUrl && <div className="w-24 h-24 rounded-2xl bg-slate-50 dark:bg-slate-800 border-2 border-dashed border-slate-100 dark:border-slate-800 flex items-center justify-center text-slate-300 dark:text-slate-700"><ImageIcon size={28} /></div>}
@@ -776,7 +863,7 @@ export default function DeckDetail({ user, profile }: DeckDetailProps) {
                       <div className="flex flex-col gap-2">
                         {card.backImageUrl && (
                           <div className="w-24 h-24 rounded-2xl overflow-hidden flex-shrink-0 border-2 border-slate-50 dark:border-slate-800 shadow-md">
-                            <img src={card.backImageUrl} alt="" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                            <img src={card.backImageUrl} alt="" loading="lazy" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
                           </div>
                         )}
                       </div>
@@ -802,16 +889,16 @@ export default function DeckDetail({ user, profile }: DeckDetailProps) {
                     <div className="flex flex-col items-end gap-4">
                       {deck.ownerId === user?.uid && (
                         <div className="flex items-center gap-1 bg-slate-50 dark:bg-slate-800/50 p-1 rounded-xl">
-                          <Button variant="ghost" size="icon" className="h-9 w-9 text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 rounded-lg transition-colors" onClick={() => setEditingCard(card)}>
+                          <Button variant="ghost" size="icon" title="Sửa thẻ" aria-label="Sửa thẻ" className="h-9 w-9 text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 rounded-lg transition-colors" onClick={() => setEditingCard(card)}>
                             <Edit2 size={16} />
                           </Button>
-                          <Button variant="ghost" size="icon" className="h-9 w-9 text-slate-400 hover:text-sky-600 dark:hover:text-sky-400 rounded-lg transition-colors" onClick={() => handleBuryCard(card)}>
+                          <Button variant="ghost" size="icon" title="Hoãn hôm nay" aria-label="Hoãn hôm nay" className="h-9 w-9 text-slate-400 hover:text-sky-600 dark:hover:text-sky-400 rounded-lg transition-colors" onClick={() => handleBuryCard(card)}>
                             <Calendar size={16} />
                           </Button>
-                          <Button variant="ghost" size="icon" className="h-9 w-9 text-slate-400 hover:text-amber-600 dark:hover:text-amber-400 rounded-lg transition-colors" onClick={() => handleToggleSuspendCard(card)}>
+                          <Button variant="ghost" size="icon" title="Tạm dừng thẻ" aria-label="Tạm dừng thẻ" className="h-9 w-9 text-slate-400 hover:text-amber-600 dark:hover:text-amber-400 rounded-lg transition-colors" onClick={() => handleToggleSuspendCard(card)}>
                             <Lock size={16} />
                           </Button>
-                          <Button variant="ghost" size="icon" className="h-9 w-9 text-slate-400 hover:text-red-500 rounded-lg transition-colors" onClick={() => handleDeleteCard(card.id)}>
+                          <Button variant="ghost" size="icon" title="Xóa thẻ" aria-label="Xóa thẻ" className="h-9 w-9 text-slate-400 hover:text-red-500 rounded-lg transition-colors" onClick={() => handleDeleteCard(card.id)}>
                             <Trash2 size={16} />
                           </Button>
                         </div>
@@ -827,7 +914,41 @@ export default function DeckDetail({ user, profile }: DeckDetailProps) {
             );
           })}
         </div>
+
+        {cards.length > 0 && (
+          <div className="flex flex-col items-center gap-3 pt-2">
+            <p className="text-xs font-bold text-slate-400 uppercase tracking-widest">
+              Đang hiển thị {Math.min(visibleCardCount, cards.length)}/{cards.length} thẻ
+            </p>
+            {visibleCardCount < cards.length && (
+              <Button
+                variant="outline"
+                onClick={() => setVisibleCardCount((count) => count + CARDS_PAGE_SIZE)}
+                className="h-11 px-8 rounded-2xl font-bold border-slate-200 dark:border-white/10 dark:text-white"
+              >
+                Xem thêm thẻ (còn {cards.length - visibleCardCount})
+              </Button>
+            )}
+          </div>
+        )}
       </div>
+
+      <ConfirmDialog
+        open={confirmAction !== null}
+        onOpenChange={(open) => {
+          if (!open) setConfirmAction(null);
+        }}
+        title={confirmAction?.kind === 'deck' ? 'Xóa bộ thẻ này?' : 'Xóa thẻ này?'}
+        description={
+          confirmAction?.kind === 'deck'
+            ? 'Toàn bộ thẻ và tiến độ học trong bộ thẻ sẽ bị xóa. Hành động này không thể hoàn tác.'
+            : 'Thẻ sẽ bị xóa khỏi bộ thẻ cùng với tiến độ học của nó. Hành động này không thể hoàn tác.'
+        }
+        confirmLabel="Xóa"
+        cancelLabel="Hủy"
+        destructive
+        onConfirm={handleConfirmAction}
+      />
 
       {/* Edit Card Modal */}
       <Dialog open={!!editingCard} onOpenChange={(open) => !open && setEditingCard(null)}>

@@ -1,6 +1,7 @@
 export type CardState = 'new' | 'learning' | 'review' | 'relearning';
 export type SchedulerRating = 'again' | 'hard' | 'good' | 'easy';
 export type StepUnit = 'minute' | 'day';
+export type LeechAction = 'suspend' | 'none';
 
 export interface SchedulerStep {
   amount: number;
@@ -32,6 +33,8 @@ export interface SchedulerConfig {
   hardMultiplier: number;
   easyBonus: number;
   minimumEaseFactor: number;
+  leechThreshold: number;
+  leechAction: LeechAction;
 }
 
 export interface SchedulerConfigInput extends Partial<Omit<SchedulerConfig, 'initialStability'>> {
@@ -59,6 +62,7 @@ export interface SchedulerCardInput {
   reps?: number;
   repetitions?: number;
   lastReview?: string | { reviewTime?: string };
+  firstReviewAt?: string;
   createdAt?: string;
   updatedAt?: string;
   suspended?: boolean;
@@ -87,6 +91,7 @@ export interface NormalizedSchedulerCard {
   reps: number;
   repetitions: number;
   lastReview?: string;
+  firstReviewAt?: string;
   createdAt: string;
   updatedAt: string;
   suspended: boolean;
@@ -140,6 +145,8 @@ export interface SchedulerResult {
   newDifficulty: number;
   previousRetrievability: number;
   scheduledDelay: SchedulerStep | { amount: number; unit: 'day' };
+  leech?: boolean;
+  firstReviewAt?: string;
   updatedCard: NormalizedSchedulerCard;
   reviewLog: ReviewLog;
 }

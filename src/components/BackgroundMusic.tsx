@@ -29,7 +29,8 @@ export default function BackgroundMusic() {
 
     const audio = new Audio(BACKGROUND_MUSIC_SRC);
     audio.loop = true;
-    audio.preload = 'auto';
+    // Only download the music file when the user actually turns music on.
+    audio.preload = 'none';
     audio.volume = 0;
     audioRef.current = audio;
 

@@ -38,39 +38,19 @@ export enum OperationType {
 
 export interface FirestoreErrorInfo {
   error: string;
+  /** Firestore/JS SDK error code, e.g. 'permission-denied' — never user identifiers. */
+  code: string;
   operationType: OperationType;
   path: string | null;
-  authInfo: {
-    userId: string | undefined;
-    email: string | null | undefined;
-    emailVerified: boolean | undefined;
-    isAnonymous: boolean | undefined;
-    tenantId: string | null | undefined;
-    providerInfo: {
-      providerId: string;
-      displayName: string | null;
-      email: string | null;
-      photoUrl: string | null;
-    }[];
-  }
 }
 
 export function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
+  // Log only the error code/message plus the operation and path. User
+  // identifiers (uid, email, provider info) must never reach the console log.
+  const code = (error as { code?: unknown } | null)?.code;
   const errInfo: FirestoreErrorInfo = {
     error: error instanceof Error ? error.message : String(error),
-    authInfo: {
-      userId: auth.currentUser?.uid,
-      email: auth.currentUser?.email,
-      emailVerified: auth.currentUser?.emailVerified,
-      isAnonymous: auth.currentUser?.isAnonymous,
-      tenantId: auth.currentUser?.tenantId,
-      providerInfo: auth.currentUser?.providerData.map(provider => ({
-        providerId: provider.providerId,
-        displayName: provider.displayName,
-        email: provider.email,
-        photoUrl: provider.photoURL
-      })) || []
-    },
+    code: typeof code === 'string' ? code : 'unknown',
     operationType,
     path
   }

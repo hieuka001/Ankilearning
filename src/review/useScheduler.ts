@@ -22,7 +22,7 @@ export function useScheduler(schedulerConfig?: SchedulerConfigInput) {
       previousState: previousSchedule.state,
       newState: result.state,
     };
-    const schedulerUpdate: Partial<Flashcard> = {
+    const schedulerUpdate: Partial<Flashcard> & { firstReviewAt?: string } = {
       state: result.state,
       due: result.due,
       interval: result.interval,
@@ -38,6 +38,8 @@ export function useScheduler(schedulerConfig?: SchedulerConfigInput) {
       lapses: result.lapses,
       reps: result.reps,
       repetitions: result.repetitions,
+      suspended: result.updatedCard.suspended,
+      ...(result.firstReviewAt ? { firstReviewAt: result.firstReviewAt } : {}),
       lastReview: historyEntry,
       updatedAt: reviewTime.toISOString(),
     };
@@ -47,6 +49,7 @@ export function useScheduler(schedulerConfig?: SchedulerConfigInput) {
       historyEntry,
       schedulerUpdate,
       previousSchedule,
+      leech: result.leech === true,
     };
   }, [schedulerConfig]);
 

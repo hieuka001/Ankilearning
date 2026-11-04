@@ -35,32 +35,64 @@ service cloud.firestore {
         && incoming().uid == userId
         && incoming().email is string
         && incoming().keys().hasAll(['uid', 'email']);
+      // Only fields the app actually writes may change (diff-based whitelist).
+      // Notably 'role' is NOT in this list, so it can never be self-assigned.
       allow update: if isOwner(userId)
         && incoming().uid == userId
-        && incoming().email == existing().email;
+        && incoming().email == existing().email
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'uid', 'email', 'displayName', 'photoURL', 'updatedAt',
+          'settings',
+          'streak', 'streakDays', 'lastStudyDate',
+          'totalCardsLearned', 'totalCardsReviewed', 'totalQuizzesCompleted',
+          'totalStudyTimeMinutes', 'lastQuizCompletedAt',
+          'badges', 'achievements', 'xp', 'level'
+        ]);
         
       // Nested collections for user data
       match /sessions/{sessionId} {
-        allow read, write: if isOwner(userId);
+        allow read: if isOwner(userId);
+        allow create, update: if isOwner(userId)
+          && incoming().keys().size() <= 60;
+        allow delete: if isOwner(userId);
       }
       match /examResults/{resultId} {
-        allow read, write: if isOwner(userId);
+        allow read: if isOwner(userId);
+        allow create, update: if isOwner(userId)
+          && incoming().keys().size() <= 60;
+        allow delete: if isOwner(userId);
       }
       match /cardProgress/{progressId} {
         allow read: if isOwner(userId);
-        allow create, update, delete: if isOwner(userId)
+        allow create, update: if isOwner(userId)
           && incoming().userId == userId
           && incoming().deckId is string
           && incoming().cardId is string;
+        // Delete has its own rule: incoming() is null on delete, so folding
+        // delete into the create/update condition makes it always false.
+        allow delete: if isOwner(userId);
       }
       match /notifications/{notificationId} {
         allow read: if isOwner(userId);
-        allow create, update, delete: if isOwner(userId)
+        allow create, update: if isOwner(userId)
           && incoming().userId == userId
           && incoming().id == notificationId
           && incoming().title is string
           && incoming().message is string;
+        // Delete split out for the same reason as cardProgress above.
+        allow delete: if isOwner(userId);
       }
+    }
+
+    // --- Leaderboard (written by Settings when the profile changes) ---
+    // Only the public display fields the app actually writes are allowed
+    // (Settings writes {username, avatar}); scores can never be written here.
+    match /leaderboards/global/users/{userId} {
+      allow get, list: if isSignedIn();
+      allow create, update: if isOwner(userId)
+        && incoming().keys().hasOnly(['username', 'avatar'])
+        && incoming().username is string;
+      allow delete: if false;
     }
 
     match /review_logs/{logId} {
