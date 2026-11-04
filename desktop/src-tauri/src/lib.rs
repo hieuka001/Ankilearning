@@ -1,4 +1,4 @@
-// AnkiLearning native shell (desktop + iOS).
+// AnkiLearning native shell (desktop + iOS + Android).
 //
 // The window shows a local splash page (desktop/dist-fallback) that redirects
 // to the live web app, so content/features are always the latest web deploy —
@@ -9,6 +9,16 @@
 // a native "update now?" prompt, then downloads, installs and relaunches.
 // The updater and single-instance plugins are desktop-only, so both their
 // dependencies and every use site are gated out of mobile builds.
+//
+// On Android there is no store/updater to lean on, so the shell updates
+// itself the sideload way (see `check_for_android_update` below): on startup
+// it polls a tiny JSON manifest hosted in the fixed `android-latest` GitHub
+// release, and when the manifest announces a newer shell version it shows
+// the same native prompt as desktop. Accepting downloads the new APK into
+// the app cache and opens the Android system package installer for it via
+// the project-local apk-installer plugin — the user confirms with one tap
+// on the system install screen, which is as automatic as Android allows an
+// app outside Google Play to be.
 //
 // The main window is declared in tauri.conf.json with `"create": false`, so
 // Tauri does NOT build it automatically. Building it by hand in `setup` below
@@ -55,10 +65,12 @@ use tauri_plugin_opener::OpenerExt;
 
 #[cfg(desktop)]
 use tauri::webview::NewWindowResponse;
-#[cfg(desktop)]
+#[cfg(any(desktop, target_os = "android"))]
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 #[cfg(desktop)]
 use tauri_plugin_updater::UpdaterExt;
+#[cfg(target_os = "android")]
+use tauri_plugin_apk_installer::ApkInstallerExt;
 
 const APP_HOME: &str = "https://learning-with-trunghieu.vercel.app";
 /// In-webview URL the web app navigates to when the user asks to sign in
@@ -412,6 +424,147 @@ async fn check_for_shell_update(app: tauri::AppHandle) {
     }
 }
 
+/// Fixed GitHub release that always carries `android-latest.json`, the
+/// manifest the Android shell polls for updates. A separate versioned
+/// release (`android-v<version>`) holds each APK the manifest points to.
+#[cfg(target_os = "android")]
+const ANDROID_UPDATE_MANIFEST_URL: &str =
+    "https://github.com/hieuka001/Ankilearning/releases/download/android-latest/android-latest.json";
+
+/// Shape of `android-latest.json`, published by the Android build workflow.
+#[cfg(target_os = "android")]
+#[derive(serde::Deserialize)]
+struct AndroidUpdateManifest {
+    version: String,
+    #[serde(rename = "apkUrl")]
+    apk_url: String,
+    #[serde(default)]
+    notes: String,
+}
+
+/// Split a dotted version ("1.0.4", tolerating a leading "v" and
+/// non-numeric suffixes) into numeric parts for comparison.
+#[cfg(target_os = "android")]
+fn parse_version_parts(version: &str) -> Vec<u64> {
+    version
+        .trim()
+        .trim_start_matches('v')
+        .split('.')
+        .map(|part| {
+            part.chars()
+                .take_while(|c| c.is_ascii_digit())
+                .collect::<String>()
+                .parse()
+                .unwrap_or(0)
+        })
+        .collect()
+}
+
+/// True when `candidate` is strictly newer than `current`.
+#[cfg(target_os = "android")]
+fn version_is_newer(candidate: &str, current: &str) -> bool {
+    let candidate_parts = parse_version_parts(candidate);
+    let current_parts = parse_version_parts(current);
+    for i in 0..candidate_parts.len().max(current_parts.len()) {
+        let candidate_part = candidate_parts.get(i).copied().unwrap_or(0);
+        let current_part = current_parts.get(i).copied().unwrap_or(0);
+        if candidate_part != current_part {
+            return candidate_part > current_part;
+        }
+    }
+    false
+}
+
+/// Android self-update check, mirroring the desktop updater's behaviour:
+/// poll the manifest, and only if it announces a strictly newer shell
+/// version, ask the user with a native dialog. Runs on a background thread;
+/// every network or parse failure is swallowed silently, exactly like the
+/// desktop check, so an offline start never surfaces anything.
+#[cfg(target_os = "android")]
+fn check_for_android_update(app: tauri::AppHandle) {
+    let manifest = (|| -> Option<AndroidUpdateManifest> {
+        let body = ureq::get(ANDROID_UPDATE_MANIFEST_URL)
+            .timeout(std::time::Duration::from_secs(20))
+            .call()
+            .ok()?
+            .into_string()
+            .ok()?;
+        serde_json::from_str(&body).ok()
+    })();
+    let Some(manifest) = manifest else {
+        return;
+    };
+    if !version_is_newer(&manifest.version, env!("CARGO_PKG_VERSION")) {
+        return;
+    }
+
+    let notes = if manifest.notes.trim().is_empty() {
+        String::new()
+    } else {
+        format!("\n{}", manifest.notes.trim())
+    };
+    let message = format!(
+        "Đã có phiên bản AnkiLearning {} mới cho Android.{}\nBạn có muốn cập nhật ngay không?",
+        manifest.version, notes
+    );
+    let apk_url = manifest.apk_url.clone();
+    let dialog_app = app.clone();
+    app.dialog()
+        .message(message)
+        .title("Cập nhật AnkiLearning")
+        .kind(MessageDialogKind::Info)
+        .buttons(MessageDialogButtons::OkCancelCustom(
+            "Cập nhật ngay".to_string(),
+            "Để sau".to_string(),
+        ))
+        .show(move |accepted| {
+            if accepted {
+                let download_app = dialog_app.clone();
+                let download_url = apk_url.clone();
+                std::thread::spawn(move || {
+                    download_and_install_android_update(download_app, download_url);
+                });
+            }
+        });
+}
+
+/// Download the update APK into the app cache directory, then hand it to
+/// the system package installer through the apk-installer plugin (which
+/// wraps it in a FileProvider content URI with the apk MIME type — the
+/// opener plugin cannot build that intent: it fires a bare ACTION_VIEW
+/// with no type and no read grant). If the download or the plugin call
+/// fails, fall back to opening the APK URL in the system browser, where
+/// the user can download it and tap it to install. The system installer
+/// itself asks the user to confirm the install (and, the first time, to
+/// allow installs from AnkiLearning) — Android gives sideloaded apps no
+/// quieter path, by design.
+#[cfg(target_os = "android")]
+fn download_and_install_android_update(app: tauri::AppHandle, apk_url: String) {
+    let downloaded = (|| -> Option<std::path::PathBuf> {
+        let response = ureq::get(&apk_url)
+            .timeout(std::time::Duration::from_secs(300))
+            .call()
+            .ok()?;
+        let cache_dir = app.path().app_cache_dir().ok()?;
+        std::fs::create_dir_all(&cache_dir).ok()?;
+        let apk_path = cache_dir.join("AnkiLearning-update.apk");
+        let mut reader = response.into_reader();
+        let mut file = std::fs::File::create(&apk_path).ok()?;
+        std::io::copy(&mut reader, &mut file).ok()?;
+        Some(apk_path)
+    })();
+
+    if let Some(apk_path) = downloaded {
+        let request = tauri_plugin_apk_installer::InstallApkRequest {
+            path: apk_path.to_string_lossy().into_owned(),
+        };
+        if app.apk_installer().install_apk(request).is_ok() {
+            return;
+        }
+    }
+    let _ = app.opener().open_url(&apk_url, None::<&str>);
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = tauri::Builder::default();
@@ -433,12 +586,21 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_opener::init());
 
-    // Desktop only: the Tauri updater supports Windows/Linux/macOS, and the
-    // dialog plugin is only used for its update prompt.
+    // Desktop and Android: the dialog plugin shows the shell-update prompt
+    // on both (desktop: Tauri updater prompt; Android: this shell's own
+    // manifest-check prompt). iOS has no shell-update prompt, so the plugin
+    // stays out of the iOS graph.
+    #[cfg(any(desktop, target_os = "android"))]
+    let builder = builder.plugin(tauri_plugin_dialog::init());
+
+    // Desktop only: the Tauri updater supports Windows/Linux/macOS only.
     #[cfg(desktop)]
-    let builder = builder
-        .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_updater::Builder::new().build());
+    let builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
+
+    // Android only: local plugin that opens the system package installer
+    // for an update APK the shell downloaded (self-update flow below).
+    #[cfg(target_os = "android")]
+    let builder = builder.plugin(tauri_plugin_apk_installer::init());
 
     builder
         .setup(|app| {
@@ -466,6 +628,18 @@ pub fn run() {
                 let handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
                     check_for_shell_update(handle).await;
+                });
+            }
+
+            // Android self-update: poll the update manifest shortly after
+            // startup on a background thread (ureq is blocking). The check
+            // is silent unless a newer shell version actually exists.
+            #[cfg(target_os = "android")]
+            {
+                let handle = app.handle().clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_secs(5));
+                    check_for_android_update(handle);
                 });
             }
             Ok(())

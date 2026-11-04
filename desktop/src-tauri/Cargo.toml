@@ -34,6 +34,17 @@ tauri-plugin-dialog = "2"
 tauri-plugin-single-instance = "2"
 tauri-plugin-updater = "2"
 
+# Android-only dependencies for the shell self-update (the desktop shell
+# uses the Tauri updater instead): the dialog plugin shows the update
+# prompt, ureq is the small blocking HTTPS client used to fetch the update
+# manifest and download the APK, and the project-local apk-installer plugin
+# opens the system package installer for the downloaded APK through the
+# FileProvider the generated Android app already ships.
+[target.'cfg(target_os = "android")'.dependencies]
+tauri-plugin-dialog = "2"
+tauri-plugin-apk-installer = { path = "../plugins/tauri-plugin-apk-installer" }
+ureq = "2"
+
 [profile.release]
 opt-level = "s"
 lto = true

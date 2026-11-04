@@ -1,0 +1,14 @@
+[package]
+name = "tauri-plugin-apk-installer"
+version = "0.1.0"
+description = "AnkiLearning local Tauri plugin: opens the Android system package installer for a downloaded APK (used by the shell self-update flow)."
+edition = "2021"
+links = "tauri-plugin-apk-installer"
+
+[dependencies]
+tauri = { version = "2", default-features = false }
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+
+[build-dependencies]
+tauri-plugin = "2"

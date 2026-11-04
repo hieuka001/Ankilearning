@@ -1,0 +1,364 @@
+name: Android Build (Signed APK)
+
+# Builds the Tauri Android shell on an Ubuntu runner and packages it as
+# AnkiLearning-Android.apk (arm64-v8a + armeabi-v7a in one APK), signed
+# with the project's own upload keystore so every release can install
+# OVER the previous one — that signature continuity is what makes the
+# in-app self-update work. The keystore itself never enters the repo: it
+# is decoded from the ANDROID_KEYSTORE_BASE64 secret at build time.
+#
+# The generated Gradle project (desktop/src-tauri/gen/android) is created
+# by `tauri android init` inside CI on every run and is not committed.
+# Because init regenerates it, the release signing config and the
+# manifest guarantees (REQUEST_INSTALL_PACKAGES permission, the
+# ankilearning:// deep-link intent filter) are patched into the generated
+# project by a dedicated step below, with hard assertions — the same
+# lesson the iOS pipeline learned when a generated file silently lost
+# the deep-link scheme in 1.0.3.
+#
+# After the versioned release (android-v<version>) is published, the
+# workflow also refreshes `android-latest.json` inside the fixed
+# `android-latest` release; the Android shell polls that exact URL at
+# startup to learn whether a newer shell exists.
+#
+# Required GitHub secrets (created once by the project owner):
+#   ANDROID_KEYSTORE_BASE64    base64 of the upload keystore (.jks)
+#   ANDROID_KEYSTORE_PASSWORD  keystore (store) password
+#   ANDROID_KEY_ALIAS          key alias inside the keystore
+#   ANDROID_KEY_PASSWORD       key password (may equal the store password)
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'android-v*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: android-build-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-android:
+    name: Build signed Android APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Rust for Android targets
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android, armv7-linux-androideabi
+
+      - name: Cache Rust build
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      # The Tauri CLI is locked to 2.12.4 in desktop/package-lock.json and
+      # its generated project template uses compileSdk/targetSdk 37, so
+      # platform 37 + build-tools 37 are what must exist. The NDK is
+      # pinned to the r27 LTS; Tauri only requires NDK_HOME to point at a
+      # complete NDK (r25+).
+      - name: Install Android SDK packages (platform 37, build-tools, NDK)
+        run: |
+          set -euo pipefail
+          yes | sdkmanager --licenses >/dev/null 2>&1 || true
+          sdkmanager \
+            "platforms;android-37" \
+            "build-tools;37.0.0" \
+            "platform-tools" \
+            "ndk;27.2.12479018"
+          echo "NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018" >> "$GITHUB_ENV"
+          ls "$ANDROID_HOME/ndk/27.2.12479018" >/dev/null
+
+      - name: Install desktop shell dependencies
+        working-directory: desktop
+        run: npm ci
+
+      - name: Read shell version
+        id: shell
+        working-directory: desktop
+        run: |
+          set -euo pipefail
+          VERSION="$(python3 -c 'import json; print(json.load(open("src-tauri/tauri.conf.json"))["version"])')"
+          test -n "$VERSION"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "AnkiLearning shell version: $VERSION"
+
+      - name: Show toolchain versions
+        working-directory: desktop
+        run: |
+          java -version
+          rustc --version
+          cargo --version
+          node --version
+          npm --version
+          npx tauri --version
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          echo "NDK_HOME=$NDK_HOME"
+
+      # Tauri reads the application id (com.hieuka001.ankilearning) from
+      # tauri.conf.json. --ci keeps init non-interactive.
+      - name: Generate Android project in CI
+        working-directory: desktop
+        run: |
+          set -euo pipefail
+          npx tauri android init --ci
+          test -d src-tauri/gen/android
+          find src-tauri/gen/android -maxdepth 3 -type f \
+            \( -name '*.kts' -o -name 'AndroidManifest.xml' -o -name '*.gradle' \) \
+            | sort | sed -n '1,80p'
+
+      # Decode the upload keystore and wire release signing into the
+      # generated project. The signingConfigs block follows Tauri's
+      # official Android signing documentation (keystore.properties +
+      # gradle reading it); the properties file additionally carries the
+      # store/key passwords as separate keys, and the gradle snippet
+      # prefers them and falls back to the documented single `password`
+      # key. The same step guarantees the two manifest entries the shell
+      # relies on, and fails loudly if any anchor is missing.
+      - name: Configure release signing and patch generated manifest
+        working-directory: desktop
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          test -n "$ANDROID_KEYSTORE_BASE64"
+          test -n "$ANDROID_KEYSTORE_PASSWORD"
+          test -n "$ANDROID_KEY_ALIAS"
+          test -n "$ANDROID_KEY_PASSWORD"
+
+          KEYSTORE_FILE="$RUNNER_TEMP/upload-keystore.jks"
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > "$KEYSTORE_FILE"
+          test -s "$KEYSTORE_FILE"
+          echo "Keystore decoded: $(stat -c%s "$KEYSTORE_FILE") bytes"
+
+          GEN_ANDROID="src-tauri/gen/android"
+          {
+            echo "keyAlias=$ANDROID_KEY_ALIAS"
+            echo "password=$ANDROID_KEYSTORE_PASSWORD"
+            echo "storePassword=$ANDROID_KEYSTORE_PASSWORD"
+            echo "keyPassword=$ANDROID_KEY_PASSWORD"
+            echo "storeFile=$KEYSTORE_FILE"
+          } > "$GEN_ANDROID/keystore.properties"
+          echo "keystore.properties written (values not printed)."
+
+          python3 - <<'PYEOF'
+          import pathlib, sys
+
+          gen = pathlib.Path("src-tauri/gen/android")
+
+          # ---- Gradle: release signing config (per Tauri signing docs) ----
+          gradle_path = gen / "app" / "build.gradle.kts"
+          gradle = gradle_path.read_text()
+
+          if "FileInputStream" not in gradle:
+              anchor = "import java.util.Properties"
+              assert anchor in gradle, "import anchor not found in build.gradle.kts"
+              gradle = gradle.replace(
+                  anchor, anchor + "\nimport java.io.FileInputStream", 1
+              )
+
+          if 'create("release")' not in gradle:
+              signing_lines = [
+                  "    signingConfigs {",
+                  '        create("release") {',
+                  '            val keystorePropertiesFile = rootProject.file("keystore.properties")',
+                  "            val keystoreProperties = Properties()",
+                  "            if (keystorePropertiesFile.exists()) {",
+                  "                keystoreProperties.load(FileInputStream(keystorePropertiesFile))",
+                  "            }",
+                  '            keyAlias = keystoreProperties["keyAlias"] as String',
+                  '            keyPassword = (keystoreProperties["keyPassword"] ?: keystoreProperties["password"]) as String',
+                  '            storeFile = file(keystoreProperties["storeFile"] as String)',
+                  '            storePassword = (keystoreProperties["storePassword"] ?: keystoreProperties["password"]) as String',
+                  "        }",
+                  "    }",
+                  "",
+                  "",
+              ]
+              signing_block = "\n".join(signing_lines)
+              anchor = "    buildTypes {"
+              assert anchor in gradle, "buildTypes anchor not found in build.gradle.kts"
+              gradle = gradle.replace(anchor, signing_block + anchor, 1)
+
+          if "signingConfig = signingConfigs" not in gradle:
+              anchor = '        getByName("release") {'
+              assert anchor in gradle, "release buildType anchor not found in build.gradle.kts"
+              gradle = gradle.replace(
+                  anchor,
+                  anchor + '\n            signingConfig = signingConfigs.getByName("release")',
+                  1,
+              )
+          gradle_path.write_text(gradle)
+          assert 'create("release")' in gradle and "signingConfig = signingConfigs" in gradle
+          print("build.gradle.kts: release signing config patched and verified.")
+
+          # ---- Manifest: install-packages permission + deep-link filter ----
+          manifest_path = gen / "app" / "src" / "main" / "AndroidManifest.xml"
+          manifest = manifest_path.read_text()
+
+          if "REQUEST_INSTALL_PACKAGES" not in manifest:
+              anchor = '<uses-permission android:name="android.permission.INTERNET" />'
+              assert anchor in manifest, "INTERNET permission anchor not found in AndroidManifest.xml"
+              manifest = manifest.replace(
+                  anchor,
+                  anchor + '\n    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />',
+                  1,
+              )
+              print("AndroidManifest.xml: REQUEST_INSTALL_PACKAGES permission added.")
+          else:
+              print("AndroidManifest.xml: REQUEST_INSTALL_PACKAGES already present.")
+
+          if "ankilearning" not in manifest:
+              intent_filter = '''
+              <intent-filter>
+                  <action android:name="android.intent.action.VIEW" />
+                  <category android:name="android.intent.category.DEFAULT" />
+                  <category android:name="android.intent.category.BROWSABLE" />
+                  <data android:scheme="ankilearning" />
+              </intent-filter>'''
+              anchor = "</intent-filter>"
+              assert anchor in manifest, "intent-filter anchor not found in AndroidManifest.xml"
+              manifest = manifest.replace(anchor, anchor + intent_filter, 1)
+              print("AndroidManifest.xml: ankilearning deep-link intent filter injected.")
+          else:
+              print("AndroidManifest.xml: ankilearning deep link already present (CLI injected it).")
+
+          manifest_path.write_text(manifest)
+          final = manifest_path.read_text()
+          assert "REQUEST_INSTALL_PACKAGES" in final, "permission missing after patch"
+          assert "ankilearning" in final, "deep-link scheme missing after patch"
+          print("AndroidManifest.xml: guarantees verified.")
+          PYEOF
+
+      # --target accepts multiple ABI targets (ArgAction::Append in the
+      # CLI): one APK containing arm64-v8a + armeabi-v7a covers virtually
+      # every physical Android phone. Without --split-per-abi the CLI
+      # emits a single combined APK.
+      - name: Build signed release APK with Tauri CLI
+        working-directory: desktop
+        run: npx tauri android build --apk --target aarch64 armv7
+
+      - name: Collect and verify APK
+        id: apk
+        working-directory: desktop
+        env:
+          OUTPUT_APK: ${{ github.workspace }}/AnkiLearning-Android.apk
+          EXPECTED_VERSION: ${{ steps.shell.outputs.version }}
+        run: |
+          set -euo pipefail
+          rm -f "$OUTPUT_APK"
+
+          APK_SOURCE="$(find src-tauri/gen/android/app/build/outputs/apk -type f -name '*-release.apk' -print | sort | sed -n '1p')"
+          if [ -z "$APK_SOURCE" ]; then
+            echo "No release APK found; outputs tree:" >&2
+            find src-tauri/gen/android/app/build/outputs -type f | sort | sed -n '1,120p' >&2
+            exit 1
+          fi
+          echo "Using APK produced by Tauri CLI: $APK_SOURCE"
+          cp "$APK_SOURCE" "$OUTPUT_APK"
+          test -s "$OUTPUT_APK"
+
+          APKSIGNER="$ANDROID_HOME/build-tools/37.0.0/apksigner"
+          AAPT2="$ANDROID_HOME/build-tools/37.0.0/aapt2"
+
+          # The APK must be signed — and with the project keystore, not
+          # the Android debug key (whose DN is well known).
+          "$APKSIGNER" verify --print-certs "$OUTPUT_APK" | tee "$RUNNER_TEMP/apksigner-certs.txt"
+          if grep -q "Android Debug" "$RUNNER_TEMP/apksigner-certs.txt"; then
+            echo "::error::APK is signed with the Android DEBUG key — release signing patch did not apply."
+            exit 1
+          fi
+
+          BADGING="$("$AAPT2" dump badging "$OUTPUT_APK")"
+          echo "$BADGING" | sed -n '1,3p'
+          echo "$BADGING" | grep -q "name='com.hieuka001.ankilearning'"
+          echo "$BADGING" | grep -q "versionName='$EXPECTED_VERSION'"
+
+          # Both phone ABIs must be inside the single APK.
+          unzip -l "$OUTPUT_APK" | grep -q "lib/arm64-v8a/"
+          unzip -l "$OUTPUT_APK" | grep -q "lib/armeabi-v7a/"
+
+          ls -la "$OUTPUT_APK"
+          shasum -a 256 "$OUTPUT_APK"
+          echo "path=$OUTPUT_APK" >> "$GITHUB_OUTPUT"
+
+      - name: Upload signed APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AnkiLearning-Android
+          path: ${{ steps.apk.outputs.path }}
+          if-no-files-found: error
+          retention-days: 30
+
+      # Publish a Release for the two deliberate distribution paths: an
+      # android-v<version> tag, or a manual run from main. Manual runs
+      # from other branches still produce the workflow artifact above,
+      # but no Release.
+      - name: Attach APK to GitHub Release
+        if: ${{ startsWith(github.ref, 'refs/tags/android-v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/android-v') && github.ref_name || format('android-v{0}', steps.shell.outputs.version) }}
+          name: ${{ startsWith(github.ref, 'refs/tags/android-v') && github.ref_name || format('android-v{0}', steps.shell.outputs.version) }}
+          body: |
+            AnkiLearning ${{ steps.shell.outputs.version }} cho Android — **APK đã ký bằng keystore của dự án** (arm64-v8a + armeabi-v7a).
+
+            Cài lần đầu: tải file APK về điện thoại, mở file và cho phép "cài ứng dụng từ nguồn này" khi Android hỏi. Từ lần sau, app tự kiểm tra bản mới khi mở và hiện hộp thoại cập nhật ngay trong app — không cần tải lại thủ công.
+
+            Bản này không qua Google Play nên mọi bản cập nhật phải ký bằng cùng một keystore; mất keystore là không cài đè lên được nữa.
+          files: ${{ steps.apk.outputs.path }}
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # The shell's self-update polls android-latest.json from the fixed
+      # `android-latest` release. Refresh it only after the versioned
+      # release above exists, so the manifest never points at a missing
+      # APK.
+      - name: Update android-latest update manifest
+        if: ${{ startsWith(github.ref, 'refs/tags/android-v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SHELL_VERSION: ${{ steps.shell.outputs.version }}
+        run: |
+          set -euo pipefail
+          APK_URL="https://github.com/hieuka001/Ankilearning/releases/download/android-v${SHELL_VERSION}/AnkiLearning-Android.apk"
+          cat > android-latest.json <<JSON
+          {"version": "${SHELL_VERSION}", "apkUrl": "${APK_URL}", "notes": "AnkiLearning ${SHELL_VERSION} cho Android."}
+          JSON
+          cat android-latest.json
+          if ! gh release view android-latest >/dev/null 2>&1; then
+            gh release create android-latest \
+              --title "Android — manifest cập nhật tự động" \
+              --notes "Release cố định chứa android-latest.json mà app Android đọc khi khởi động để kiểm tra bản vỏ mới. Đừng xoá release này; file json được workflow Android ghi đè mỗi lần phát hành."
+          fi
+          gh release upload android-latest android-latest.json --clobber
+          echo "android-latest manifest now points at $APK_URL"

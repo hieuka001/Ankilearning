@@ -91,6 +91,80 @@ Lưu ý quan trọng về file IPA:
   chứng chỉ + provisioning profile của tài khoản đó. Workflow IPA chưa ký ở
   trên không thay thế được bước này.
 
+## Bản Android — APK đã ký + tự cập nhật trong app
+
+Workflow riêng `.github/workflows/android-build.yml` build bản Android trên
+máy Ubuntu của GitHub Actions (JDK 17, Android SDK platform/build-tools 37,
+NDK r27, Rust targets Android). Project Gradle (`desktop/src-tauri/gen/android`)
+được lệnh `npx tauri android init --ci` sinh ngay trong CI mỗi lần chạy —
+không commit vào repo. Sau khi init, workflow vá cấu hình ký release và hai
+đảm bảo trong AndroidManifest sinh ra (quyền `REQUEST_INSTALL_PACKAGES` và
+intent-filter deep link `ankilearning://`) kèm bước kiểm tra cứng — nếu vá
+không trúng thì build dừng ngay chứ không ra APK thiếu ký/thiếu deep link.
+
+Kết quả là **một file `AnkiLearning-Android.apk` duy nhất** chứa cả hai kiến
+trúc **arm64-v8a + armeabi-v7a** (hầu hết điện thoại Android vật lý đều chạy
+được), và APK **đã ký bằng keystore riêng của dự án**.
+
+Cách chạy:
+
+1. Vào GitHub → Actions → **Android Build (Signed APK)** → **Run workflow**
+   (chạy từ nhánh `main`), hoặc push tag dạng `android-v<version>`, ví dụ
+   `android-v1.0.4`.
+2. Tải file `AnkiLearning-Android.apk` ở mục Artifacts của lần chạy. Nếu chạy
+   bằng tag hoặc chạy tay từ `main`, file cũng được đính kèm vào GitHub
+   Release tên `android-v<version>`, đồng thời workflow cập nhật manifest
+   `android-latest.json` trong release cố định `android-latest` (xem cơ chế
+   tự cập nhật bên dưới).
+
+### Cài lần đầu trên điện thoại
+
+Tải file APK về điện thoại, mở file và **cho phép "cài ứng dụng từ nguồn
+này"** khi Android hỏi. Đây là bước bắt buộc một lần với mọi app cài ngoài
+Google Play (sideload), không phải lỗi của app.
+
+### Cơ chế tự cập nhật — giống bản PC, không qua Play Store
+
+1. Mỗi lần phát hành, workflow ghi đè `android-latest.json` trong release cố
+   định **`android-latest`**, dạng:
+   `{"version": "1.0.4", "apkUrl": "https://github.com/hieuka001/Ankilearning/releases/download/android-v1.0.4/AnkiLearning-Android.apk", "notes": "..."}`.
+2. Vài giây sau khi mở app, **chỉ bản Android** (mã `cfg(target_os =
+   "android")` trong `src-tauri/src/lib.rs`) tải manifest này về và so sánh
+   phiên bản với bản đang chạy. Mới hơn thì hiện hộp thoại native "Có bản
+   AnkiLearning mới — **Cập nhật ngay / Để sau**". Mọi lỗi mạng/tải đều im
+   lặng như luồng kiểm tra của bản PC.
+3. Chọn **Cập nhật ngay**: app tự tải APK về thư mục cache của chính nó rồi
+   mở **trình cài đặt hệ thống của Android** cho file đó, thông qua plugin
+   nội bộ `desktop/plugins/tauri-plugin-apk-installer/` — plugin này dùng
+   FileProvider mà project sinh ra đã khai sẵn để tạo content URI, kèm đúng
+   loại file APK và quyền đọc tạm (plugin opener thường không làm được việc
+   này vì nó chỉ bắn intent xem file trần, không MIME, không quyền đọc).
+   Người dùng chỉ phải **chạm "Cài đặt" một lần** trên màn hình của Android.
+   Lần cập nhật đầu tiên, Android có thể hỏi thêm quyền cho phép AnkiLearning
+   tự cài bản cập nhật — đây là quy định của Android cho app sideload, app
+   không bỏ qua được. Nếu khâu tải/mở trình cài đặt lỗi, app dự phòng bằng
+   cách mở `apkUrl` trong trình duyệt hệ thống để tải và chạm cài thủ công.
+4. `versionCode` của APK do Tauri CLI tự suy từ phiên bản vỏ (1.0.4 →
+   1000004) nên chỉ cần tăng `version` là Android nhận bản mới là bản nâng
+   cấp hợp lệ.
+
+### Keystore là bí mật sống còn của việc cập nhật
+
+Android chỉ cho cài đè bản mới lên bản cũ khi **cùng chữ ký** và versionCode
+cao hơn. Keystore tải lên (upload keystore) được giải mã trong CI từ secret
+`ANDROID_KEYSTORE_BASE64`; file `keystore.properties` sinh ra trong CI (không
+commit) trỏ cấu hình ký release của Gradle tới nó. **Mất keystore hoặc mất
+mật khẩu = không bản APK nào cập nhật đè được nữa** — mọi người dùng sẽ phải
+gỡ app cài lại từ đầu và mất trạng thái cục bộ. Hãy giữ một bản sao lưu
+keystore + mật khẩu ở nơi an toàn ngoài GitHub. Bốn secret workflow cần:
+
+| Secret | Nội dung |
+| --- | --- |
+| `ANDROID_KEYSTORE_BASE64` | Chuỗi base64 của file keystore (`.jks`) |
+| `ANDROID_KEYSTORE_PASSWORD` | Mật khẩu keystore (store password) |
+| `ANDROID_KEY_ALIAS` | Tên alias của khoá trong keystore |
+| `ANDROID_KEY_PASSWORD` | Mật khẩu của khoá (có thể trùng mật khẩu keystore) |
+
 ## Phát hành bản desktop mới
 
 Chỉ cần khi thay đổi vỏ (icon, cấu hình cửa sổ, plugin...):

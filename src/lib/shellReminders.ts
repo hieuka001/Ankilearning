@@ -175,10 +175,12 @@ export async function syncShellReminders(
   // Shell-side scheduling only exists on mobile (iOS): the notification
   // plugin fires immediately on desktop, so only sync from the iOS shell.
   const navPlatform = typeof navigator !== 'undefined' ? navigator.platform || '' : '';
-  const isIosShell =
+  const isMobileShell =
     /^(iPhone|iPad|iPod)/.test(navPlatform) ||
-    (navPlatform === 'MacIntel' && typeof navigator !== 'undefined' && navigator.maxTouchPoints > 1);
-  if (!isIosShell) return;
+    (navPlatform === 'MacIntel' && typeof navigator !== 'undefined' && navigator.maxTouchPoints > 1) ||
+    // Android WebView reports an ARM Linux platform; desktop Linux is x86_64.
+    /^Linux (arm|aarch)/.test(navPlatform);
+  if (!isMobileShell) return;
 
   let cardList = cards;
   if (!cardList) {
