@@ -3,7 +3,7 @@
  * Only same-origin GET requests are handled; Firestore / Google API traffic
  * is never intercepted or cached.
  */
-const CACHE_VERSION = 'ankilearning-v2';
+const CACHE_VERSION = 'ankilearning-v3';
 const STATIC_CACHE = `${CACHE_VERSION}-static`;
 const APP_SHELL = ['/', '/index.html', '/manifest.webmanifest', '/icon.svg'];
 

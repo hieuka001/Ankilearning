@@ -515,6 +515,11 @@ function LoginScreen({ onLogin }: { onLogin: () => void }) {
 
   return (
     <div className="app-surface aurora-bg min-h-screen p-4 font-sans text-foreground md:p-8">
+      <div
+        aria-hidden="true"
+        className="pointer-events-none absolute inset-0 bg-cover bg-center opacity-55 dark:opacity-25"
+        style={{ backgroundImage: 'url(/img/bg-study.webp)', zIndex: -2 }}
+      />
       <span className="aurora-blob aurora-blob-1" aria-hidden="true" />
       <span className="aurora-blob aurora-blob-2" aria-hidden="true" />
       <span className="aurora-blob aurora-blob-3" aria-hidden="true" />

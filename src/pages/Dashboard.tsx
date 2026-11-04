@@ -273,8 +273,17 @@ export default function Dashboard({ user, profile, recentSessions }: DashboardPr
       <motion.section
         variants={cardMotion}
         transition={{ duration: 0.42, ease: [0.22, 1, 0.36, 1] }}
-        className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-emerald-600 via-emerald-500 to-teal-500 text-white shadow-xl shadow-emerald-600/25"
+        className="relative overflow-hidden rounded-2xl text-white shadow-xl shadow-emerald-600/25"
       >
+        <img
+          src="/img/bg-study.webp"
+          alt=""
+          aria-hidden="true"
+          loading="lazy"
+          decoding="async"
+          className="absolute inset-0 h-full w-full object-cover"
+        />
+        <div className="absolute inset-0 bg-gradient-to-br from-emerald-600/85 via-emerald-500/75 to-teal-500/85" />
         <div className="relative flex items-center gap-6 p-6 md:p-8">
           <div className="min-w-0 flex-1">
             <h2 className="text-2xl font-bold md:text-3xl">

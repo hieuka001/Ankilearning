@@ -7,14 +7,14 @@
 @custom-variant dark (&:is(.dark *));
 
 @theme {
-  --font-sans: "Geist Variable", "Noto Sans SC", "Inter", "Segoe UI", "PingFang SC", "Microsoft YaHei", Arial, sans-serif;
-  --font-serif: "Geist Variable", "Noto Sans SC", "Inter", "Segoe UI", "PingFang SC", "Microsoft YaHei", Arial, sans-serif;
+  --font-sans: "Be Vietnam Pro", "Geist Variable", "Geist", "Noto Sans SC", ui-sans-serif, system-ui, sans-serif;
+  --font-serif: "Be Vietnam Pro", "Geist Variable", "Geist", "Noto Sans SC", ui-sans-serif, system-ui, sans-serif;
 }
 
 @theme inline {
-  --font-heading: "Geist Variable", "Noto Sans SC", "Inter", "Segoe UI", "PingFang SC", "Microsoft YaHei", Arial, sans-serif;
-  --font-sans: "Geist Variable", "Noto Sans SC", "Inter", "Segoe UI", "PingFang SC", "Microsoft YaHei", Arial, sans-serif;
-  --font-serif: "Geist Variable", "Noto Sans SC", "Inter", "Segoe UI", "PingFang SC", "Microsoft YaHei", Arial, sans-serif;
+  --font-heading: "Be Vietnam Pro", "Geist Variable", "Geist", "Noto Sans SC", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: "Be Vietnam Pro", "Geist Variable", "Geist", "Noto Sans SC", ui-sans-serif, system-ui, sans-serif;
+  --font-serif: "Be Vietnam Pro", "Geist Variable", "Geist", "Noto Sans SC", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "SFMono-Regular", "Cascadia Code", "Consolas", monospace;
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-border: var(--sidebar-border);
@@ -126,6 +126,7 @@
 @layer base {
   * {
     @apply border-border outline-ring/50;
+    -webkit-tap-highlight-color: transparent;
   }
 
   html {
@@ -137,8 +138,10 @@
 
   body {
     @apply bg-background text-foreground antialiased;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
     font-feature-settings: "cv02", "cv03", "cv04", "cv11";
-    text-rendering: geometricPrecision;
+    text-rendering: optimizeLegibility;
   }
 
   ::selection {
@@ -208,6 +211,13 @@
 
   .animate-page-in {
     animation: pageIn 320ms ease-out both;
+  }
+
+  /* Skip layout/paint for off-screen grid cells and list rows; the
+     intrinsic size keeps scrollbar geometry stable while they are skipped. */
+  .cv-auto {
+    content-visibility: auto;
+    contain-intrinsic-size: auto 320px;
   }
 
   .card-hover {
@@ -437,6 +447,7 @@
     height: 100vh;
     height: 100dvh;
     overflow: hidden;
+    overscroll-behavior-y: none;
     background:
       linear-gradient(112deg, rgba(5, 150, 105, 0.13) 0%, rgba(5, 150, 105, 0) 35%),
       linear-gradient(248deg, rgba(20, 184, 166, 0.105) 0%, rgba(20, 184, 166, 0) 40%),
@@ -1466,6 +1477,10 @@
    (the global block above already freezes animations; this also removes
    the hover lift / press transform so nothing moves at all). */
 @media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+
   .aurora-blob,
   .animate-page-in,
   .stagger-children > *,

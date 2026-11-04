@@ -25,6 +25,7 @@ import { generateFlashcardsFromText } from '../services/aiService';
 import { playSound } from '../lib/sounds';
 import { useSettings } from '../contexts/SettingsContext';
 import { createInitialCardSchedule } from '../lib/spacedRepetition';
+import { CATEGORY_PRESETS, getCategoryArt } from '../lib/categoryArt';
 import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 
 // Dùng worker PDF đóng gói cùng app (không phụ thuộc CDN ngoài).
@@ -319,6 +320,37 @@ export default function CreateDeck({ user, profile }: CreateDeckProps) {
                   onChange={(e) => setTags(e.target.value)}
                   className="h-12 px-5 rounded-2xl border-slate-200 dark:border-white/10 dark:bg-white/5 dark:text-white focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none transition-all font-medium"
                 />
+              </div>
+            </div>
+            <div className="space-y-3">
+              <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em]">Chọn nhanh danh mục</label>
+              <div className="flex flex-wrap gap-2">
+                {CATEGORY_PRESETS.map((preset) => (
+                  <button
+                    key={preset.label}
+                    type="button"
+                    onClick={() => setCategory(preset.label)}
+                    className={`rounded-full px-4 py-2 text-xs font-bold transition-all ${
+                      category === preset.label
+                        ? 'bg-primary text-white shadow-lg shadow-primary/25'
+                        : 'bg-slate-100 text-slate-600 hover:bg-slate-200 dark:bg-white/5 dark:text-slate-300 dark:hover:bg-white/10'
+                    }`}
+                  >
+                    {preset.label}
+                  </button>
+                ))}
+              </div>
+              <div className="relative overflow-hidden rounded-2xl border border-slate-200 dark:border-white/10">
+                <img
+                  src={getCategoryArt(category)}
+                  alt="Xem trước ảnh bìa theo danh mục"
+                  loading="lazy"
+                  decoding="async"
+                  className="h-32 w-full object-cover"
+                />
+                <span className="absolute bottom-3 left-4 rounded-lg bg-black/45 px-3 py-1 text-[10px] font-bold uppercase tracking-widest text-white backdrop-blur-sm">
+                  Ảnh bìa: {category || 'Chung'}
+                </span>
               </div>
             </div>
             <div className="space-y-3">

@@ -47,6 +47,7 @@ import {
   isCardBuried,
   normalizeCardSchedule,
 } from '../lib/spacedRepetition';
+import { getCategoryArt } from '../lib/categoryArt';
 
 interface DeckDetailProps {
   user: User | null;
@@ -532,6 +533,16 @@ export default function DeckDetail({ user, profile }: DeckDetailProps) {
 
   return (
     <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
+      <div className="relative h-24 md:h-32 overflow-hidden rounded-[2rem] shadow-lg">
+        <img
+          src={getCategoryArt(deck.category)}
+          alt=""
+          loading="lazy"
+          decoding="async"
+          className="h-full w-full object-cover"
+        />
+        <div className="pointer-events-none absolute inset-0 bg-gradient-to-r from-emerald-600/30 via-emerald-500/10 to-teal-500/25" />
+      </div>
       <header className="flex flex-col md:flex-row md:items-center justify-between gap-6 px-1">
         <div className="flex items-start md:items-center gap-4 md:gap-5">
           <Link to="/decks" className="mt-1 md:mt-0">
@@ -826,7 +837,7 @@ export default function DeckDetail({ user, profile }: DeckDetailProps) {
             const backAudio = card.backAudio || [];
 
             return (
-            <Card key={card.id} className="border-none shadow-xl hover:shadow-2xl transition-all duration-500 group overflow-hidden bg-white dark:bg-slate-900 rounded-[2rem]">
+            <Card key={card.id} className="cv-auto border-none shadow-xl hover:shadow-2xl transition-all duration-500 group overflow-hidden bg-white dark:bg-slate-900 rounded-[2rem]">
               <CardContent className="p-0 flex items-stretch">
                 <div className="w-2 bg-indigo-100 dark:bg-indigo-900 group-hover:bg-indigo-600 transition-all duration-500" />
                 <div className="flex-1 p-6 grid grid-cols-1 md:grid-cols-2 gap-8">

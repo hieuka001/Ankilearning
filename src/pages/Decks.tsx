@@ -22,6 +22,7 @@ import { useSettings } from '../contexts/SettingsContext';
 import { importAnkiApkg } from '../services/ankiService';
 import { uploadAnkiMedia } from '../services/ankiMediaStorage';
 import { createInitialCardSchedule, isCardDue } from '../lib/spacedRepetition';
+import { getCategoryArt } from '../lib/categoryArt';
 import { addDoc } from 'firebase/firestore';
 import { useRef } from 'react';
 
@@ -331,8 +332,23 @@ export default function Decks({ user }: DecksProps) {
 
             return (
             <Link key={deck.id} to={`/decks/${deck.id}`}>
-              <Card className="card-hover deck-card-premium hover:shadow-2xl hover:-translate-y-2 transition-all duration-500 border shadow-xl group overflow-hidden h-full flex flex-col rounded-[2rem]">
-                <div className="h-2 w-full opacity-40 group-hover:opacity-100 transition-opacity" style={{ backgroundColor: deck.color || '#4f46e5' }} />
+              <Card className="cv-auto card-hover deck-card-premium hover:shadow-2xl hover:-translate-y-2 transition-all duration-500 border shadow-xl group overflow-hidden h-full flex flex-col rounded-[2rem]">
+                <div className="relative h-28 w-full shrink-0 overflow-hidden">
+                  <img
+                    src={getCategoryArt(deck.category)}
+                    alt=""
+                    loading="lazy"
+                    decoding="async"
+                    className="h-full w-full object-cover"
+                  />
+                  <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-transparent via-transparent to-card" />
+                  <span
+                    className="absolute bottom-3 left-8 text-[10px] font-bold px-3 py-1.5 rounded-lg uppercase tracking-widest backdrop-blur-sm"
+                    style={{ backgroundColor: `${deck.color || '#4f46e5'}26`, color: deck.color || '#4f46e5' }}
+                  >
+                    {deck.category}
+                  </span>
+                </div>
                 <CardHeader className="pb-4 p-8">
                   <div className="flex justify-between items-start">
                     <div 
