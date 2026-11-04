@@ -1,0 +1,191 @@
+name: iOS Build (Unsigned IPA)
+
+# Builds the Tauri iOS shell on a macOS runner and packages it as
+# AnkiLearning-iOS-unsigned.ipa. The build deliberately uses Tauri CLI's
+# --no-sign mode: no Apple Developer account, certificate, provisioning
+# profile, development team or Apple secret is required. The resulting IPA
+# cannot be installed as-is; AltStore/SideStore re-sign it with the user's
+# personal Apple ID at install time.
+#
+# The generated Xcode project (desktop/src-tauri/gen/apple) is created by
+# `tauri ios init` inside CI on every run and is not committed to the repo.
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'ios-v*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ios-build-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-ios:
+    name: Build unsigned iOS IPA
+    runs-on: macos-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: Set up Rust for iOS device target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios
+
+      - name: Cache Rust build
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri
+
+      - name: Install desktop shell dependencies
+        working-directory: desktop
+        run: npm ci
+
+      - name: Read shell version
+        id: shell
+        working-directory: desktop
+        run: |
+          set -euo pipefail
+          VERSION="$(python3 -c 'import json; print(json.load(open("src-tauri/tauri.conf.json"))["version"])')"
+          test -n "$VERSION"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "AnkiLearning shell version: $VERSION"
+
+      - name: Show toolchain versions
+        working-directory: desktop
+        run: |
+          xcodebuild -version
+          rustc --version
+          cargo --version
+          node --version
+          npm --version
+          npx tauri --version
+
+      # Tauri reads the bundle identifier (com.hieuka001.ankilearning) from
+      # tauri.conf.json. The iOS init command has no team/bundle-id argument;
+      # --ci keeps it non-interactive and no signing identity is configured.
+      - name: Generate iOS project in CI
+        working-directory: desktop
+        run: |
+          set -euo pipefail
+          npx tauri ios init --ci
+          test -d src-tauri/gen/apple
+          find src-tauri/gen/apple -maxdepth 2 -type f | sort | sed -n '1,120p'
+
+      # @tauri-apps/cli is locked to 2.12.4 in desktop/package-lock.json.
+      # --no-sign was added to `tauri ios build` in CLI 2.11: for a device
+      # target it archives with code signing skipped and creates the IPA
+      # directly from the archived .app (Payload/<App>.app). --target aarch64
+      # is the physical-device target, not a simulator target.
+      - name: Build unsigned device IPA with Tauri CLI
+        working-directory: desktop
+        run: npx tauri ios build --ci --no-sign --target aarch64
+
+      - name: Collect and verify IPA
+        id: ipa
+        working-directory: desktop
+        env:
+          OUTPUT_IPA: ${{ github.workspace }}/AnkiLearning-iOS-unsigned.ipa
+        run: |
+          set -euo pipefail
+          rm -f "$OUTPUT_IPA"
+
+          IPA_SOURCE="$(find src-tauri/gen/apple/build -type f -name '*.ipa' -print | sort | sed -n '1p')"
+          if [ -n "$IPA_SOURCE" ]; then
+            echo "Using IPA produced by Tauri CLI: $IPA_SOURCE"
+            cp "$IPA_SOURCE" "$OUTPUT_IPA"
+          else
+            echo "Tauri CLI did not leave an .ipa; packaging the archived device .app manually."
+            APP_SOURCE="$(find src-tauri/gen/apple/build -type d -path '*.xcarchive/Products/Applications/*.app' -print | sort | sed -n '1p')"
+            if [ -z "$APP_SOURCE" ]; then
+              APP_SOURCE="$(find src-tauri/gen/apple/build -type d -name '*.app' -print | grep -v 'iphonesimulator' | sort | sed -n '1p' || true)"
+            fi
+            if [ -z "$APP_SOURCE" ]; then
+              echo "No device .app found under src-tauri/gen/apple/build:" >&2
+              find src-tauri/gen/apple/build -maxdepth 5 -print | sort | sed -n '1,240p' >&2
+              exit 1
+            fi
+
+            PACKAGE_DIR="$RUNNER_TEMP/ankilearning-ipa-package"
+            rm -rf "$PACKAGE_DIR"
+            mkdir -p "$PACKAGE_DIR/Payload"
+            cp -R "$APP_SOURCE" "$PACKAGE_DIR/Payload/"
+            (cd "$PACKAGE_DIR" && /usr/bin/zip -qry "$OUTPUT_IPA" Payload)
+          fi
+
+          test -s "$OUTPUT_IPA"
+
+          # Verify this is a physical-device (iphoneos), arm64 app — never
+          # silently ship a simulator build as an iPhone IPA.
+          INSPECT_DIR="$RUNNER_TEMP/ankilearning-ipa-inspect"
+          rm -rf "$INSPECT_DIR"
+          mkdir -p "$INSPECT_DIR"
+          /usr/bin/unzip -q "$OUTPUT_IPA" -d "$INSPECT_DIR"
+          APP_PATH="$(find "$INSPECT_DIR/Payload" -maxdepth 1 -type d -name '*.app' -print | sort | sed -n '1p')"
+          test -n "$APP_PATH"
+          INFO_PLIST="$APP_PATH/Info.plist"
+          SDK_NAME="$(/usr/libexec/PlistBuddy -c 'Print :DTSDKName' "$INFO_PLIST")"
+          echo "Built SDK: $SDK_NAME"
+          case "$SDK_NAME" in
+            iphoneos*) ;;
+            *)
+              echo "Refusing to publish a non-device build (SDK: $SDK_NAME)." >&2
+              exit 1
+              ;;
+          esac
+
+          EXECUTABLE_NAME="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$INFO_PLIST")"
+          EXECUTABLE_PATH="$APP_PATH/$EXECUTABLE_NAME"
+          /usr/bin/file "$EXECUTABLE_PATH"
+          /usr/bin/lipo "$EXECUTABLE_PATH" -verify_arch arm64
+
+          if /usr/bin/codesign -dv "$APP_PATH" >/dev/null 2>&1; then
+            echo "::warning::codesign reports signature details for the app; inspect them before treating this build as fully unsigned."
+          else
+            echo "codesign reports no usable signature, as expected for --no-sign."
+          fi
+
+          /usr/bin/unzip -l "$OUTPUT_IPA" | sed -n '1,40p'
+          /usr/bin/shasum -a 256 "$OUTPUT_IPA"
+          echo "path=$OUTPUT_IPA" >> "$GITHUB_OUTPUT"
+
+      - name: Upload unsigned IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AnkiLearning-iOS-unsigned
+          path: ${{ steps.ipa.outputs.path }}
+          if-no-files-found: error
+          retention-days: 30
+
+      # Publish a Release for the two deliberate distribution paths: an
+      # ios-v<version> tag, or a manual run from main. Manual runs from other
+      # branches still produce the workflow artifact above, but no Release.
+      - name: Attach IPA to GitHub Release
+        if: ${{ startsWith(github.ref, 'refs/tags/ios-v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/ios-v') && github.ref_name || format('ios-v{0}', steps.shell.outputs.version) }}
+          name: ${{ startsWith(github.ref, 'refs/tags/ios-v') && github.ref_name || format('ios-v{0}', steps.shell.outputs.version) }}
+          body: |
+            AnkiLearning ${{ steps.shell.outputs.version }} for iPhone — **unsigned IPA**.
+
+            This file cannot be installed directly. Install it with AltStore or SideStore, which re-sign it with your personal Apple ID. A free Apple ID signature normally lasts 7 days and must be refreshed.
+
+            TestFlight/App Store distribution is not included: that requires an Apple Developer account and a separate signed build.
+          files: ${{ steps.ipa.outputs.path }}
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -36,6 +36,9 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
+    "iOS": {
+      "minimumSystemVersion": "15.0"
+    },
     "longDescription": "Ứng dụng học bằng thẻ ghi nhớ (flashcards) với thuật toán lặp lại ngắt quãng FSRS, AI Gemini, đồng bộ đám mây. Bản máy tính chạy trực tuyến cùng dữ liệu với bản web và điện thoại.",
     "shortDescription": "AnkiLearning — học bằng thẻ ghi nhớ với thuật toán FSRS",
     "targets": [
@@ -59,6 +62,14 @@
   "identifier": "com.hieuka001.ankilearning",
   "plugins": {
     "deep-link": {
+      "mobile": [
+        {
+          "appLink": false,
+          "scheme": [
+            "ankilearning"
+          ]
+        }
+      ],
       "desktop": {
         "schemes": [
           "ankilearning"

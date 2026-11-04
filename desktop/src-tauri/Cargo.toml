@@ -4,18 +4,29 @@ version = "1.0.2"
 description = "AnkiLearning desktop shell"
 edition = "2021"
 
+[lib]
+name = "ankilearning_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-deep-link = "2"
-tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
-tauri-plugin-single-instance = "2"
-tauri-plugin-updater = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+# Desktop-only plugins. The updater supports Windows/Linux/macOS only, and
+# single-instance has no mobile equivalent; dialog is only used by the
+# desktop updater prompt. Keeping them out of the mobile dependency graph
+# entirely (in addition to #[cfg(desktop)] at every use site) is what lets
+# the iOS target compile.
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+tauri-plugin-dialog = "2"
+tauri-plugin-single-instance = "2"
+tauri-plugin-updater = "2"
 
 [profile.release]
 opt-level = "s"

@@ -1,7 +1,8 @@
-# AnkiLearning Desktop (Tauri)
+# AnkiLearning Desktop & iOS (Tauri)
 
 Bản AnkiLearning "như phần mềm thật" cho laptop/máy tính: file cài Windows
-`.exe`/`.msi`, macOS `.dmg`, Linux `.deb`/`.AppImage`.
+`.exe`/`.msi`, macOS `.dmg`, Linux `.deb`/`.AppImage`. Cùng một vỏ Tauri nay
+cũng build được bản iPhone dạng IPA chưa ký — xem mục iOS bên dưới.
 
 ## Cách hoạt động
 
@@ -41,6 +42,38 @@ Bản AnkiLearning "như phần mềm thật" cho laptop/máy tính: file cài W
   tối đa (`maximized`) thay vì khổ 1280×820 như trước.
 - **User-Agent riêng:** vỏ gắn UA Chrome/Edge chuẩn kèm hậu tố
   `AnkiLearningDesktop/1.0.1` để phía web nhận diện được bản máy tính.
+
+## Bản iOS — IPA chưa ký (unsigned)
+
+Workflow riêng `.github/workflows/ios-build.yml` build bản iPhone trên máy
+macOS của GitHub Actions. Project Xcode (`desktop/src-tauri/gen/apple`) được
+lệnh `npx tauri ios init --ci` sinh ngay trong CI mỗi lần chạy — không commit
+vào repo. Sau đó workflow chạy
+`npx tauri ios build --ci --no-sign --target aarch64` để tạo IPA cho máy thật
+(arm64) mà **không cần bất kỳ secret Apple nào**: không tài khoản Apple
+Developer, không chứng chỉ, không provisioning profile, không development
+team.
+
+Cách chạy:
+
+1. Vào GitHub → Actions → **iOS Build (Unsigned IPA)** → **Run workflow**
+   (chạy từ nhánh `main`), hoặc push tag dạng `ios-v<version>`, ví dụ
+   `ios-v1.0.2`.
+2. Tải file `AnkiLearning-iOS-unsigned.ipa` ở mục Artifacts của lần chạy.
+   Nếu chạy bằng tag hoặc chạy tay từ `main`, file cũng được đính kèm vào
+   GitHub Release tên `ios-v<version>`.
+
+Lưu ý quan trọng về file IPA:
+
+- Đây là bản **chưa ký** nên iPhone không cài trực tiếp được. Cài bằng
+  **AltStore** hoặc **SideStore**: các công cụ này tự ký lại file bằng Apple
+  ID cá nhân của chính người cài ngay lúc cài đặt.
+- Ký bằng Apple ID miễn phí thường chỉ có hiệu lực **7 ngày**; hết hạn phải
+  gia hạn/ký lại (AltStore/SideStore có cơ chế tự làm mới khi đủ điều kiện).
+- Muốn đưa app lên **TestFlight** hoặc App Store thì bắt buộc có tài khoản
+  **Apple Developer (99 USD/năm)** và phải build một bản riêng có ký số bằng
+  chứng chỉ + provisioning profile của tài khoản đó. Workflow IPA chưa ký ở
+  trên không thay thế được bước này.
 
 ## Phát hành bản desktop mới
 
