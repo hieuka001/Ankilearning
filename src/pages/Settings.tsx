@@ -453,7 +453,7 @@ export default function Settings({ user, profile }: SettingsProps) {
             <Sparkles className="h-4 w-4" />
           </div>
           <div>
-            <p className="text-sm font-semibold text-zinc-950 dark:text-white">Gemini 2.5 Flash</p>
+            <p className="text-sm font-semibold text-zinc-950 dark:text-white">Gemini 3.8 Flash</p>
             <p className="text-xs text-zinc-500 dark:text-zinc-400">AI đang dùng trong toàn bộ app</p>
           </div>
         </div>

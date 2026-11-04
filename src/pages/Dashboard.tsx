@@ -321,7 +321,7 @@ export default function Dashboard({ user, profile, recentSessions }: DashboardPr
             <div className="mb-8 flex flex-wrap items-center gap-3">
               <span className="inline-flex items-center gap-2 rounded-full border border-black/[0.08] bg-white/70 px-3 py-1 text-xs font-medium text-zinc-600 shadow-sm">
                 <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
-                Gemini 2.5 Flash đang hoạt động
+                Gemini 3.8 Flash đang hoạt động
               </span>
             </div>
 

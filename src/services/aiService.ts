@@ -1,7 +1,10 @@
 import { GoogleGenAI, Type } from "@google/genai";
 
-const GEMINI_MODEL = "gemini-2.5-flash";
-const GEMINI_FALLBACK_MODEL = "gemini-2.5-flash-lite";
+// Gemini 3.8 Flash: model Flash mới nhất, có free tier (giới hạn ~20 lượt/ngày
+// cho mỗi project ở tier miễn phí). Khi hết quota, callAI tự chuyển sang
+// 3.5 Flash-Lite (free tier ~500 lượt/ngày) — xem isQuotaGeminiError.
+const GEMINI_MODEL = "gemini-3.8-flash";
+const GEMINI_FALLBACK_MODEL = "gemini-3.5-flash-lite";
 const GEMINI_MODELS = [GEMINI_MODEL, GEMINI_FALLBACK_MODEL];
 
 type GeminiKeyConfig =
@@ -69,6 +72,9 @@ const buildGeminiConfig = (config: any = {}) => ({
   maxOutputTokens: config.maxOutputTokens,
   responseMimeType: config.responseMimeType,
   responseSchema: config.responseSchema,
+  // Gemini 3.x tính token "suy nghĩ" vào cùng ngân sách output; mức low giữ
+  // tốc độ nhanh và chừa ngân sách cho JSON kết quả.
+  thinkingConfig: { thinkingLevel: "low" } as any,
 });
 
 const getErrorStatus = (error: any) =>
@@ -550,7 +556,7 @@ RULES:
   Keep doses, units and numbers EXACTLY as in the material.
 Return JSON matching the provided schema.`,
         temperature: 0.4,
-        maxOutputTokens: count * 220,
+        maxOutputTokens: count * 320,
         responseMimeType: "application/json",
         responseSchema: FLASHCARD_RESPONSE_SCHEMA,
       },
@@ -588,7 +594,7 @@ Create up to ${count} medical flashcards from the important content above.`,
       config: {
         systemInstruction,
         temperature: 0.3,
-        maxOutputTokens: count * 220,
+        maxOutputTokens: count * 320,
         responseMimeType: "application/json",
         responseSchema: FLASHCARD_RESPONSE_SCHEMA,
       },
@@ -631,7 +637,7 @@ Return JSON matching the provided schema.`;
       config: {
         systemInstruction,
         temperature: 0.3,
-        maxOutputTokens: count * 220,
+        maxOutputTokens: count * 320,
         responseMimeType: "application/json",
         responseSchema: FLASHCARD_RESPONSE_SCHEMA,
       },
@@ -685,7 +691,7 @@ Create ${count} ${isAdvanced ? "advanced clinical" : "basic theory"} MCQ questio
       config: {
         systemInstruction,
         temperature: 0.3,
-        maxOutputTokens: count * 380,
+        maxOutputTokens: count * 550,
         responseMimeType: "application/json",
         responseSchema: EXAM_RESPONSE_SCHEMA,
       },
@@ -749,7 +755,7 @@ Use Vietnamese. Return JSON matching the schema only.`,
       config: {
         systemInstruction,
         temperature: 0.3,
-        maxOutputTokens: count * 380,
+        maxOutputTokens: count * 550,
         responseMimeType: "application/json",
         responseSchema: EXAM_RESPONSE_SCHEMA,
       },
@@ -774,7 +780,7 @@ Create a concise hierarchical medical study summary in Markdown, following these
       config: {
         systemInstruction: "You are a medical education expert. Answer in Vietnamese with a clear, concise structure.",
         temperature: 0.6,
-        maxOutputTokens: 2048,
+        maxOutputTokens: 3072,
       },
     },
     apiKey
@@ -797,7 +803,7 @@ Keep the whole answer under 150 words. No generic motivational filler.`,
       config: {
         systemInstruction: "You are a medical education coach. Answer in Vietnamese. Base every suggestion ONLY on the learner data provided — concrete actions for today, never generic advice that ignores the numbers.",
         temperature: 0.6,
-        maxOutputTokens: 512,
+        maxOutputTokens: 768,
       },
     },
     apiKey
