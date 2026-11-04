@@ -75,6 +75,13 @@ jobs:
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          # The action's default package list includes the legacy "tools"
+          # package, which current cmdline-tools no longer publishes
+          # ("Failed to find package 'tools'" killed the first run).
+          # Install only platform-tools here; the explicit sdkmanager
+          # step below adds the platform, build-tools and NDK.
+          packages: "platform-tools"
 
       # The Tauri CLI is locked to 2.12.4 in desktop/package-lock.json and
       # its generated project template uses compileSdk/targetSdk 37, so
