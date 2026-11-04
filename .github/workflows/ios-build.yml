@@ -162,6 +162,41 @@ jobs:
           /usr/bin/shasum -a 256 "$OUTPUT_IPA"
           echo "path=$OUTPUT_IPA" >> "$GITHUB_OUTPUT"
 
+      # The Tauri CLI's deep-link plist injection proved unstable across
+      # dependency resolutions (the 1.0.3 IPA silently lost its URL scheme,
+      # breaking the sign-in callback). Guarantee the scheme here, and fail
+      # the build loudly if it cannot be confirmed in the final IPA.
+      - name: Ensure ankilearning URL scheme in IPA
+        env:
+          OUTPUT_IPA: ${{ github.workspace }}/AnkiLearning-iOS-unsigned.ipa
+        run: |
+          set -euo pipefail
+          FIX_DIR="$(mktemp -d)"
+          /usr/bin/unzip -q "$OUTPUT_IPA" -d "$FIX_DIR"
+          APP_DIR="$(find "$FIX_DIR/Payload" -maxdepth 1 -type d -name '*.app' | sed -n '1p')"
+          PLIST="$APP_DIR/Info.plist"
+          test -f "$PLIST"
+          if /usr/libexec/PlistBuddy -c "Print :CFBundleURLTypes" "$PLIST" 2>/dev/null | grep -q "ankilearning"; then
+            echo "URL scheme already present in Info.plist."
+          else
+            echo "Injecting CFBundleURLTypes for scheme 'ankilearning'."
+            /usr/libexec/PlistBuddy -c "Add :CFBundleURLTypes array" "$PLIST"
+            /usr/libexec/PlistBuddy -c "Add :CFBundleURLTypes:0 dict" "$PLIST"
+            /usr/libexec/PlistBuddy -c "Add :CFBundleURLTypes:0:CFBundleURLName string com.hieuka001.ankilearning.ankilearning" "$PLIST"
+            /usr/libexec/PlistBuddy -c "Add :CFBundleURLTypes:0:CFBundleURLSchemes array" "$PLIST"
+            /usr/libexec/PlistBuddy -c "Add :CFBundleURLTypes:0:CFBundleURLSchemes:0 string ankilearning" "$PLIST"
+            rm -f "$OUTPUT_IPA"
+            (cd "$FIX_DIR" && /usr/bin/zip -qry "$OUTPUT_IPA" Payload)
+          fi
+          VERIFY_DIR="$(mktemp -d)"
+          /usr/bin/unzip -q "$OUTPUT_IPA" -d "$VERIFY_DIR"
+          V_PLIST="$(find "$VERIFY_DIR/Payload" -maxdepth 2 -name Info.plist -path '*.app/*' | sed -n '1p')"
+          if ! /usr/libexec/PlistBuddy -c "Print :CFBundleURLTypes" "$V_PLIST" 2>/dev/null | grep -q "ankilearning"; then
+            echo "::error::Final IPA is missing the ankilearning URL scheme — refusing to ship."
+            exit 1
+          fi
+          echo "Verified: final IPA declares the ankilearning URL scheme."
+
       - name: Upload unsigned IPA artifact
         uses: actions/upload-artifact@v4
         with:
