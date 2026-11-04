@@ -16,6 +16,18 @@ Bản AnkiLearning "như phần mềm thật" cho laptop/máy tính: file cài W
   kiểm tra `latest.json` trên GitHub Releases; có vỏ mới thì hiện hộp thoại
   "Cập nhật ngay / Để sau", tải, cài và tự khởi động lại.
 
+## Thay đổi ở bản vỏ 1.0.1
+
+- **Sửa popup đăng nhập Google không mở:** WebView2 mặc định từ chối cửa sổ
+  mới do trang web yêu cầu nên nút "Đăng nhập với Google" bấm không hiện gì.
+  Cửa sổ chính nay được dựng trong mã Rust (từ đúng cấu hình trong
+  `tauri.conf.json`, đặt `"create": false`) để gắn bộ xử lý cho phép mở cửa
+  sổ con — popup OAuth và các link mở cửa sổ mới hoạt động bình thường.
+- **Mở app là toàn màn hình:** cửa sổ chính khởi động ở trạng thái phóng to
+  tối đa (`maximized`) thay vì khổ 1280×820 như trước.
+- **User-Agent riêng:** vỏ gắn UA Chrome/Edge chuẩn kèm hậu tố
+  `AnkiLearningDesktop/1.0.1` để phía web nhận diện được bản máy tính.
+
 ## Phát hành bản desktop mới
 
 Chỉ cần khi thay đổi vỏ (icon, cấu hình cửa sổ, plugin...):
@@ -34,7 +46,5 @@ lưu giữ ngoài repo bởi chủ dự án.
 
 ## Lưu ý tải file
 
-Repo đang ở chế độ **private** nên file trong GitHub Releases chỉ tải được khi
-đăng nhập GitHub có quyền truy cập repo. Muốn mọi người tải tự do: chuyển repo
-sang public, hoặc đăng file cài lên một nơi công khai (ví dụ một project Vercel
-tĩnh riêng) và cập nhật đường dẫn trong ghi chú phát hành.
+Repo đã ở chế độ **public** — file trong GitHub Releases tải tự do không cần
+đăng nhập, và `latest.json` công khai để các bản đã cài tự kiểm tra cập nhật.

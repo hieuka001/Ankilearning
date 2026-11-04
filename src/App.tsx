@@ -1,6 +1,6 @@
 import { Component, useEffect, useState, lazy, Suspense, type ErrorInfo, type ReactNode } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate, Link, useLocation } from 'react-router-dom';
-import { onAuthStateChanged, signInWithPopup, GoogleAuthProvider, signOut, User } from 'firebase/auth';
+import { getRedirectResult, onAuthStateChanged, signInWithPopup, signInWithRedirect, GoogleAuthProvider, signOut, User } from 'firebase/auth';
 import { collection, doc, getDoc, limit, onSnapshot, orderBy, query, setDoc } from 'firebase/firestore';
 import { auth, db } from './firebase';
 import { StudySession, UserProfile } from './types';
@@ -32,6 +32,13 @@ import Logo from './components/Logo';
 import NotificationCenter from './components/NotificationCenter';
 import { BADGES, getXpProgress, type BadgeUnlock } from './lib/gamification';
 import { useServiceWorkerUpdate } from './lib/swUpdate';
+import { isDesktopShell } from './lib/isDesktop';
+
+// Marks "a Google sign-in redirect is in flight" in sessionStorage. Set right
+// before signInWithRedirect navigates away, consumed once on the next app
+// start to surface redirect errors via getRedirectResult. sessionStorage
+// survives the same-tab round trip to Google and back.
+const AUTH_REDIRECT_FLAG = 'ankilearning:auth-redirect';
 
 // Same string as BADGE_UNLOCKED_EVENT in services/gamificationService — kept
 // as a local literal so this shell does not statically import the sync stack
@@ -174,6 +181,27 @@ export default function App() {
     return () => window.removeEventListener(BADGE_UNLOCKED_EVENT, onBadge);
   }, []);
 
+  // Complete a redirect-based Google sign-in started before the page
+  // navigated away (desktop shell, or popup-blocked fallback). Only runs when
+  // the session flag is present — a plain page load never touches
+  // getRedirectResult. A successful result needs no handling here:
+  // onAuthStateChanged picks the user up. The flag is cleared either way.
+  useEffect(() => {
+    let flagged = false;
+    try {
+      flagged = sessionStorage.getItem(AUTH_REDIRECT_FLAG) === '1';
+      if (flagged) sessionStorage.removeItem(AUTH_REDIRECT_FLAG);
+    } catch {
+      flagged = false;
+    }
+    if (!flagged) return;
+
+    getRedirectResult(auth).catch((error) => {
+      console.error('Redirect sign-in error:', error);
+      toast.error('Đăng nhập bằng Google thất bại. Vui lòng thử lại.');
+    });
+  }, []);
+
   useEffect(() => {
     let unsubscribeProfile: (() => void) | null = null;
     let unsubscribeSessions: (() => void) | null = null;
@@ -275,11 +303,53 @@ export default function App() {
   }, []);
 
   const handleLogin = async () => {
+    const provider = new GoogleAuthProvider();
+
+    // Redirect flow: navigates the whole webview/page to Google and back.
+    // Required inside the desktop shell (WebView2 blocks the popup window)
+    // and used as a fallback whenever a browser blocks the popup.
+    const startRedirectLogin = async () => {
+      try {
+        sessionStorage.setItem(AUTH_REDIRECT_FLAG, '1');
+      } catch {
+        // Storage unavailable — the redirect still works, only the
+        // startup error-surfacing via getRedirectResult is skipped.
+      }
+      await signInWithRedirect(auth, provider);
+    };
+
+    if (isDesktopShell()) {
+      try {
+        await startRedirectLogin();
+      } catch (error) {
+        console.error(error);
+        toast.error('Đăng nhập thất bại.');
+      }
+      return;
+    }
+
     try {
-      const provider = new GoogleAuthProvider();
       await signInWithPopup(auth, provider);
       toast.success('Đăng nhập thành công.');
     } catch (error) {
+      const code = (error as { code?: string } | null)?.code ?? '';
+      if (code === 'auth/popup-blocked' || code === 'auth/cancelled-popup-request') {
+        // The browser/webview refused to open the popup — fall back to the
+        // full-page redirect flow instead of dead-ending the user.
+        try {
+          await startRedirectLogin();
+          return;
+        } catch (redirectError) {
+          console.error(redirectError);
+          toast.error('Đăng nhập thất bại.');
+          return;
+        }
+      }
+      if (code === 'auth/popup-closed-by-user') {
+        // The user closed the account chooser themselves — not an error,
+        // and definitely not a reason to yank them into a redirect.
+        return;
+      }
       console.error(error);
       toast.error('Đăng nhập thất bại.');
     }
@@ -554,7 +624,7 @@ function LoginScreen({ onLogin }: { onLogin: () => void }) {
   ];
 
   return (
-    <div className="app-surface aurora-bg min-h-screen p-4 font-sans text-foreground md:p-8">
+    <div className="app-surface aurora-bg min-h-screen p-4 font-sans text-foreground [@media(min-width:768px)_and_(min-height:841px)]:p-8">
       <div
         aria-hidden="true"
         className="pointer-events-none absolute inset-0 bg-cover bg-center opacity-55 dark:opacity-25"
@@ -564,7 +634,7 @@ function LoginScreen({ onLogin }: { onLogin: () => void }) {
       <span className="aurora-blob aurora-blob-2" aria-hidden="true" />
       <span className="aurora-blob aurora-blob-3" aria-hidden="true" />
       <div className="login-shell">
-        <section className="flex min-h-[calc(100vh-4rem)] min-h-[calc(100dvh-4rem)] flex-col justify-between p-7 md:p-10">
+        <section className="flex min-h-[calc(100vh-4rem)] min-h-[calc(100dvh-4rem)] flex-col justify-between p-7 [@media(max-height:840px)]:min-h-[calc(100dvh-2rem)] [@media(max-height:840px)]:p-6 [@media(min-width:768px)_and_(min-height:841px)]:p-10">
           <div className="flex items-center gap-3">
             <Logo className="h-12 w-12" />
             <div>
@@ -573,18 +643,18 @@ function LoginScreen({ onLogin }: { onLogin: () => void }) {
             </div>
           </div>
 
-          <div className="py-12">
-            <div className="mb-5 inline-flex items-center gap-2 rounded-full border border-black/[0.08] bg-white/70 px-3 py-1 text-xs font-medium text-zinc-600 shadow-sm backdrop-blur-xl dark:border-white/10 dark:bg-white/[0.06] dark:text-zinc-300">
+          <div className="py-12 [@media(max-height:840px)]:py-4">
+            <div className="mb-5 inline-flex items-center gap-2 rounded-full border border-black/[0.08] bg-white/70 px-3 py-1 text-xs font-medium text-zinc-600 shadow-sm backdrop-blur-xl [@media(max-height:840px)]:mb-3 dark:border-white/10 dark:bg-white/[0.06] dark:text-zinc-300">
               <ShieldCheck size={14} />
               Học thẻ, tạo đề, luyện nhớ trong một không gian
             </div>
-            <h1 className="max-w-xl text-4xl font-semibold leading-tight text-zinc-950 dark:text-white md:text-5xl">
+            <h1 className="max-w-xl text-4xl font-semibold leading-tight text-zinc-950 [@media(min-width:768px)_and_(min-height:841px)]:text-5xl dark:text-white">
               Học thông minh với thẻ ghi nhớ.
             </h1>
-            <p className="mt-5 max-w-lg text-base leading-7 text-muted-foreground">
+            <p className="mt-5 max-w-lg text-base leading-7 text-muted-foreground [@media(max-height:840px)]:mt-3 [@media(max-height:840px)]:leading-6">
               Tạo bộ thẻ, ôn tập theo nhịp nhớ FSRS, luyện đề bằng AI và đồng bộ dữ liệu bằng tài khoản Google trên mọi thiết bị.
             </p>
-            <Button onClick={onLogin} className="btn-press mt-8 h-11 w-full max-w-xs gap-2">
+            <Button onClick={onLogin} className="btn-press mt-8 h-11 w-full max-w-xs gap-2 [@media(max-height:840px)]:mt-5">
               Đăng nhập với Google
               <ArrowRight size={16} />
             </Button>
@@ -593,20 +663,20 @@ function LoginScreen({ onLogin }: { onLogin: () => void }) {
           <p className="text-xs text-muted-foreground">Dữ liệu được đồng bộ bằng Firebase theo tài khoản của bạn.</p>
         </section>
 
-        <section className="login-preview">
+        <section className="login-preview [@media(max-height:840px)]:gap-3 [@media(max-height:840px)]:p-5">
           <img
             src="/img/login-hero.webp"
             alt="Minh hoạ học viên học cùng thẻ ghi nhớ AnkiLearning"
-            className="w-full rounded-2xl object-cover shadow-xl shadow-emerald-900/10 ring-1 ring-black/5 dark:ring-white/10"
+            className="w-full rounded-2xl object-cover shadow-xl shadow-emerald-900/10 ring-1 ring-black/5 [@media(max-height:640px)]:hidden [@media(max-height:720px)]:h-28 [@media(min-height:721px)_and_(max-height:840px)]:h-40 dark:ring-white/10"
             loading="lazy"
           />
           <motion.div
             initial={{ opacity: 0, y: 18 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.45, ease: [0.22, 1, 0.36, 1] }}
-            className="premium-panel p-5"
+            className="premium-panel p-5 [@media(max-height:840px)]:p-4"
           >
-            <div className="mb-5 flex items-center justify-between">
+            <div className="mb-5 flex items-center justify-between [@media(max-height:840px)]:mb-3">
               <div>
                 <p className="text-sm font-semibold">Ôn tập hôm nay</p>
                 <p className="text-xs text-muted-foreground">12 thẻ đến hạn, 1 đề luyện tập</p>
@@ -625,16 +695,16 @@ function LoginScreen({ onLogin }: { onLogin: () => void }) {
             </div>
           </motion.div>
 
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-2 gap-4 [@media(max-height:840px)]:gap-3">
             <PreviewStat icon={<BrainCircuit size={18} />} label="Câu hỏi AI" value="20" />
             <PreviewStat icon={<Library size={18} />} label="Bộ thẻ" value="6" />
           </div>
 
-          <div className="premium-panel p-5">
-            <p className="mb-4 text-sm font-semibold">Đề kiểm tra gợi ý</p>
+          <div className="premium-panel p-5 [@media(max-height:640px)]:hidden [@media(max-height:840px)]:p-4">
+            <p className="mb-4 text-sm font-semibold [@media(max-height:840px)]:mb-2">Đề kiểm tra gợi ý</p>
             <div className="space-y-1">
-              {previewQuestions.map((item) => (
-                <div key={item} className="group flex items-center justify-between rounded-md px-2 py-3 text-sm transition-colors hover:bg-zinc-950/[0.035] dark:hover:bg-white/[0.05]">
+              {previewQuestions.map((item, index) => (
+                <div key={item} className={`group flex items-center justify-between rounded-md px-2 py-3 text-sm transition-colors hover:bg-zinc-950/[0.035] [@media(max-height:840px)]:py-2 dark:hover:bg-white/[0.05] ${index === 2 ? '[@media(max-height:760px)]:hidden' : ''}`}>
                   <span className="text-zinc-700 dark:text-zinc-200">{item}</span>
                   <ArrowRight className="h-4 w-4 text-muted-foreground transition-transform group-hover:translate-x-1" />
                 </div>
@@ -649,8 +719,8 @@ function LoginScreen({ onLogin }: { onLogin: () => void }) {
 
 function PreviewStat({ icon, label, value }: { icon: ReactNode; label: string; value: string }) {
   return (
-    <div className="premium-panel p-5">
-      <div className="mb-5 flex h-9 w-9 items-center justify-center rounded-md bg-zinc-950 text-white dark:bg-white dark:text-zinc-950">
+    <div className="premium-panel p-5 [@media(max-height:840px)]:p-4">
+      <div className="mb-5 flex h-9 w-9 items-center justify-center rounded-md bg-zinc-950 text-white [@media(max-height:840px)]:mb-2 dark:bg-white dark:text-zinc-950">
         {icon}
       </div>
       <p className="font-mono text-2xl font-semibold">{value}</p>

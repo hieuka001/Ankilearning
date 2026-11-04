@@ -7,13 +7,16 @@
     "windows": [
       {
         "center": true,
+        "create": false,
         "fullscreen": false,
         "height": 820,
         "label": "main",
+        "maximized": true,
         "minHeight": 560,
         "minWidth": 380,
         "resizable": true,
         "title": "AnkiLearning",
+        "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36 Edg/126.0.0.0 AnkiLearningDesktop/1.0.1",
         "width": 1280
       }
     ]
@@ -63,5 +66,5 @@
     }
   },
   "productName": "AnkiLearning",
-  "version": "1.0.0"
+  "version": "1.0.1"
 }

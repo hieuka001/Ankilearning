@@ -1,6 +1,6 @@
 {
   "name": "ankilearning-desktop",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
   "description": "AnkiLearning desktop shell (Tauri) — loads the online web app, self-updates its shell via GitHub Releases.",
   "scripts": {
