@@ -1,6 +1,6 @@
 import { Component, useEffect, useState, lazy, Suspense, type ErrorInfo, type ReactNode } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate, Link, useLocation } from 'react-router-dom';
-import { getRedirectResult, onAuthStateChanged, signInWithPopup, signInWithRedirect, GoogleAuthProvider, signOut, User } from 'firebase/auth';
+import { getRedirectResult, onAuthStateChanged, signInWithCredential, signInWithPopup, signInWithRedirect, GoogleAuthProvider, signOut, User } from 'firebase/auth';
 import { collection, doc, getDoc, limit, onSnapshot, orderBy, query, setDoc } from 'firebase/firestore';
 import { auth, db } from './firebase';
 import { StudySession, UserProfile } from './types';
@@ -32,13 +32,20 @@ import Logo from './components/Logo';
 import NotificationCenter from './components/NotificationCenter';
 import { BADGES, getXpProgress, type BadgeUnlock } from './lib/gamification';
 import { useServiceWorkerUpdate } from './lib/swUpdate';
-import { isDesktopShell } from './lib/isDesktop';
+import { isDesktopShell, markShellFromUrl } from './lib/isDesktop';
+import DesktopAuth from './pages/DesktopAuth';
 
 // Marks "a Google sign-in redirect is in flight" in sessionStorage. Set right
 // before signInWithRedirect navigates away, consumed once on the next app
 // start to surface redirect errors via getRedirectResult. sessionStorage
 // survives the same-tab round trip to Google and back.
 const AUTH_REDIRECT_FLAG = 'ankilearning:auth-redirect';
+
+// Guards the one-shot consumption of a Google ID token handed back by the
+// desktop shell (`#glink=<token>` — see the effect below). A module-level
+// flag, not state: React StrictMode mounts effects twice, and the token
+// must be exchanged exactly once.
+let desktopLinkTokenConsumed = false;
 
 // Same string as BADGE_UNLOCKED_EVENT in services/gamificationService — kept
 // as a local literal so this shell does not statically import the sync stack
@@ -181,6 +188,48 @@ export default function App() {
     return () => window.removeEventListener(BADGE_UNLOCKED_EVENT, onBadge);
   }, []);
 
+  // Shell 1.0.2+ opens the web app with `?shell=tauri`; plant the durable
+  // localStorage marker before anything asks isDesktopShell().
+  useEffect(() => {
+    markShellFromUrl();
+  }, []);
+
+  // Desktop-shell sign-in completion. Neither the popup nor the redirect
+  // flow can finish inside the WebView2 shell, so the shell sends the user
+  // to their system browser (pages/DesktopAuth) and bounces the resulting
+  // Google ID token back into this window as `#glink=<token>` (a `?glink=`
+  // variant is accepted too). Exchange it for a Firebase session exactly
+  // once; onAuthStateChanged then takes over as usual. The token is
+  // scrubbed from the URL whether the exchange succeeds or not — ID tokens
+  // are short-lived and must not linger in history.
+  useEffect(() => {
+    if (desktopLinkTokenConsumed) return;
+    desktopLinkTokenConsumed = true;
+
+    let token: string | null = null;
+    try {
+      token = new URLSearchParams(window.location.hash.replace(/^#/, '')).get('glink')
+        || new URLSearchParams(window.location.search).get('glink');
+    } catch {
+      token = null;
+    }
+    if (!token) return;
+
+    try {
+      const url = new URL(window.location.href);
+      url.hash = '';
+      url.searchParams.delete('glink');
+      window.history.replaceState(null, '', url.toString());
+    } catch {
+      // URL cleanup is best-effort; the sign-in attempt still proceeds.
+    }
+
+    signInWithCredential(auth, GoogleAuthProvider.credential(token)).catch((error) => {
+      console.error('Desktop browser sign-in error:', error);
+      toast.error('Phiên đăng nhập từ trình duyệt đã hết hạn, thử lại nhé');
+    });
+  }, []);
+
   // Complete a redirect-based Google sign-in started before the page
   // navigated away (desktop shell, or popup-blocked fallback). Only runs when
   // the session flag is present — a plain page load never touches
@@ -305,9 +354,9 @@ export default function App() {
   const handleLogin = async () => {
     const provider = new GoogleAuthProvider();
 
-    // Redirect flow: navigates the whole webview/page to Google and back.
-    // Required inside the desktop shell (WebView2 blocks the popup window)
-    // and used as a fallback whenever a browser blocks the popup.
+    // Redirect flow: navigates the whole page to Google and back. Only a
+    // fallback for regular browsers whose popup was blocked — inside the
+    // desktop shell neither popup nor redirect can complete (see below).
     const startRedirectLogin = async () => {
       try {
         sessionStorage.setItem(AUTH_REDIRECT_FLAG, '1');
@@ -319,12 +368,14 @@ export default function App() {
     };
 
     if (isDesktopShell()) {
-      try {
-        await startRedirectLogin();
-      } catch (error) {
-        console.error(error);
-        toast.error('Đăng nhập thất bại.');
-      }
+      // Desktop shell: sign-in must happen in the user's system browser.
+      // The popup's child window cannot hand its result back to the shell
+      // window, and the redirect round trip loses it too — both dead-end
+      // here. Instead, navigate to a magic path the shell intercepts: it
+      // opens /desktop-auth in the system browser, the user signs in
+      // there, and the resulting Google ID token deep-links back into this
+      // window (consumed by the `#glink=` effect above).
+      window.location.assign('/__desktop_auth');
       return;
     }
 
@@ -378,6 +429,19 @@ export default function App() {
       toast.error('Đăng xuất thất bại, vui lòng thử lại.');
     }
   };
+
+  // The desktop shell sends users to /desktop-auth in their system browser
+  // to sign in there (see pages/DesktopAuth). The page is standalone: it
+  // must render regardless of this browser profile's own auth state, so it
+  // bypasses both the loading gate and the login gate below.
+  if (window.location.pathname === '/desktop-auth') {
+    return (
+      <>
+        <DesktopAuth />
+        <Toaster position="top-center" richColors />
+      </>
+    );
+  }
 
   if (loading) {
     return (

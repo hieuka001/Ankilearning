@@ -16,6 +16,20 @@ Bản AnkiLearning "như phần mềm thật" cho laptop/máy tính: file cài W
   kiểm tra `latest.json` trên GitHub Releases; có vỏ mới thì hiện hộp thoại
   "Cập nhật ngay / Để sau", tải, cài và tự khởi động lại.
 
+## Thay đổi ở bản vỏ 1.0.2
+
+- **Đăng nhập Google qua trình duyệt hệ thống + deep link:** cả popup lẫn
+  chuyển hướng đăng nhập bên trong WebView2 đều không đáng tin trên máy
+  người dùng (popup mở ra, xoay một vòng rồi văng về màn hình đăng nhập).
+  Luồng mới: bấm đăng nhập trong app → app mở trang đăng nhập bằng **trình
+  duyệt mặc định của Windows** → đăng nhập xong trình duyệt gọi deep link
+  `ankilearning://auth` → app nhận kết quả, tự đưa cửa sổ lên trước và vào
+  thẳng trạng thái đã đăng nhập. Trang chờ nội bộ cũng gắn thêm dấu
+  `?shell=tauri` khi chuyển tới bản web để phía web nhận diện vỏ chắc chắn.
+- **Chống mở trùng app:** thêm cơ chế single-instance — mở lại app (hoặc bấm
+  deep link) khi app đang chạy chỉ đưa cửa sổ hiện có lên trước, không chạy
+  hai bản song song.
+
 ## Thay đổi ở bản vỏ 1.0.1
 
 - **Sửa popup đăng nhập Google không mở:** WebView2 mặc định từ chối cửa sổ
