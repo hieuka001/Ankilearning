@@ -22,6 +22,16 @@ import { useNavigate, Link } from 'react-router-dom';
 import { toast } from 'sonner';
 import { generateFlashcardsFromText } from '../services/aiService';
 import { playSound } from '../lib/sounds';
+import CardTypeFields from '../components/CardTypeFields';
+import {
+  buildNoteCards,
+  countBuiltCards,
+  isNoteDraftComplete,
+  isNoteDraftTouched,
+  type NoteCardType,
+  type NoteDraft,
+} from '../lib/noteCards';
+import { validateClozeText } from '../review/cloze';
 import { useSettings } from '../contexts/SettingsContext';
 import { createInitialCardSchedule } from '../lib/spacedRepetition';
 import { CATEGORY_PRESETS, getCategoryArt } from '../lib/categoryArt';
@@ -45,7 +55,7 @@ export default function CreateDeck({ user, profile }: CreateDeckProps) {
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [category, setCategory] = useState('');
-  const [cards, setCards] = useState<{ front: string, back: string, imageUrl?: string }[]>([{ front: '', back: '' }]);
+  const [cards, setCards] = useState<{ front: string, back: string, imageUrl?: string, cardType?: NoteCardType, clozeText?: string }[]>([{ front: '', back: '' }]);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [aiText, setAiText] = useState('');
   const [aiImage, setAiImage] = useState<string | null>(null);
@@ -81,6 +91,8 @@ export default function CreateDeck({ user, profile }: CreateDeckProps) {
           front: typeof card?.front === 'string' ? card.front : '',
           back: typeof card?.back === 'string' ? card.back : '',
           imageUrl: typeof card?.imageUrl === 'string' ? card.imageUrl : undefined,
+          cardType: card?.cardType === 'reversed' || card?.cardType === 'cloze' ? card.cardType : 'basic',
+          clozeText: typeof card?.clozeText === 'string' ? card.clozeText : '',
         })));
       }
     } catch {
@@ -93,7 +105,7 @@ export default function CreateDeck({ user, profile }: CreateDeckProps) {
     const timer = window.setTimeout(() => {
       try {
         const hasContent = name || description || category || tags || aiText
-          || cards.some(card => card.front || card.back || card.imageUrl);
+          || cards.some(card => card.front || card.back || card.imageUrl || card.clozeText);
         if (hasContent) {
           localStorage.setItem(draftKey, JSON.stringify({ name, description, category, tags, color, isPublic, aiText, cards }));
         } else {
@@ -107,7 +119,7 @@ export default function CreateDeck({ user, profile }: CreateDeckProps) {
   }, [draftKey, name, description, category, tags, color, isPublic, aiText, cards]);
 
   const addCard = () => {
-    setCards([...cards, { front: '', back: '' }]);
+    setCards([...cards, { front: '', back: '', cardType: 'basic', clozeText: '' }]);
   };
 
   const removeCard = (index: number) => {
@@ -119,6 +131,20 @@ export default function CreateDeck({ user, profile }: CreateDeckProps) {
     newCards[index][field] = value;
     setCards(newCards);
   };
+
+  /** Cập nhật phần nội dung chữ của một ghi chú (loại thẻ/front/back/clozeText). */
+  const updateCardDraft = (index: number, draft: NoteDraft) => {
+    const newCards = [...cards];
+    newCards[index] = { ...newCards[index], ...draft };
+    setCards(newCards);
+  };
+
+  const toDraft = (card: { front: string; back: string; cardType?: NoteCardType; clozeText?: string }): NoteDraft => ({
+    cardType: card.cardType || 'basic',
+    front: card.front,
+    back: card.back,
+    clozeText: card.clozeText || '',
+  });
 
   const handleGenerateAI = async () => {
     if (!aiText.trim()) {
@@ -136,7 +162,7 @@ export default function CreateDeck({ user, profile }: CreateDeckProps) {
         aiImage || undefined
       );
       if (generated && generated.length > 0) {
-        setCards([...cards.filter(c => c.front || c.back), ...generated]);
+        setCards([...cards.filter(c => c.front || c.back || c.clozeText), ...generated]);
         toast.success(`Đã tạo ${generated.length} thẻ từ AI!`);
         setAiText('');
         setAiImage(null);
@@ -169,7 +195,7 @@ export default function CreateDeck({ user, profile }: CreateDeckProps) {
       
       // If it's an image, add as a single card
       if (contentType?.startsWith('image/')) {
-        setCards([...cards.filter(c => c.front || c.back), { front: 'Hình ảnh mới', back: 'Xem hình ảnh', imageUrl: url }]);
+        setCards([...cards.filter(c => c.front || c.back || c.clozeText), { front: 'Hình ảnh mới', back: 'Xem hình ảnh', imageUrl: url }]);
         toast.success("Đã thêm thẻ hình ảnh!");
       } else {
         // Try to parse as JSON for multiple cards
@@ -188,7 +214,7 @@ export default function CreateDeck({ user, profile }: CreateDeckProps) {
           })).filter(c => c.front && c.back);
 
           if (newCards.length > 0) {
-            setCards([...cards.filter(c => c.front || c.back), ...newCards]);
+            setCards([...cards.filter(c => c.front || c.back || c.clozeText), ...newCards]);
             toast.success(`Đã nhập thành công ${newCards.length} thẻ!`);
           } else {
             toast.error("Không tìm thấy thẻ hợp lệ nào trong JSON — mỗi thẻ cần có đủ mặt trước (front/question) và mặt sau (back/answer).");
@@ -267,11 +293,29 @@ export default function CreateDeck({ user, profile }: CreateDeckProps) {
       return;
     }
 
-    const validCards = cards.filter(c => c.front.trim() && c.back.trim());
-    if (validCards.length === 0) {
-      toast.error("Vui lòng thêm ít nhất một thẻ hoàn chỉnh.");
+    // Ghi chú cloze đang soạn dở (có nội dung nhưng cú pháp chưa hợp lệ):
+    // báo lỗi cụ thể thay vì âm thầm bỏ qua khi lưu.
+    for (const card of cards) {
+      const draft = toDraft(card);
+      if (draft.cardType === 'cloze' && isNoteDraftTouched(draft) && !isNoteDraftComplete(draft)) {
+        toast.error(validateClozeText(draft.clozeText)[0] || 'Văn bản cloze chưa hợp lệ.');
+        return;
+      }
+    }
+
+    const completeEntries = cards
+      .map(card => ({ draft: toDraft(card), imageUrl: card.imageUrl }))
+      .filter(entry => isNoteDraftComplete(entry.draft));
+    if (completeEntries.length === 0) {
+      toast.error('Vui lòng thêm ít nhất một thẻ hoàn chỉnh.');
       return;
     }
+
+    // Mở rộng ghi chú thành thẻ vật lý theo hợp đồng loại thẻ:
+    // đảo ngược → 2 thẻ cùng noteId, cloze → 1 thẻ cho mỗi chỉ số cloze.
+    const physicalCards = completeEntries.flatMap(entry =>
+      buildNoteCards(entry.draft).map(built => ({ ...built, imageUrl: entry.imageUrl || '' })),
+    );
 
     const toastId = toast.loading("Đang lưu bộ thẻ...");
     setIsSubmitting(true);
@@ -288,21 +332,27 @@ export default function CreateDeck({ user, profile }: CreateDeckProps) {
         name,
         description,
         category: category || 'Chung',
-        cardCount: validCards.length,
+        cardCount: physicalCards.length,
         createdAt: new Date().toISOString(),
         isPublic,
         color,
         tags: tags.split(',').map(tag => tag.trim()).filter(tag => tag !== '')
       });
 
-      // Create Cards
-      const cardsBatch = validCards.map(card => 
+      // Create Cards (thẻ vật lý đã mở rộng từ các ghi chú)
+      const cardsBatch = physicalCards.map(card =>
         addDoc(collection(db, `decks/${deckRef.id}/cards`), {
           deckId: deckRef.id,
           ownerId: user.uid,
           front: card.front,
           back: card.back,
-          imageUrl: card.imageUrl || '',
+          imageUrl: card.imageUrl,
+          type: card.type,
+          cardType: card.cardType,
+          // Firestore không nhận giá trị undefined — chỉ ghi khi có.
+          ...(card.noteId ? { noteId: card.noteId } : {}),
+          ...(card.clozeText ? { clozeText: card.clozeText } : {}),
+          ...(card.clozeIndex !== undefined ? { clozeIndex: card.clozeIndex } : {}),
           tags: [],
           ...createInitialCardSchedule(),
           createdAt: new Date().toISOString()
@@ -559,7 +609,7 @@ export default function CreateDeck({ user, profile }: CreateDeckProps) {
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
               <div className="w-10 h-10 bg-zinc-100 dark:bg-white/5 rounded-xl flex items-center justify-center font-extrabold text-zinc-400">
-                {cards.length}
+                {cards.reduce((sum, card) => sum + countBuiltCards(toDraft(card)), 0)}
               </div>
               <h2 className="text-2xl font-extrabold text-zinc-900 dark:text-white tracking-tighter">Danh sách thẻ</h2>
             </div>
@@ -577,27 +627,11 @@ export default function CreateDeck({ user, profile }: CreateDeckProps) {
             {cards.map((card, index) => (
               <Card key={index} className="border border-zinc-200 dark:border-white/5 shadow-xl relative group bg-white dark:bg-[#0C0D0E] rounded-[2rem] overflow-hidden">
                 <CardContent className="p-8 space-y-6">
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-                    <div className="space-y-3">
-                      <label className="text-[9px] font-extrabold text-zinc-400 uppercase tracking-[0.2em]">Mặt trước (Câu hỏi)</label>
-                      <Textarea 
-                        placeholder="Nhập câu hỏi..." 
-                        value={card.front}
-                        onChange={(e) => updateCard(index, 'front', e.target.value)}
-                        className="rounded-2xl border-zinc-100 dark:border-white/5 dark:bg-white/5 dark:text-white min-h-[100px] p-5 focus:ring-primary/20 font-medium"
-                      />
-                    </div>
-                    <div className="space-y-3">
-                      <label className="text-[9px] font-extrabold text-zinc-400 uppercase tracking-[0.2em]">Mặt sau (Câu trả lời)</label>
-                      <Textarea 
-                        placeholder="Nhập câu trả lời..." 
-                        value={card.back}
-                        onChange={(e) => updateCard(index, 'back', e.target.value)}
-                        className="rounded-2xl border-zinc-100 dark:border-white/5 dark:bg-white/5 dark:text-white min-h-[100px] p-5 focus:ring-primary/20 font-medium"
-                      />
-                    </div>
-                  </div>
-                  
+                  <CardTypeFields
+                    value={toDraft(card)}
+                    onChange={(draft) => updateCardDraft(index, draft)}
+                  />
+
                   <div className="space-y-3">
                     <label className="text-[9px] font-extrabold text-zinc-400 uppercase tracking-[0.2em] flex items-center gap-2">
                       <ImageIcon size={14} /> Link hình ảnh (Tùy chọn)

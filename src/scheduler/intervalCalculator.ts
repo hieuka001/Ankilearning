@@ -27,9 +27,9 @@ export const addStep = (date: Date, step: SchedulerStep) =>
 export const addDays = (date: Date, days: number) =>
   new Date(date.getTime() + days * DAY_MS);
 
-export const calculateRetrievability = (stability: number, elapsedDays: number) => {
+export const calculateRetrievability = (stability: number, elapsedDays: number, decay: number = FSRS_DECAY) => {
   if (stability <= 0) return 1;
-  return clamp(forgettingCurve(FSRS_DECAY, Math.max(0, elapsedDays), stability), 0, 1);
+  return clamp(forgettingCurve(decay, Math.max(0, elapsedDays), stability), 0, 1);
 };
 
 export const intervalForRetention = (

@@ -8,11 +8,13 @@ import {
   type Grade,
   type Steps,
 } from 'ts-fsrs';
+import { FSRS6_DEFAULT_WEIGHTS } from 'ts-fsrs/models/fsrs-6';
 import {
   calculateRetrievability,
   clamp,
   DAY_MS,
   daysBetween,
+  FSRS_DECAY,
   getStudyDayKey,
   MINUTE_MS,
   round,
@@ -71,6 +73,64 @@ export const DEFAULT_SCHEDULER_CONFIG: SchedulerConfig = {
   minimumEaseFactor: 1.3,
   leechThreshold: 8,
   leechAction: 'suspend',
+};
+
+/**
+ * FSRS-6 weight handling (personalized parameters, đợt 4).
+ *
+ * The engine runs ts-fsrs FSRS-6 with 21 weights. A user may store a
+ * personalized set (fitted by `lib/fsrsOptimizer` on their own review
+ * history) in `SchedulerConfig.fsrsWeights`. Stored weights are never
+ * trusted blindly:
+ *
+ * - Wrong length or any non-finite entry → the whole field is dropped
+ *   (engine falls back to the defaults below).
+ * - Each remaining weight is clamped into a per-weight safe window:
+ *   [default * 0.2, max(default * 3, default + 0.05)] intersected with the
+ *   absolute FSRS-6 parameter bounds ts-fsrs itself enforces
+ *   (`clipFSRS6Parameters`). The `+ 0.05` absolute slack keeps near-zero
+ *   defaults (w[7] = 0.001) from being pinned to a uselessly tight window.
+ *   The window is deliberately narrower than the library bounds: a bad
+ *   fit may personalize the schedule, but it must not be able to push a
+ *   weight anywhere near the model's extreme corners.
+ */
+export const FSRS_WEIGHT_COUNT = FSRS6_DEFAULT_WEIGHTS.length;
+export const DEFAULT_FSRS_WEIGHTS: readonly number[] = FSRS6_DEFAULT_WEIGHTS;
+
+/** Absolute FSRS-6 bounds, mirroring ts-fsrs `clipFSRS6Parameters`. */
+const FSRS_WEIGHT_ABSOLUTE_BOUNDS: ReadonlyArray<readonly [number, number]> = [
+  [0.001, 100], [0.001, 100], [0.001, 100], [0.001, 100],
+  [1, 10], [0.001, 4], [0.001, 4], [0.001, 0.75],
+  [0, 4.5], [0, 0.8], [0.001, 3.5], [0.001, 5],
+  [0.001, 0.25], [0.001, 0.9], [0, 4], [0, 1],
+  [1, 6], [0, 2], [0, 2], [0.01, 0.8],
+  [0.1, 0.8],
+];
+
+export const FSRS_WEIGHT_BOUNDS: ReadonlyArray<readonly [number, number]> = DEFAULT_FSRS_WEIGHTS.map(
+  (defaultWeight, index) => {
+    const [absoluteLow, absoluteHigh] = FSRS_WEIGHT_ABSOLUTE_BOUNDS[index];
+    const low = Math.max(absoluteLow, defaultWeight * 0.2);
+    const high = Math.min(absoluteHigh, Math.max(defaultWeight * 3, defaultWeight + 0.05));
+    return [low, high] as const;
+  },
+);
+
+/**
+ * Validate + clamp a candidate weight vector. Returns `undefined` when
+ * the value is not a full-length finite vector (caller then omits the
+ * field entirely); otherwise returns a NEW array with every weight
+ * inside `FSRS_WEIGHT_BOUNDS`.
+ */
+export const clampFsrsWeights = (weights: unknown): number[] | undefined => {
+  if (!Array.isArray(weights) || weights.length !== FSRS_WEIGHT_COUNT) return undefined;
+  if (!weights.every((weight) => typeof weight === 'number' && Number.isFinite(weight))) {
+    return undefined;
+  }
+  return weights.map((weight, index) => {
+    const [low, high] = FSRS_WEIGHT_BOUNDS[index];
+    return clamp(weight, low, high);
+  });
 };
 
 const toFiniteNumber = (value: unknown, fallback: number) => {
@@ -154,7 +214,7 @@ export const normalizeSchedulerConfig = (config?: SchedulerConfigInput): Schedul
     10,
   );
 
-  return {
+  const normalized: SchedulerConfig = {
     desiredRetention: clamp(toFiniteNumber(config?.desiredRetention, DEFAULT_SCHEDULER_CONFIG.desiredRetention), 0.7, 0.98),
     initialStability: normalizeInitialStability(config?.initialStability),
     initialDifficulty: clamp(toFiniteNumber(config?.initialDifficulty, DEFAULT_SCHEDULER_CONFIG.initialDifficulty), minimumDifficulty, maximumDifficulty),
@@ -175,6 +235,27 @@ export const normalizeSchedulerConfig = (config?: SchedulerConfigInput): Schedul
     leechThreshold: Math.max(0, toPositiveInteger(config?.leechThreshold, DEFAULT_SCHEDULER_CONFIG.leechThreshold)),
     leechAction: (config?.leechAction === 'none' ? 'none' : 'suspend') as LeechAction,
   };
+
+  // Personalized FSRS weights (đợt 4): kept only when the stored vector is
+  // a full-length finite array; every weight is clamped into its safe
+  // window (see clampFsrsWeights). Provenance metadata is kept only
+  // alongside valid weights.
+  const fsrsWeights = clampFsrsWeights(config?.fsrsWeights);
+  if (fsrsWeights) {
+    normalized.fsrsWeights = fsrsWeights;
+    if (
+      typeof config?.fsrsOptimizedAt === 'string'
+      && Number.isFinite(Date.parse(config.fsrsOptimizedAt))
+    ) {
+      normalized.fsrsOptimizedAt = config.fsrsOptimizedAt;
+    }
+    const optimizationSamples = toPositiveInteger(config?.fsrsOptimizationSamples, 0);
+    if (optimizationSamples > 0) {
+      normalized.fsrsOptimizationSamples = optimizationSamples;
+    }
+  }
+
+  return normalized;
 };
 
 const difficultyToEaseFactor = (difficulty: number, config: SchedulerConfig) => {
@@ -255,7 +336,7 @@ export const normalizeCardSchedule = (
     ),
     4,
   );
-  const retrievability = round(stability > 0 ? calculateRetrievability(stability, elapsedDays) : toFiniteNumber(rawCard.retrievability, 1), 4);
+  const retrievability = round(stability > 0 ? calculateRetrievability(stability, elapsedDays, config.fsrsWeights?.[20] ?? FSRS_DECAY) : toFiniteNumber(rawCard.retrievability, 1), 4);
 
   return {
     id: rawCard.id || '',
@@ -320,6 +401,9 @@ const toFsrsParameters = (config: SchedulerConfig): Partial<FSRSParameters> => (
   enable_short_term: true,
   learning_steps: toFsrsSteps(config.learningSteps),
   relearning_steps: toFsrsSteps(config.relearningSteps),
+  // Personalized weights (đợt 4): absent → ts-fsrs defaults, exactly the
+  // pre-optimization behavior.
+  ...(config.fsrsWeights ? { w: [...config.fsrsWeights] } : {}),
 });
 
 const toFsrsCard = (card: NormalizedSchedulerCard, config: SchedulerConfig): CardInput => {

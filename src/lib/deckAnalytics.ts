@@ -154,3 +154,120 @@ export function mergeForecastCounts(
 
   return totals;
 }
+
+/**
+ * One node of the deck hierarchy derived from '::'-separated deck names
+ * (the naming Anki imports produce, e.g. 'Chinese::Từ vựng::HSK1').
+ * A node may be VIRTUAL (`deck: null`) when decks exist below a path but
+ * no deck carries that exact name — e.g. only 'A::B' and 'A::C' exist.
+ */
+export interface DeckTreeNode<T extends { id: string; name: string }> {
+  /** Full '::'-joined path this node represents. */
+  name: string;
+  /** Last path segment — the short display name. */
+  segment: string;
+  /** The real deck at this exact path, or null for a virtual parent. */
+  deck: T | null;
+  children: DeckTreeNode<T>[];
+  /** Ids of every real deck in this subtree (this node's deck first). */
+  descendantIds: string[];
+  /** Real decks in this subtree (this node's deck first). */
+  descendantDecks: T[];
+}
+
+/**
+ * Build the deck tree from a flat deck list. Top-level order follows the
+ * input order (callers pass decks newest-first, so a branch surfaces at
+ * the position of its newest member); children are sorted by name.
+ * Decks whose name has no '::' become childless roots, so a list without
+ * any hierarchy yields a flat forest identical to the input.
+ */
+export function buildDeckTree<T extends { id: string; name: string }>(decks: T[]): DeckTreeNode<T>[] {
+  const roots: DeckTreeNode<T>[] = [];
+  const byPath = new Map<string, DeckTreeNode<T>>();
+
+  const ensureNode = (path: string, segment: string, siblings: DeckTreeNode<T>[]): DeckTreeNode<T> => {
+    const existing = byPath.get(path);
+    if (existing) return existing;
+    const node: DeckTreeNode<T> = {
+      name: path,
+      segment,
+      deck: null,
+      children: [],
+      descendantIds: [],
+      descendantDecks: [],
+    };
+    byPath.set(path, node);
+    siblings.push(node);
+    return node;
+  };
+
+  for (const deck of decks) {
+    const segments = deck.name.split('::').map((segment) => segment.trim()).filter(Boolean);
+    if (segments.length === 0) segments.push(deck.name);
+
+    let siblings = roots;
+    let path = '';
+    let node: DeckTreeNode<T> | null = null;
+    segments.forEach((segment, index) => {
+      path = index === 0 ? segment : `${path}::${segment}`;
+      node = ensureNode(path, segment, siblings);
+      siblings = node.children;
+    });
+
+    if (!node) continue;
+    if (node.deck) {
+      // Two decks share one exact name: keep both visible as separate
+      // roots instead of silently dropping one from the list.
+      roots.push({
+        name: node.name,
+        segment: node.segment,
+        deck,
+        children: [],
+        descendantIds: [deck.id],
+        descendantDecks: [deck],
+      });
+    } else {
+      node.deck = deck;
+    }
+  }
+
+  const finalize = (node: DeckTreeNode<T>): void => {
+    node.children.sort((a, b) => a.segment.localeCompare(b.segment, 'vi'));
+    node.children.forEach(finalize);
+    node.descendantDecks = [
+      ...(node.deck ? [node.deck] : []),
+      ...node.children.flatMap((child) => child.descendantDecks),
+    ];
+    node.descendantIds = node.descendantDecks.map((deck) => deck.id);
+  };
+  roots.forEach(finalize);
+
+  return roots;
+}
+
+/**
+ * Sum per-deck study stats over a set of deck ids (a whole tree branch).
+ * `lastStudied` is the most recent value across the branch. Pure read over
+ * already-computed stats — no Firestore access.
+ */
+export function aggregateDeckStats(
+  statsById: Record<string, DeckStudyStats | undefined>,
+  deckIds: string[],
+): DeckStudyStats {
+  const total: DeckStudyStats = { learned: 0, mastered: 0, due: 0 };
+  for (const deckId of deckIds) {
+    const stats = statsById[deckId];
+    if (!stats) continue;
+    total.learned += stats.learned;
+    total.mastered += stats.mastered;
+    total.due += stats.due;
+    if (
+      stats.lastStudied
+      && (!total.lastStudied || new Date(stats.lastStudied).getTime() > new Date(total.lastStudied).getTime())
+    ) {
+      total.lastStudied = stats.lastStudied;
+    }
+  }
+  return total;
+}

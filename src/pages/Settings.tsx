@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ChangeEvent, type ReactNode } from 'react';
 import { updateProfile, type User } from 'firebase/auth';
-import { doc, setDoc, updateDoc } from 'firebase/firestore';
+import { collection, doc, getDocs, query, setDoc, updateDoc, where } from 'firebase/firestore';
 import { motion } from 'motion/react';
 import {
   BadgeCheck,
@@ -17,6 +17,7 @@ import {
   Music,
   Play,
   RefreshCw,
+  RotateCcw,
   Save,
   ShieldCheck,
   SlidersHorizontal,
@@ -39,11 +40,23 @@ import { playSound } from '../lib/sounds';
 import { UserProfile } from '../types';
 import { toast } from 'sonner';
 import {
+  DEFAULT_FSRS_WEIGHTS,
   DEFAULT_SCHEDULER_CONFIG,
   normalizeSchedulerConfig,
   parseSchedulerSteps,
   serializeSchedulerSteps,
+  type SchedulerConfigInput,
 } from '../lib/spacedRepetition';
+import { fetchDeckCardsCached, getDeckCacheSignature } from '../lib/deckAnalytics';
+import {
+  buildReviewSequences,
+  countPredictionSamples,
+  countReviews,
+  MIN_OPTIMIZATION_SAMPLES,
+  optimizeWeights,
+  type OptimizeWeightsResult,
+  type ReviewSequence,
+} from '../lib/fsrsOptimizer';
 import { normalizeLanguage, SUPPORTED_LANGUAGES } from '../lib/language';
 
 interface SettingsProps {
@@ -203,6 +216,24 @@ export default function Settings({ user, profile }: SettingsProps) {
     burySiblings: schedulerConfig.burySiblings,
   }), [schedulerConfig]);
   const schedulerDirty = JSON.stringify(schedulerDraft) !== JSON.stringify(savedSchedulerDraft);
+
+  // --- Tối ưu tham số FSRS cá nhân (đợt 4) ---------------------------------
+  // Dữ liệu ôn chỉ tải khi user bấm "Kiểm tra dữ liệu ôn" — không tải sẵn.
+  // Bộ trọng số tối ưu được gắn vào một "override" chờ lưu cùng nút
+  // "Lưu cấu hình" của mục thuật toán (đúng luồng draft/lưu hiện hữu).
+  const [fsrsData, setFsrsData] = useState<{ reviews: number; samples: number } | null>(null);
+  const [isLoadingFsrsData, setIsLoadingFsrsData] = useState(false);
+  const fsrsSequencesRef = useRef<ReviewSequence[] | null>(null);
+  const [isOptimizingFsrs, setIsOptimizingFsrs] = useState(false);
+  const fsrsCancelRef = useRef(false);
+  const [fsrsOptimizeResult, setFsrsOptimizeResult] = useState<
+    Extract<OptimizeWeightsResult, { status: 'ok' }> | null
+  >(null);
+  const [fsrsWeightsOverride, setFsrsWeightsOverride] = useState<
+    | { weights: number[] | null; optimizedAt?: string; samples?: number }
+    | undefined
+  >(undefined);
+  const fsrsDirty = fsrsWeightsOverride !== undefined;
   const [dailyGoalDraft, setDailyGoalDraft] = useState(String(profile?.settings?.dailyGoal || 20));
   const [isSavingDailyGoal, setIsSavingDailyGoal] = useState(false);
 
@@ -417,7 +448,7 @@ export default function Settings({ user, profile }: SettingsProps) {
       // Start from the current normalized config so fields the new engine no
       // longer exposes (legacy tuning values) are preserved untouched in
       // storage; only the controls shown below are edited.
-      const nextScheduler = normalizeSchedulerConfig({
+      const schedulerInput: SchedulerConfigInput = {
         ...schedulerConfig,
         learningSteps: parseSchedulerSteps(schedulerDraft.learningSteps, DEFAULT_SCHEDULER_CONFIG.learningSteps),
         relearningSteps: parseSchedulerSteps(schedulerDraft.relearningSteps, DEFAULT_SCHEDULER_CONFIG.relearningSteps),
@@ -428,7 +459,23 @@ export default function Settings({ user, profile }: SettingsProps) {
         leechThreshold: Number(schedulerDraft.leechThreshold),
         intervalModifier: Number(schedulerDraft.intervalModifier),
         burySiblings: schedulerDraft.burySiblings,
-      });
+      };
+
+      // Personalized FSRS weights pending in the optimizer panel below:
+      // an array applies the fitted set, `null` resets to the defaults.
+      if (fsrsWeightsOverride !== undefined) {
+        if (fsrsWeightsOverride.weights === null) {
+          delete schedulerInput.fsrsWeights;
+          delete schedulerInput.fsrsOptimizedAt;
+          delete schedulerInput.fsrsOptimizationSamples;
+        } else {
+          schedulerInput.fsrsWeights = fsrsWeightsOverride.weights;
+          schedulerInput.fsrsOptimizedAt = fsrsWeightsOverride.optimizedAt;
+          schedulerInput.fsrsOptimizationSamples = fsrsWeightsOverride.samples;
+        }
+      }
+
+      const nextScheduler = normalizeSchedulerConfig(schedulerInput);
 
       updateSettings({ scheduler: nextScheduler });
 
@@ -438,10 +485,113 @@ export default function Settings({ user, profile }: SettingsProps) {
         });
       }
 
+      setFsrsWeightsOverride(undefined);
       toast.success('Đã lưu cấu hình thuật toán ôn tập.');
     } catch {
       toast.error('Không thể lưu cấu hình thuật toán ôn tập.');
     }
+  };
+
+  const handleCheckFsrsData = async () => {
+    if (!user) {
+      toast.error('Cần đăng nhập để đọc lịch sử ôn tập.');
+      return;
+    }
+
+    setIsLoadingFsrsData(true);
+    try {
+      const sources: Array<{ id?: string; reviewHistory?: unknown }> = [];
+
+      const decksSnap = await getDocs(
+        query(collection(db, 'decks'), where('ownerId', '==', user.uid)),
+      );
+      await Promise.all(
+        decksSnap.docs.map(async (deckDoc) => {
+          const deckData = deckDoc.data() as {
+            updatedAt?: string;
+            createdAt?: string;
+            cardCount?: number;
+          };
+          const cards = await fetchDeckCardsCached(
+            deckDoc.id,
+            getDeckCacheSignature(deckData),
+          );
+          sources.push(...cards);
+        }),
+      );
+
+      // Reviews of other people's decks are stored as cardProgress docs
+      // carrying the same reviewHistory payload — they are the user's own
+      // memory data too, so they count toward the fit.
+      const progressSnap = await getDocs(collection(db, `users/${user.uid}/cardProgress`));
+      progressSnap.docs.forEach((progressDoc) => {
+        sources.push({ id: progressDoc.id, ...(progressDoc.data() as object) });
+      });
+
+      const sequences = buildReviewSequences(sources);
+      fsrsSequencesRef.current = sequences;
+      setFsrsData({
+        reviews: countReviews(sequences),
+        samples: countPredictionSamples(sequences),
+      });
+      setFsrsOptimizeResult(null);
+    } catch {
+      toast.error('Không thể đọc lịch sử ôn tập.');
+    } finally {
+      setIsLoadingFsrsData(false);
+    }
+  };
+
+  const handleOptimizeFsrs = async () => {
+    const sequences = fsrsSequencesRef.current;
+    if (!sequences) {
+      toast.error('Hãy bấm "Kiểm tra dữ liệu ôn" trước.');
+      return;
+    }
+
+    fsrsCancelRef.current = false;
+    setIsOptimizingFsrs(true);
+    try {
+      const result = await optimizeWeights(
+        sequences,
+        schedulerConfig.fsrsWeights ?? [...DEFAULT_FSRS_WEIGHTS],
+        {
+          config: schedulerConfig,
+          // Nhường luồng UI giữa các vòng hạ gradient để trang không đơ.
+          yieldBetweenRounds: () => new Promise((resolve) => setTimeout(resolve, 0)),
+          isCancelled: () => fsrsCancelRef.current,
+        },
+      );
+
+      if (result.status === 'ok') {
+        setFsrsOptimizeResult(result);
+      } else if (result.status === 'insufficient-data') {
+        toast.error(
+          `Chưa đủ dữ liệu ôn: cần tối thiểu ${MIN_OPTIMIZATION_SAMPLES} mẫu dự đoán, hiện có ${result.samples}. Hãy ôn thêm rồi thử lại.`,
+        );
+      }
+      // 'cancelled': user chủ động dừng — không cần thông báo.
+    } catch {
+      toast.error('Không thể tối ưu tham số lúc này.');
+    } finally {
+      setIsOptimizingFsrs(false);
+    }
+  };
+
+  const handleApplyFsrsWeights = () => {
+    if (!fsrsOptimizeResult) return;
+    setFsrsWeightsOverride({
+      weights: fsrsOptimizeResult.weights,
+      optimizedAt: new Date().toISOString(),
+      samples: fsrsOptimizeResult.samples,
+    });
+    toast.success('Đã gắn bộ tham số tối ưu vào bản nháp — bấm "Lưu cấu hình" để áp dụng.');
+  };
+
+  const handleResetFsrsWeights = () => {
+    setFsrsWeightsOverride({ weights: null });
+    setFsrsOptimizeResult(null);
+    toast.success('Sẽ trở về tham số FSRS mặc định khi bạn bấm "Lưu cấu hình".');
   };
 
   const handleSaveReminder = async () => {
@@ -816,7 +966,7 @@ export default function Settings({ user, profile }: SettingsProps) {
               <Save className="h-4 w-4" />
               Lưu cấu hình
             </Button>
-            {schedulerDirty && (
+            {(schedulerDirty || fsrsDirty) && (
               <span className="inline-flex items-center gap-2 rounded-full bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-700 dark:bg-amber-500/10 dark:text-amber-300">
                 <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
                 Có thay đổi chưa lưu
@@ -903,6 +1053,128 @@ export default function Settings({ user, profile }: SettingsProps) {
             checked={schedulerDraft.burySiblings}
             onCheckedChange={(value) => setSchedulerDraft((draft) => ({ ...draft, burySiblings: value }))}
           />
+        </div>
+
+        <div className="mt-5 rounded-lg border border-zinc-200 bg-zinc-50/80 p-4 dark:border-white/10 dark:bg-white/[0.04]">
+          <div className="flex items-start gap-3">
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
+              <Sparkles className="h-4 w-4" />
+            </div>
+            <div>
+              <p className="text-sm font-semibold text-zinc-950 dark:text-white">Tối ưu tham số FSRS (cá nhân hoá)</p>
+              <p className="mt-1 text-sm leading-6 text-zinc-500 dark:text-zinc-400">
+                Giống nút "Optimize" của Anki: app phát lại toàn bộ lịch sử ôn của bạn qua thuật toán FSRS
+                và tinh chỉnh 21 trọng số sao cho dự đoán khả năng nhớ khớp nhất với kết quả ôn thật của chính bạn.
+              </p>
+            </div>
+          </div>
+
+          <div className="mt-4 space-y-2 text-sm leading-6">
+            {fsrsWeightsOverride?.weights === null ? (
+              <p className="font-medium text-amber-700 dark:text-amber-300">
+                Sẽ đặt lại tham số FSRS mặc định khi bạn bấm "Lưu cấu hình".
+              </p>
+            ) : fsrsWeightsOverride?.weights ? (
+              <p className="font-medium text-amber-700 dark:text-amber-300">
+                Có bộ tham số tối ưu chưa lưu — bấm "Lưu cấu hình" ở đầu mục này để áp dụng.
+              </p>
+            ) : schedulerConfig.fsrsWeights ? (
+              <p className="text-zinc-600 dark:text-zinc-300">
+                Đang dùng <span className="font-semibold">tham số cá nhân hoá</span>
+                {schedulerConfig.fsrsOptimizedAt
+                  ? ` — tối ưu ngày ${new Date(schedulerConfig.fsrsOptimizedAt).toLocaleDateString('vi-VN')}`
+                  : ''}
+                {schedulerConfig.fsrsOptimizationSamples
+                  ? ` trên ${schedulerConfig.fsrsOptimizationSamples.toLocaleString('vi-VN')} mẫu dự đoán`
+                  : ''}
+                .
+              </p>
+            ) : (
+              <p className="text-zinc-600 dark:text-zinc-300">
+                Đang dùng tham số FSRS-6 mặc định (chung cho mọi người dùng).
+              </p>
+            )}
+
+            {fsrsData && (
+              <p className="text-zinc-600 dark:text-zinc-300">
+                Lịch sử ôn dùng được: <span className="font-semibold">{fsrsData.reviews.toLocaleString('vi-VN')} lượt ôn</span>
+                {' '}· <span className="font-semibold">{fsrsData.samples.toLocaleString('vi-VN')} mẫu dự đoán</span>
+                {fsrsData.samples < MIN_OPTIMIZATION_SAMPLES
+                  ? ` — chưa đủ để tối ưu (cần tối thiểu ${MIN_OPTIMIZATION_SAMPLES} mẫu như Anki). Hãy ôn thêm rồi thử lại.`
+                  : ' — đủ điều kiện tối ưu.'}
+              </p>
+            )}
+
+            {fsrsOptimizeResult && (
+              <p className="text-zinc-600 dark:text-zinc-300">
+                Kết quả tối ưu: log-loss <span className="font-mono font-semibold">{fsrsOptimizeResult.logLossBefore.toFixed(4)}</span>
+                {' → '}<span className="font-mono font-semibold">{fsrsOptimizeResult.logLossAfter.toFixed(4)}</span>
+                {' '}(càng thấp dự đoán càng khớp trí nhớ của bạn), khớp trên{' '}
+                {fsrsOptimizeResult.samples.toLocaleString('vi-VN')} mẫu.
+              </p>
+            )}
+          </div>
+
+          <div className="mt-4 flex flex-wrap items-center gap-3">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={handleCheckFsrsData}
+              disabled={isLoadingFsrsData || isOptimizingFsrs}
+              className="h-10 px-4"
+            >
+              {isLoadingFsrsData ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+              Kiểm tra dữ liệu ôn
+            </Button>
+            {isOptimizingFsrs ? (
+              <>
+                <Button type="button" disabled className="h-10 px-4">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  Đang tối ưu…
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => { fsrsCancelRef.current = true; }}
+                  className="h-10 px-4"
+                >
+                  Huỷ
+                </Button>
+              </>
+            ) : (
+              <Button
+                type="button"
+                onClick={handleOptimizeFsrs}
+                disabled={!fsrsData || fsrsData.samples < MIN_OPTIMIZATION_SAMPLES}
+                className="h-10 px-4"
+              >
+                <Sparkles className="h-4 w-4" />
+                Tối ưu hoá từ lịch sử ôn của tôi
+              </Button>
+            )}
+            {fsrsOptimizeResult && !isOptimizingFsrs && (
+              <Button type="button" onClick={handleApplyFsrsWeights} className="h-10 px-4">
+                <Save className="h-4 w-4" />
+                Áp dụng bộ tham số này
+              </Button>
+            )}
+            {(schedulerConfig.fsrsWeights || fsrsWeightsOverride?.weights) && fsrsWeightsOverride?.weights !== null && (
+              <Button
+                type="button"
+                variant="outline"
+                onClick={handleResetFsrsWeights}
+                disabled={isOptimizingFsrs}
+                className="h-10 px-4"
+              >
+                <RotateCcw className="h-4 w-4" />
+                Đặt lại tham số mặc định
+              </Button>
+            )}
+          </div>
+          <p className="mt-3 text-xs leading-5 text-zinc-500 dark:text-zinc-400">
+            Tối ưu chạy ngay trên trình duyệt (vài giây với khoảng 5.000 lượt ôn, tối đa 20.000 lượt ôn gần nhất).
+            Áp dụng xong cần bấm "Lưu cấu hình" như mọi thay đổi khác của mục thuật toán.
+          </p>
         </div>
       </section>
 

@@ -11,6 +11,7 @@ import {
 } from '../lib/spacedRepetition';
 import { Button } from '@/components/ui/button';
 import { useGestureSwipe } from './useGestureSwipe';
+import { clozeToPlainText, parseClozeText, renderClozeBack, renderClozeFront } from './cloze';
 import AudioButton from '../components/AudioButton';
 import { resolveChineseVocabContent } from '../lib/chineseCardLayout';
 
@@ -188,7 +189,67 @@ function sanitizeReviewHtml(rawContent: string) {
   return doc.body.firstElementChild?.innerHTML || '';
 }
 
+/**
+ * New cloze/reversed card model (round 3 contract). The fields live on
+ * Flashcard per the shared contract; the structural view here keeps this
+ * file compiling regardless of the order the model workstream lands in.
+ */
+type ClozeCardFields = {
+  cardType?: 'basic' | 'reversed' | 'cloze';
+  clozeText?: string;
+  clozeIndex?: number;
+};
+
+const clozeFieldsOf = (card: Flashcard) => card as Flashcard & ClozeCardFields;
+
+/**
+ * Resolves the renderable cloze source for a NEW-model cloze card, or null
+ * when the card is not one / its cloze data is missing or unparseable —
+ * callers then fall back to the plain front/back rendering (no crash).
+ */
+function clozeRenderSource(card: Flashcard): { clozeText: string; clozeIndex: number } | null {
+  const fields = clozeFieldsOf(card);
+  if (fields.cardType !== 'cloze') return null;
+  if (typeof fields.clozeText !== 'string' || !fields.clozeText) return null;
+  if (typeof fields.clozeIndex !== 'number' || !Number.isFinite(fields.clozeIndex)) return null;
+  const parsed = parseClozeText(fields.clozeText);
+  if (!parsed.valid || !parsed.indexes.includes(fields.clozeIndex)) return null;
+  return { clozeText: fields.clozeText, clozeIndex: fields.clozeIndex };
+}
+
+/** Small type chip shown on the card while studying (null for basic cards). */
+function cardTypeChipLabel(card: Flashcard): string | null {
+  const { cardType } = clozeFieldsOf(card);
+  if (cardType === 'cloze' || card.type === 'cloze') return 'Cloze';
+  if (cardType === 'reversed') return 'Đảo ngược';
+  return null;
+}
+
+/**
+ * Text handed to TTS. Cloze cards must never read the raw `{{cN::...}}`
+ * markup: new-model cards read the filled-in cloze text, legacy cloze
+ * cards (markup stored in front/back) get the same treatment per side.
+ */
+function speakTextForSide(card: Flashcard, isBackSide: boolean): string {
+  const cloze = clozeRenderSource(card);
+  if (cloze) return clozeToPlainText(cloze.clozeText);
+  const raw = isBackSide ? card.back : card.front;
+  if (card.type === 'cloze') return clozeToPlainText(raw);
+  return raw;
+}
+
 function contentForSide(card: Flashcard, isFlipped: boolean) {
+  // New-model cloze: render from clozeText/clozeIndex (Anki semantics —
+  // the active deletion is blanked on the front, highlighted on the back;
+  // sibling deletions always show their answers). The result flows through
+  // sanitizeReviewHtml like every other content path below.
+  const cloze = clozeRenderSource(card);
+  if (cloze) {
+    return isFlipped
+      ? renderClozeBack(cloze.clozeText, cloze.clozeIndex)
+      : renderClozeFront(cloze.clozeText, cloze.clozeIndex);
+  }
+
   const isBackSide = isFlipped;
   const rawContent = isBackSide ? card.back : card.front;
   const resolved = resolveChineseVocabContent(
@@ -300,6 +361,7 @@ export const ReviewCard = memo(function ReviewCard({
   const backHtml = useMemo(() => sanitizeReviewHtml(contentForSide(card, true)), [card]);
   const imageUrl = isFlipped ? card.backImageUrl : card.imageUrl;
   const contentLabel = isFlipped ? 'Đáp án' : 'Câu hỏi';
+  const typeChip = cardTypeChipLabel(card);
 
   const handleRate = useCallback((rating: SchedulerRating) => {
     if (busy) return;
@@ -393,8 +455,13 @@ export const ReviewCard = memo(function ReviewCard({
                   <div className="flex shrink-0 items-center justify-between gap-3 border-b border-zinc-200 px-5 py-4 dark:border-white/10">
                     <div>
                       <p className="text-[10px] font-black uppercase tracking-[0.22em] text-zinc-400">{sideFlipped ? 'Đáp án' : 'Câu hỏi'}</p>
-                      <p className="mt-1 text-xs font-medium text-zinc-500 dark:text-zinc-400">
-                        {stateLabelFor(schedule.state)} · S {schedule.stability.toFixed(1)} · D {schedule.difficulty.toFixed(1)}
+                      <p className="mt-1 flex flex-wrap items-center gap-1.5 text-xs font-medium text-zinc-500 dark:text-zinc-400">
+                        <span>{stateLabelFor(schedule.state)} · S {schedule.stability.toFixed(1)} · D {schedule.difficulty.toFixed(1)}</span>
+                        {typeChip && (
+                          <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300">
+                            {typeChip}
+                          </span>
+                        )}
                       </p>
                     </div>
                     <div className="flex items-center gap-1">
@@ -416,7 +483,7 @@ export const ReviewCard = memo(function ReviewCard({
                           tabIndex={visible ? 0 : -1}
                           onClick={(event) => {
                             event.stopPropagation();
-                            onSpeak(sideFlipped ? card.back : card.front);
+                            onSpeak(speakTextForSide(card, sideFlipped));
                           }}
                           aria-label="Đọc thẻ"
                           title="Đọc thẻ thành tiếng"

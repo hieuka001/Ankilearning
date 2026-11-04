@@ -81,6 +81,18 @@ export interface InAppNotification {
   actionPath?: string;
 }
 
+/**
+ * Per-deck scheduler overrides (đợt 3A). Every field is optional: a field
+ * that is absent inherits the user's global scheduler config. Resolution
+ * lives in src/lib/deckOptions.ts (resolveDeckSchedulerConfig).
+ */
+export interface DeckOptions {
+  newCardsPerDay?: number;
+  reviewsPerDay?: number;
+  desiredRetention?: number;
+  leechThreshold?: number;
+}
+
 export interface Deck {
   id: string;
   ownerId: string;
@@ -91,6 +103,8 @@ export interface Deck {
   cardCount: number;
   createdAt: string;
   isPublic: boolean;
+  /** Per-deck scheduler overrides; absent fields inherit the global config. */
+  options?: DeckOptions;
   mindmap?: string;
   /** AI-generated mindmap kept separate from the user's own `mindmap` notes. */
   aiMindmap?: string;
@@ -105,6 +119,16 @@ export interface Flashcard {
   front: string;
   back: string;
   type?: 'basic' | 'cloze';
+  /**
+   * Loại ghi chú kiểu Anki (hợp đồng đợt 1A). Thẻ cũ không có field này = 'basic'.
+   * - 'reversed': hai thẻ vật lý cùng noteId, một thẻ hoán đổi front↔back.
+   * - 'cloze': thẻ sinh từ clozeText, kiểm tra chỉ số clozeIndex.
+   */
+  cardType?: 'basic' | 'reversed' | 'cloze';
+  /** Văn bản gốc chứa cú pháp {{cN::đáp án::gợi ý}} — chỉ có ở thẻ cardType='cloze'. */
+  clozeText?: string;
+  /** Chỉ số cloze (N) mà thẻ này kiểm tra — chỉ có ở thẻ cardType='cloze'. */
+  clozeIndex?: number;
   imageUrl?: string;
   backImageUrl?: string;
   frontImages?: string[];

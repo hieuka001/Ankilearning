@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Link, useNavigate, useParams } from 'react-router-dom';
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { User } from 'firebase/auth';
 import {
   addDoc,
@@ -32,6 +32,7 @@ import {
   type SchedulerRating,
 } from '../lib/spacedRepetition';
 import { playSound } from '../lib/sounds';
+import { resolveDeckSchedulerConfig } from '../lib/deckOptions';
 import { useSettings } from '../contexts/SettingsContext';
 import { toast } from 'sonner';
 import { ReviewCard } from '../review/ReviewCard';
@@ -96,6 +97,22 @@ const cardSetSignature = (cards: Flashcard[]): string => {
     }
   }
   return String(hash);
+};
+
+/**
+ * Longest shared '::' path prefix of a set of deck names — the parent
+ * branch name shown as the session title when studying a merged branch
+ * (e.g. ['Chinese', 'Chinese::Từ vựng::HSK1'] → 'Chinese').
+ */
+const commonDeckNamePrefix = (names: string[]): string => {
+  if (names.length === 0) return '';
+  const splitNames = names.map((name) => name.split('::').map((segment) => segment.trim()));
+  const first = splitNames[0];
+  let shared = 0;
+  while (shared < first.length && splitNames.every((parts) => parts[shared] === first[shared])) {
+    shared += 1;
+  }
+  return first.slice(0, shared).join('::');
 };
 
 const EMPTY_RATING_COUNTS: Record<SchedulerRating, number> = { again: 0, hard: 0, good: 0, easy: 0 };
@@ -166,7 +183,21 @@ const buildRestoreUpdate = (card: Flashcard) => {
 export default function Study({ user, profile }: StudyProps) {
   const { settings } = useSettings();
   const { deckId } = useParams();
+  const [searchParams] = useSearchParams();
   const navigate = useNavigate();
+  // Merged "study the parent branch" mode: Decks links to
+  // /study/<primaryId>?decks=<id1,id2,...> with every deck id of a '::'
+  // branch. Without the param this is exactly the single-deck session.
+  const decksParam = searchParams.get('decks');
+  const studyDeckIds = useMemo(() => {
+    const fromParam = Array.from(new Set(
+      (decksParam || '').split(',').map((id) => id.trim()).filter(Boolean),
+    ));
+    if (deckId && !fromParam.includes(deckId)) fromParam.unshift(deckId);
+    return fromParam.length > 0 ? fromParam : (deckId ? [deckId] : []);
+  }, [decksParam, deckId]);
+  const isMergedStudy = studyDeckIds.length > 1;
+  const studyDeckKey = studyDeckIds.join(',');
   const [deck, setDeck] = useState<Deck | null>(null);
   const [cards, setCardsState] = useState<Flashcard[]>([]);
   const [currentIndex, setCurrentIndexState] = useState(0);
@@ -176,6 +207,11 @@ export default function Study({ user, profile }: StudyProps) {
   const [sessionStats, setSessionStats] = useState({ reviewed: 0, correct: 0 });
   const [now, setNow] = useState(() => new Date());
   const [cloudScheduler, setCloudScheduler] = useState<SchedulerConfigInput | null>(null);
+  // Decks participating in this session, by id (đợt 3A): rating/preview
+  // resolve the scheduler config against the deck that owns the current
+  // card, so per-deck options apply per card. Empty in the offline fallback
+  // (deck docs are not cached), where the global config applies as before.
+  const [sessionDecksById, setSessionDecksById] = useState<Map<string, Deck>>(new Map());
   const [undoSnapshot, setUndoSnapshot] = useState<UndoSnapshot | null>(null);
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle');
   const [reloadKey, setReloadKey] = useState(0);
@@ -221,10 +257,21 @@ export default function Study({ user, profile }: StudyProps) {
   }, []);
 
   const loading = loadState === 'loading';
-  const schedulerConfig = cloudScheduler || profile?.settings?.scheduler || settings.scheduler;
+  const currentCard = cards[currentIndex];
+  const globalSchedulerConfig = cloudScheduler || profile?.settings?.scheduler || settings.scheduler;
+  // Effective config for preview/rating: resolved against the deck that owns
+  // the current card (đợt 3A). In a single-deck session that is simply the
+  // deck's effective config; in a merged (?decks=) session it switches per
+  // card, while the queue's daily limits stay on the global config (see the
+  // loader). A deck without options resolves to the normalized global
+  // config, so behavior is unchanged for decks that never set options.
+  const currentCardDeck = currentCard ? sessionDecksById.get(currentCard.deckId) : undefined;
+  const schedulerConfig = useMemo(
+    () => resolveDeckSchedulerConfig(globalSchedulerConfig, currentCardDeck),
+    [globalSchedulerConfig, currentCardDeck],
+  );
   const dailyGoal = Math.max(profile?.settings?.dailyGoal || 20, 1);
   const { previewRatings, reviewCard } = useScheduler(schedulerConfig);
-  const currentCard = cards[currentIndex];
   const ratingPreviews = useMemo(
     () => currentCard ? previewRatings(currentCard, now) : [],
     [currentCard, now, previewRatings],
@@ -295,54 +342,90 @@ export default function Study({ user, profile }: StudyProps) {
     const fetchData = async () => {
       setLoadState('loading');
       try {
-        // Deck, cards, per-user progress and the user doc are independent
-        // reads — run them in parallel instead of four serial round-trips
-        // before the first card can render.
-        const [deckSnap, cardsSnap, progressSnap, userSnap] = await Promise.all([
-          getDoc(doc(db, 'decks', deckId)),
-          getDocs(collection(db, `decks/${deckId}/cards`)),
-          getDocs(query(
+        // Deck(s), cards, per-user progress and the user doc are independent
+        // reads — run them in parallel instead of serial round-trips before
+        // the first card can render. In merged mode every deck of the
+        // branch is fetched the same way and the card sets are combined.
+        const ids = studyDeckKey ? studyDeckKey.split(',') : [deckId];
+        const [deckSnaps, cardsSnaps, progressSnaps, userSnap] = await Promise.all([
+          Promise.all(ids.map((id) => getDoc(doc(db, 'decks', id)))),
+          Promise.all(ids.map((id) => getDocs(collection(db, `decks/${id}/cards`)))),
+          Promise.all(ids.map((id) => getDocs(query(
             collection(db, `users/${user.uid}/cardProgress`),
-            where('deckId', '==', deckId),
+            where('deckId', '==', id),
           )).catch((progressError) => {
             console.warn('Unable to load cloud study progress.', progressError);
             return null;
-          }),
+          }))),
           getDoc(doc(db, 'users', user.uid)),
         ]);
 
-        if (!deckSnap.exists()) {
+        const primaryIndex = ids.indexOf(deckId);
+        const primarySnap = (primaryIndex >= 0 && deckSnaps[primaryIndex]?.exists())
+          ? deckSnaps[primaryIndex]
+          : deckSnaps.find((snap) => snap.exists());
+        if (!primarySnap) {
           navigate('/decks');
           return;
         }
 
-        const deckData = { id: deckSnap.id, ...deckSnap.data() } as Deck;
-        if (cancelled) return;
-        setDeck(deckData);
+        const deckById = new Map<string, Deck>();
+        deckSnaps.forEach((snap, index) => {
+          if (snap.exists()) deckById.set(ids[index], { id: snap.id, ...snap.data() } as Deck);
+        });
+        const primaryDeck = deckById.get(primarySnap.id) as Deck;
 
-        const rawCards = cardsSnap.docs.map((cardDoc) => ({ id: cardDoc.id, ...cardDoc.data() } as Flashcard));
+        // Session title: the route deck in single-deck mode; in merged
+        // mode the shared parent path of the whole branch.
+        let displayDeck = primaryDeck;
+        if (ids.length > 1) {
+          const branchNames = ids
+            .map((id) => deckById.get(id)?.name)
+            .filter((name): name is string => Boolean(name));
+          const parentName = commonDeckNamePrefix(branchNames);
+          if (parentName) displayDeck = { ...primaryDeck, name: parentName };
+        }
+        if (cancelled) return;
+        setDeck(displayDeck);
+        setSessionDecksById(new Map(deckById));
+
         const progressByCardId = new Map<string, Partial<Flashcard>>();
-        progressSnap?.docs.forEach((progressDoc) => {
-          const progressData = progressDoc.data() as Partial<Flashcard> & { cardId?: string };
-          if (progressData.cardId) progressByCardId.set(progressData.cardId, progressData);
+        progressSnaps.forEach((progressSnap) => {
+          progressSnap?.docs.forEach((progressDoc) => {
+            const progressData = progressDoc.data() as Partial<Flashcard> & { cardId?: string };
+            if (progressData.cardId) progressByCardId.set(progressData.cardId, progressData);
+          });
         });
 
-        const allCards = rawCards.map((card) => ({
-          ...card,
-          ...(progressByCardId.get(card.id) || {}),
-          id: card.id,
-          deckId: card.deckId || deckData.id,
-          ownerId: card.ownerId || deckData.ownerId,
-        } as Flashcard));
+        // Every card keeps the deckId of the deck it was loaded from, so
+        // review results are written back to the correct deck even in a
+        // merged session.
+        const allCards: Flashcard[] = [];
+        cardsSnaps.forEach((cardsSnap, index) => {
+          const sourceDeck = deckById.get(ids[index]);
+          cardsSnap.docs.forEach((cardDoc) => {
+            const card = { id: cardDoc.id, ...cardDoc.data() } as Flashcard;
+            allCards.push({
+              ...card,
+              ...(progressByCardId.get(card.id) || {}),
+              id: card.id,
+              deckId: card.deckId || ids[index],
+              ownerId: card.ownerId || sourceDeck?.ownerId || primaryDeck.ownerId,
+            } as Flashcard);
+          });
+        });
 
-        // Only rewrite the on-device cache when the card set actually
-        // changed since the last load of this deck on this device.
-        const cacheKey = `${user.uid}:${deckId}`;
-        const signature = cardSetSignature(allCards);
-        if (cardsCacheSignatures.get(cacheKey) !== signature) {
-          await cacheCards(user.uid, deckId, allCards).catch(() => undefined);
-          cardsCacheSignatures.set(cacheKey, signature);
-        }
+        // Only rewrite the on-device cache when a deck's card set actually
+        // changed since its last load on this device (checked per deck).
+        await Promise.all(ids.map(async (id) => {
+          const subset = allCards.filter((card) => card.deckId === id);
+          const cacheKey = `${user.uid}:${id}`;
+          const signature = cardSetSignature(subset);
+          if (cardsCacheSignatures.get(cacheKey) !== signature) {
+            await cacheCards(user.uid, id, subset).catch(() => undefined);
+            cardsCacheSignatures.set(cacheKey, signature);
+          }
+        }));
 
         let remoteScheduler: SchedulerConfigInput | null = null;
         if (userSnap.exists()) {
@@ -352,9 +435,17 @@ export default function Study({ user, profile }: StudyProps) {
         }
 
         if (cancelled) return;
-        const activeScheduler = remoteScheduler
+        const globalScheduler = remoteScheduler
           || schedulerSettingsRef.current.profile
           || schedulerSettingsRef.current.local;
+        // Single-deck session: the whole queue (daily limits included, via
+        // the config's newCardsPerDay/reviewsPerDay) runs on the deck's
+        // effective config (đợt 3A). Merged branch session: the queue keeps
+        // the GLOBAL config so the daily limits stay global; only rating /
+        // preview resolve per card against the owning deck (render path).
+        const activeScheduler = ids.length === 1
+          ? resolveDeckSchedulerConfig(globalScheduler, primaryDeck)
+          : globalScheduler;
         const currentTime = new Date();
 
         if (reviewAllRef.current) {
@@ -384,7 +475,15 @@ export default function Study({ user, profile }: StudyProps) {
       } catch (error) {
         console.error(error);
         if (cancelled) return;
-        const cached = await getCachedCards(user.uid, deckId).catch(() => []);
+        // Offline fallback: deck docs are not available from the card
+        // cache, so per-deck options cannot apply here — the global config
+        // is used, exactly as before đợt 3A.
+        setSessionDecksById(new Map());
+        const fallbackIds = studyDeckKey ? studyDeckKey.split(',') : [deckId];
+        const cachedGroups = await Promise.all(
+          fallbackIds.map((id) => getCachedCards(user.uid, id).catch(() => [])),
+        );
+        const cached = cachedGroups.flat();
         if (cached.length > 0) {
           const currentTime = new Date();
           const fallbackScheduler = schedulerSettingsRef.current.profile
@@ -416,7 +515,7 @@ export default function Study({ user, profile }: StudyProps) {
     return () => {
       cancelled = true;
     };
-  }, [beginSession, deckId, navigate, reloadKey, setCards, user]);
+  }, [beginSession, deckId, navigate, reloadKey, setCards, studyDeckKey, user]);
 
   const finishSession = useCallback(async (finalStats: { reviewed: number; correct: number }) => {
     finishStatsRef.current = finalStats;
@@ -475,6 +574,8 @@ export default function Study({ user, profile }: StudyProps) {
       await addDoc(collection(db, `users/${user.uid}/sessions`), {
         userId: user.uid,
         deckId,
+        // Merged branch sessions also record every deck that contributed.
+        ...(studyDeckKey.split(',').length > 1 ? { deckIds: studyDeckKey.split(',') } : {}),
         cardsReviewed: finalStats.reviewed,
         correctCount: finalStats.correct,
         duration,
@@ -487,7 +588,7 @@ export default function Study({ user, profile }: StudyProps) {
       // button calls finishSession again with the same final stats.
       setSaveStatus('error');
     }
-  }, [deckId, user]);
+  }, [deckId, studyDeckKey, user]);
 
   const advanceCard = useCallback((finalStats = sessionStatsRef.current) => {
     if (currentIndexRef.current < cardsRef.current.length - 1) {
@@ -532,12 +633,14 @@ export default function Study({ user, profile }: StudyProps) {
 
     enqueueReviewSync({
       userId: user.uid,
-      deckId,
+      // The card's own deck — in a merged branch session this differs from
+      // the route deckId, and the sync flush writes under this deck.
+      deckId: currentCard.deckId || deckId,
       card: currentCard,
       schedulerUpdate,
       historyEntry,
-      sourceDeckOwnerId: deck?.ownerId || currentCard.ownerId || '',
-      isOwnerReview: deck?.ownerId === user.uid || currentCard.ownerId === user.uid,
+      sourceDeckOwnerId: currentCard.ownerId || deck?.ownerId || '',
+      isOwnerReview: currentCard.ownerId === user.uid || deck?.ownerId === user.uid,
       isCorrect,
     }).catch((error) => {
       console.warn('Local review queue failed.', error);
@@ -576,6 +679,8 @@ export default function Study({ user, profile }: StudyProps) {
     ratingLockRef.current = true;
     const snapshot = undoSnapshot;
     const restored = snapshot.cardBefore;
+    // All undo writes target the card's own deck (merged sessions mix decks).
+    const restoredDeckId = restored.deckId || deckId;
 
     try {
       // 1. Local state: drop the re-queued copy waiting later in the queue,
@@ -599,11 +704,12 @@ export default function Study({ user, profile }: StudyProps) {
       setUndoSnapshot(null);
 
       // 2. Device cache: an offline reload must not resurrect the rating.
-      await upsertCachedCard(user.uid, deckId, restored).catch(() => undefined);
+      await upsertCachedCard(user.uid, restoredDeckId, restored).catch(() => undefined);
 
       // 3. Sync record for the undone rating. The queue id formula mirrors
-      //    firebaseSync's queueId (userId-deckId-cardId-historyEntryId).
-      const queueRecordId = `${user.uid}-${deckId}-${restored.id}-${snapshot.historyEntry.id}`;
+      //    firebaseSync's queueId (userId-deckId-cardId-historyEntryId),
+      //    keyed with the card's own deckId.
+      const queueRecordId = `${user.uid}-${restoredDeckId}-${restored.id}-${snapshot.historyEntry.id}`;
       const record = await localDB.reviewResults.get(queueRecordId).catch(() => undefined);
 
       if (record && record.status !== 'synced') {
@@ -620,24 +726,24 @@ export default function Study({ user, profile }: StudyProps) {
         // rating was the card's first ever review, a stamped
         // `firstReviewAt` may remain on the server copy.
         const restoreUpdate = buildRestoreUpdate(restored);
-        const isOwner = deck?.ownerId === user.uid || restored.ownerId === user.uid;
+        const isOwner = restored.ownerId === user.uid || deck?.ownerId === user.uid;
         try {
           if (isOwner) {
-            await updateDoc(doc(db, `decks/${deckId}/cards`, restored.id), {
+            await updateDoc(doc(db, `decks/${restoredDeckId}/cards`, restored.id), {
               ...restoreUpdate,
               reviewHistory: arrayRemove(snapshot.historyEntry),
             });
             await deleteDoc(
-              doc(db, `decks/${deckId}/cards`, restored.id, 'reviews', snapshot.historyEntry.id),
+              doc(db, `decks/${restoredDeckId}/cards`, restored.id, 'reviews', snapshot.historyEntry.id),
             ).catch(() => undefined);
           } else {
-            await setDoc(doc(db, `users/${user.uid}/cardProgress`, progressDocId(deckId, restored.id)), {
+            await setDoc(doc(db, `users/${user.uid}/cardProgress`, progressDocId(restoredDeckId, restored.id)), {
               ...restoreUpdate,
               reviewHistory: arrayRemove(snapshot.historyEntry),
               userId: user.uid,
-              deckId,
+              deckId: restoredDeckId,
               cardId: restored.id,
-              sourceDeckOwnerId: deck?.ownerId || restored.ownerId || '',
+              sourceDeckOwnerId: restored.ownerId || deck?.ownerId || '',
             }, { merge: true });
           }
         } catch (syncError) {
@@ -654,19 +760,21 @@ export default function Study({ user, profile }: StudyProps) {
 
   const saveControlUpdate = useCallback(async (card: Flashcard, update: Partial<Flashcard>) => {
     if (!deckId || !user) return;
+    // Bury/suspend writes go to the card's own deck (merged sessions mix decks).
+    const targetDeckId = card.deckId || deckId;
     const updatedCard = { ...card, ...update } as Flashcard;
     setCards((existingCards) => existingCards.map((item) => item.id === card.id ? updatedCard : item));
-    await upsertCachedCard(user.uid, deckId, updatedCard).catch(() => undefined);
+    await upsertCachedCard(user.uid, targetDeckId, updatedCard).catch(() => undefined);
 
     if (deck?.ownerId === user.uid || card.ownerId === user.uid) {
-      await updateDoc(doc(db, `decks/${deckId}/cards`, card.id), update);
+      await updateDoc(doc(db, `decks/${targetDeckId}/cards`, card.id), update);
       return;
     }
 
-    await setDoc(doc(db, `users/${user.uid}/cardProgress`, progressDocId(deckId, card.id)), {
+    await setDoc(doc(db, `users/${user.uid}/cardProgress`, progressDocId(targetDeckId, card.id)), {
       ...update,
       userId: user.uid,
-      deckId,
+      deckId: targetDeckId,
       cardId: card.id,
       sourceDeckOwnerId: deck?.ownerId || card.ownerId || '',
     }, { merge: true });
@@ -939,8 +1047,8 @@ export default function Study({ user, profile }: StudyProps) {
           </Button>
         </Link>
         {deckId && (
-          <Link to={`/decks/${deckId}`}>
-            <Button variant="ghost">Quay lại bộ thẻ</Button>
+          <Link to={isMergedStudy ? '/decks' : `/decks/${deckId}`}>
+            <Button variant="ghost">{isMergedStudy ? 'Quay lại danh sách bộ thẻ' : 'Quay lại bộ thẻ'}</Button>
           </Link>
         )}
       </div>
@@ -959,7 +1067,7 @@ export default function Study({ user, profile }: StudyProps) {
         busy={ratingLockRef.current}
         onFlip={flipCard}
         onRate={handleRate}
-        onClose={() => navigate(`/decks/${deckId}`)}
+        onClose={() => navigate(isMergedStudy ? '/decks' : `/decks/${deckId}`)}
         onBury={handleBuryCurrentCard}
         onSuspend={handleSuspendCurrentCard}
         onSpeak={speak}

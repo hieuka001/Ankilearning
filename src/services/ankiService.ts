@@ -6,6 +6,7 @@ import {
   formatChineseVocabFront,
   isChineseVocabNoteType,
 } from '../lib/chineseCardLayout';
+import { clozeToPlainText } from '../review/cloze';
 
 const DEFAULT_INLINE_MAX_BYTES = 256 * 1024;
 
@@ -73,6 +74,12 @@ export interface AnkiCard {
   front: string;
   back: string;
   type?: 'basic' | 'cloze';
+  /** Loại ghi chú theo hợp đồng đợt 1A (thiếu = 'basic'). */
+  cardType?: 'basic' | 'reversed' | 'cloze';
+  /** Văn bản cloze gốc (đã làm sạch HTML/media, giữ {{cN::...}}) — chỉ khi cardType='cloze' từ model Cloze thật. */
+  clozeText?: string;
+  /** Chỉ số cloze thẻ này kiểm tra (= ord của thẻ Anki + 1) — chỉ khi cardType='cloze' từ model Cloze thật. */
+  clozeIndex?: number;
   noteId?: string;
   frontImage?: string;
   backImage?: string;
@@ -779,6 +786,40 @@ function isClozeContent(value: string) {
   return /{{c\d+::/i.test(value);
 }
 
+/**
+ * Làm sạch một trường Text của model Cloze thành clozeText theo hợp đồng
+ * đợt 1A: bỏ thẻ HTML và tham chiếu media (media đã được tách riêng vào các
+ * danh sách audio/ảnh), NHƯNG giữ nguyên cú pháp {{cN::...}} — clozeText là
+ * văn bản thường + markup cloze, tầng hiển thị tự escape khi render.
+ */
+function clozeFieldToPlainText(rawField: string): string {
+  if (!rawField) return '';
+  const text = rawField
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/(div|p)>/gi, '\n')
+    .replace(/<[^>]*>/g, '')
+    .replace(/\[sound:[^\]]*\]/gi, '')
+    .replace(/\[anki:tts[^\]]*\]/gi, '');
+  return decodeHtmlEntities(text).replace(/\n\s*\n/g, '\n\n').trim();
+}
+
+/**
+ * Heuristic nhận diện model dạng "Basic (and reversed card)" của Anki:
+ * tên model chứa 'reverse'/'reversed', hoặc đúng dạng bắt chéo 2 trường /
+ * 2 template (template thứ nhất hỏi trường đầu, template thứ hai hỏi trường
+ * còn lại và không hỏi trường đầu). Không chắc chắn thì giữ basic như cũ.
+ */
+function isReversedModel(model: AnkiModel): boolean {
+  if (/revers/i.test(model.name || '')) return true;
+  const fields = [...model.flds].sort((a, b) => a.ord - b.ord);
+  if (fields.length !== 2 || model.tmpls.length !== 2) return false;
+  const templates = [...model.tmpls].sort((a, b) => a.ord - b.ord);
+  const asksField = (qfmt: string, fieldName: string) => qfmt.includes(`{{${fieldName}}}`);
+  return asksField(templates[0].qfmt, fields[0].name)
+    && asksField(templates[1].qfmt, fields[1].name)
+    && !asksField(templates[1].qfmt, fields[0].name);
+}
+
 function buildBasicModel(): AnkiModel {
   return {
     id: 0,
@@ -1014,6 +1055,8 @@ export async function importAnkiApkg(file: File, options: AnkiImportOptions = {}
   const deckImageStats: Record<string, MediaStats> = {};
   const deckDuplicates: Record<string, number> = {};
   const seenCardKeys = new Set<string>();
+  const reversedModelCache = new Map<number, boolean>();
+  const reversedNoteIds = new Set<string>();
 
   for (const row of res[0].values as unknown[][]) {
     const noteId = String(row[0]);
@@ -1033,6 +1076,10 @@ export async function importAnkiApkg(file: File, options: AnkiImportOptions = {}
     seenCardKeys.add(cardKey);
 
     const model = models.get(modelId) || buildBasicModel();
+    if (!reversedModelCache.has(modelId)) {
+      reversedModelCache.set(modelId, isReversedModel(model));
+    }
+    if (reversedModelCache.get(modelId)) reversedNoteIds.add(noteId);
     const fieldNames = model.flds.length > 0
       ? [...model.flds].sort((a, b) => a.ord - b.ord).map((field) => field.name)
       : fieldValues.map((_, index) => (index === 0 ? 'Front' : index === 1 ? 'Back' : `Field ${index + 1}`));
@@ -1095,6 +1142,21 @@ export async function importAnkiApkg(file: File, options: AnkiImportOptions = {}
 
     const isCloze = model.type === 1 || isClozeContent(frontRaw) || isClozeContent(backRaw) || fieldValues.some(isClozeContent);
 
+    // Hợp đồng đợt 1A cho model Cloze thật (model.type === 1): mỗi dòng thẻ
+    // của Anki ứng với một chỉ số cloze (ord + 1). clozeText lấy từ trường
+    // Text gốc; front/back là bản văn bản thường (đáp án hiện rõ) để danh
+    // sách/tìm kiếm hiển thị được — khi học, tầng hiển thị che/hiện theo
+    // clozeText + clozeIndex. Lịch học của từng dòng vẫn được giữ như cũ.
+    const rawClozeField = model.type === 1
+      ? fieldValues.find((value) => isClozeContent(value))
+      : undefined;
+    const contractCloze = rawClozeField
+      ? (() => {
+          const clozeText = clozeFieldToPlainText(rawClozeField);
+          return { clozeText, clozeIndex: templateOrd + 1, plainText: clozeToPlainText(clozeText) };
+        })()
+      : null;
+
     const schedule = buildImportedSchedule({
       type: Number(row[6] || 0),
       queue: Number(row[7] || 0),
@@ -1106,9 +1168,12 @@ export async function importAnkiApkg(file: File, options: AnkiImportOptions = {}
     }, collectionCrt);
 
     const card: AnkiCard = {
-      front: isCloze ? frontProcessed.html : (frontProcessed.html.trim() ? frontProcessed.html : frontProcessed.plainText),
-      back: backHtml,
+      front: contractCloze ? contractCloze.plainText : (isCloze ? frontProcessed.html : (frontProcessed.html.trim() ? frontProcessed.html : frontProcessed.plainText)),
+      back: contractCloze ? contractCloze.plainText : backHtml,
       type: isCloze ? 'cloze' : 'basic',
+      ...(contractCloze
+        ? { cardType: 'cloze' as const, clozeText: contractCloze.clozeText, clozeIndex: contractCloze.clozeIndex }
+        : {}),
       noteId,
       frontImage: frontProcessed.imageUrls[0] || '',
       backImage: backImageUrls[0] || '',
@@ -1136,6 +1201,26 @@ export async function importAnkiApkg(file: File, options: AnkiImportOptions = {}
 
   db.close();
   legacyDb?.close?.();
+
+  // Hợp đồng đợt 1A: gắn cardType='reversed' cho các cặp thẻ thuộc model
+  // đảo ngược — chỉ khi note sinh đủ 2 thẻ trong lần import này (thiếu một
+  // chiều do trường trống trong Anki thì giữ basic cho chắc chắn).
+  if (reversedNoteIds.size > 0) {
+    const cardsByNote = new Map<string, AnkiCard[]>();
+    Object.values(decksResult).forEach((deckCards) => {
+      deckCards.forEach((card) => {
+        if (!card.noteId || !reversedNoteIds.has(card.noteId)) return;
+        const group = cardsByNote.get(card.noteId) || [];
+        group.push(card);
+        cardsByNote.set(card.noteId, group);
+      });
+    });
+    cardsByNote.forEach((group) => {
+      if (group.length === 2) {
+        group.forEach((card) => { card.cardType = 'reversed'; });
+      }
+    });
+  }
 
   // Deck có mọi thẻ bị bỏ qua vì trùng vẫn xuất hiện trong kết quả (0 thẻ,
   // duplicatesSkipped > 0) để nơi gọi đếm được số thẻ đã bỏ qua.
@@ -1522,12 +1607,21 @@ export async function exportAnkiApkgDetailed(deckName: string, cards: AnkiCard[]
     const guid = Math.random().toString(36).substring(2, 12);
     const tags = (card.tags || []).join(' ');
     const fields = buildExportFields(card, collected);
-    const isClozeCard = card.type === 'cloze' || isClozeContent(fields.front) || isClozeContent(fields.back);
+    const isClozeCard = card.type === 'cloze' || card.cardType === 'cloze' || isClozeContent(fields.front) || isClozeContent(fields.back);
+    const isContractCloze = card.cardType === 'cloze' && Boolean(card.clozeText);
 
     let flds: string;
     let mid: number;
     let ord = 0;
-    if (isClozeCard) {
+    if (isContractCloze) {
+      // Thẻ cloze theo hợp đồng đợt 1A: trường Text là clozeText gốc (giữ
+      // nguyên {{cN::...}}), ord suy từ clozeIndex. front/back của thẻ chỉ là
+      // bản văn bản thường nên Back Extra chỉ ghi khi mặt sau còn mang media
+      // đã đóng gói (fields.back khác fields.front).
+      mid = clozeModelId;
+      flds = `${card.clozeText}\x1f${fields.back && fields.back !== fields.front ? fields.back : ''}`;
+      ord = Math.max(0, (card.clozeIndex ?? 1) - 1);
+    } else if (isClozeCard) {
       // Model Cloze: trường 1 là Text chứa {{cN::...}}, trường 2 là Back Extra.
       flds = `${fields.front}\x1f${fields.back && fields.back !== fields.front ? fields.back : ''}`;
       mid = clozeModelId;

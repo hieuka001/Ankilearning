@@ -220,3 +220,119 @@ test('export: gắn tham chiếu media thật, dùng model Cloze và csum đúng
 
   db.close();
 });
+
+/** Dựng một .apkg tổng hợp tối thiểu (schema legacy: col.models + bảng decks). */
+async function buildSyntheticApkg(models: Record<string, unknown>, notes: string[], cards: string[]): Promise<File> {
+  const wasmPath = path.resolve(__dirname, '../node_modules/sql.js/dist/sql-wasm.wasm');
+  const SQL = await initSqlJs({ locateFile: () => wasmPath });
+  const db = new SQL.Database();
+  db.run(`
+    CREATE TABLE col (id integer primary key, crt integer, models text, decks text);
+    CREATE TABLE notes (id integer primary key, flds text, tags text, mid integer);
+    CREATE TABLE cards (id integer primary key, nid integer, did integer, ord integer,
+      type integer, queue integer, due integer, ivl integer, factor integer, reps integer, lapses integer);
+    CREATE TABLE decks (id integer primary key, name text);
+  `);
+  db.run('INSERT INTO col VALUES (1, ?, ?, ?)', [1700000000, JSON.stringify(models), '{}']);
+  db.run("INSERT INTO decks VALUES (555, 'Deck Test')");
+  notes.forEach((statement) => db.run(statement));
+  cards.forEach((statement) => db.run(statement));
+  const zip = new JSZip();
+  zip.file('collection.anki21', db.export());
+  zip.file('media', '{}');
+  db.close();
+  const bytes = await zip.generateAsync({ type: 'uint8array' });
+  return new File([bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)], 'synthetic.apkg', { type: 'application/octet-stream' });
+}
+
+test('import model Cloze thật: mỗi chỉ số cloze thành một thẻ theo hợp đồng đợt 1A', { timeout: TEST_TIMEOUT }, async () => {
+  const file = await buildSyntheticApkg(
+    {
+      2000: {
+        id: 2000, name: 'Cloze', type: 1,
+        flds: [{ name: 'Text', ord: 0 }, { name: 'Back Extra', ord: 1 }],
+        tmpls: [{ name: 'Cloze', ord: 0, qfmt: '{{cloze:Text}}', afmt: '{{cloze:Text}}<br>{{Back Extra}}' }],
+      },
+    },
+    ["INSERT INTO notes VALUES (777, 'Thủ đô của Việt Nam là {{c1::Hà Nội}} và nước này ở {{c2::Đông Nam Á}}.' || char(31) || 'Ghi chú thêm', '', 2000)"],
+    [
+      'INSERT INTO cards VALUES (1, 777, 555, 0, 0, 0, 0, 0, 0, 0, 0)',
+      'INSERT INTO cards VALUES (2, 777, 555, 1, 0, 0, 0, 0, 0, 0, 0)',
+    ],
+  );
+
+  const decks = await importAnkiApkg(file);
+  assert.equal(decks.length, 1);
+  assert.equal(decks[0].cards.length, 2, 'hai chỉ số cloze phải sinh hai thẻ vật lý');
+
+  const expectedText = 'Thủ đô của Việt Nam là {{c1::Hà Nội}} và nước này ở {{c2::Đông Nam Á}}.';
+  const expectedPlain = 'Thủ đô của Việt Nam là Hà Nội và nước này ở Đông Nam Á.';
+  const byIndex = [...decks[0].cards].sort((a, b) => (a.clozeIndex || 0) - (b.clozeIndex || 0));
+  assert.deepEqual(byIndex.map((card) => card.clozeIndex), [1, 2], 'clozeIndex = ord của thẻ Anki + 1');
+  byIndex.forEach((card) => {
+    assert.equal(card.cardType, 'cloze');
+    assert.equal(card.type, 'cloze');
+    assert.equal(card.noteId, '777', 'các thẻ cloze cùng ghi chú phải dùng chung noteId');
+    assert.equal(card.clozeText, expectedText, 'clozeText là trường Text gốc, giữ nguyên {{cN::...}}');
+    assert.equal(card.front, expectedPlain, 'front là bản văn bản thường (đáp án hiện rõ)');
+    assert.equal(card.back, expectedPlain, 'back giống front theo hợp đồng');
+  });
+});
+
+test('import model đảo ngược: cặp thẻ đủ hai chiều được gắn cardType=reversed', { timeout: TEST_TIMEOUT }, async () => {
+  const file = await buildSyntheticApkg(
+    {
+      3000: {
+        id: 3000, name: 'Basic (and reversed card)', type: 0,
+        flds: [{ name: 'Front', ord: 0 }, { name: 'Back', ord: 1 }],
+        tmpls: [
+          { name: 'Card 1', ord: 0, qfmt: '{{Front}}', afmt: '{{FrontSide}}<hr id=answer>{{Back}}' },
+          { name: 'Card 2', ord: 1, qfmt: '{{Back}}', afmt: '{{FrontSide}}<hr id=answer>{{Front}}' },
+        ],
+      },
+    },
+    [
+      "INSERT INTO notes VALUES (333, 'Dog' || char(31) || 'Chó', '', 3000)",
+      "INSERT INTO notes VALUES (444, 'Cat' || char(31) || 'Mèo', '', 3000)",
+    ],
+    [
+      'INSERT INTO cards VALUES (1, 333, 555, 0, 0, 0, 0, 0, 0, 0, 0)',
+      'INSERT INTO cards VALUES (2, 333, 555, 1, 0, 0, 0, 0, 0, 0, 0)',
+      // Note 444 chỉ có một chiều (chiều ngược bị Anki bỏ qua) → giữ basic.
+      'INSERT INTO cards VALUES (3, 444, 555, 0, 0, 0, 0, 0, 0, 0, 0)',
+    ],
+  );
+
+  const decks = await importAnkiApkg(file);
+  assert.equal(decks.length, 1);
+  assert.equal(decks[0].cards.length, 3);
+  const pair = decks[0].cards.filter((card) => card.noteId === '333');
+  assert.equal(pair.length, 2);
+  pair.forEach((card) => assert.equal(card.cardType, 'reversed', 'cặp đủ hai chiều phải là reversed'));
+  const single = decks[0].cards.find((card) => card.noteId === '444')!;
+  assert.equal(single.cardType, undefined, 'thẻ đơn lẻ của model đảo ngược giữ basic (không có cardType)');
+});
+
+test('export thẻ cloze theo hợp đồng: Text = clozeText, ord = clozeIndex - 1', { timeout: TEST_TIMEOUT }, async () => {
+  const clozeText = 'Thủ đô {{c1::Hà Nội}} của {{c2::Việt Nam}}.';
+  const plain = 'Thủ đô Hà Nội của Việt Nam.';
+  const { blob } = await exportAnkiApkgDetailed('Deck Cloze', [
+    { front: plain, back: plain, type: 'cloze', cardType: 'cloze', clozeText, clozeIndex: 2, tags: [] },
+  ]);
+
+  const zip = await JSZip.loadAsync(Buffer.from(await blob.arrayBuffer()));
+  const wasmPath = path.resolve(__dirname, '../node_modules/sql.js/dist/sql-wasm.wasm');
+  const SQL = await initSqlJs({ locateFile: () => wasmPath });
+  const db = new SQL.Database(await zip.file('collection.anki2')!.async('uint8array'));
+
+  const models = JSON.parse(String(db.exec('SELECT models FROM col')[0].values[0][0])) as Record<string, any>;
+  const clozeModel = Object.values(models).find((model) => model.type === 1)!;
+  const notes = db.exec('SELECT mid, flds FROM notes')[0].values as unknown[][];
+  assert.equal(notes.length, 1);
+  assert.equal(Number(notes[0][0]), clozeModel.id, 'note cloze hợp đồng phải dùng model Cloze');
+  assert.equal(String(notes[0][1]).split('\x1f')[0], clozeText, 'trường Text phải là clozeText gốc');
+  const cardRows = db.exec('SELECT ord FROM cards')[0].values as unknown[][];
+  assert.equal(Number(cardRows[0][0]), 1, 'ord trong gói xuất = clozeIndex - 1');
+
+  db.close();
+});

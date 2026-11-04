@@ -1,7 +1,7 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import { User } from 'firebase/auth';
-import { collection, doc, onSnapshot, query, updateDoc, where } from 'firebase/firestore';
+import { collection, doc, getDocs, onSnapshot, query, updateDoc, where } from 'firebase/firestore';
 import { addDays, format, startOfDay, subDays } from 'date-fns';
 import { vi } from 'date-fns/locale';
 import { motion } from 'motion/react';
@@ -10,12 +10,15 @@ import {
   Award,
   BookOpen,
   BrainCircuit,
+  ChartColumn,
   CheckCircle2,
+  ChevronDown,
   Clock,
   Flame,
   Layers3,
   Loader2,
   Plus,
+  RefreshCw,
   Sparkles,
   Target,
   TrendingUp,
@@ -24,13 +27,22 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { db } from '../firebase';
 import { Deck, StudySession, UserProfile } from '../types';
-import { fetchMultipleDeckInsights, getDeckCacheSignature, mergeForecastCounts } from '../lib/deckAnalytics';
+import { fetchDeckCardsCached, fetchMultipleDeckInsights, getDeckCacheSignature, mergeForecastCounts, type DeckCardRecord } from '../lib/deckAnalytics';
 import { buildSessionCountByDay } from '../lib/studySessions';
 import { getXpProgress } from '../lib/gamification';
+import {
+  collectReviewLogs,
+  computeCardMaturity,
+  summarizeReviewLogs,
+  type CardMaturityCounts,
+  type DeepReviewSummary,
+  type MaturityCardInput,
+} from '../lib/deepStats';
 
 type ProfileWithProgress = UserProfile & { xp?: number; level?: number };
 
 const DashboardChart = lazy(() => import('../components/charts/DashboardChart'));
+const DeepStatsChart = lazy(() => import('../components/charts/DeepStatsChart'));
 
 interface DashboardProps {
   user: User | null;
@@ -42,6 +54,12 @@ interface DayPoint {
   date: string;
   fullDate: Date;
   count: number;
+}
+
+/** Everything the collapsible deep-stats section renders, computed on demand. */
+interface DeepStatsData {
+  maturity: CardMaturityCounts;
+  summary: DeepReviewSummary;
 }
 
 const cardMotion = {
@@ -63,6 +81,12 @@ export default function Dashboard({ user, profile, recentSessions }: DashboardPr
   const [forecastData, setForecastData] = useState<DayPoint[]>(() => buildForecastShell());
   const deckInsightsRequestRef = useRef(0);
   const hasAnimatedRef = useRef(false);
+  // Deep stats are strictly opt-in: nothing here loads until the user
+  // expands the section, so the default dashboard stays exactly as fast
+  // as before.
+  const [deepStatsOpen, setDeepStatsOpen] = useState(false);
+  const [deepStatsState, setDeepStatsState] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
+  const [deepStats, setDeepStats] = useState<DeepStatsData | null>(null);
 
   const chartData = useMemo(() => {
     const last7Days = Array.from({ length: 7 }, (_, i) => {
@@ -246,6 +270,53 @@ export default function Dashboard({ user, profile, recentSessions }: DashboardPr
   const greetingLabel = greetingHour < 12 ? 'Chào buổi sáng' : greetingHour < 18 ? 'Chào buổi chiều' : 'Chào buổi tối';
   const greetingName = profile?.displayName || 'bạn';
   const studyNowTarget = firstDueDeckId ? `/study/${firstDueDeckId}` : '/decks';
+
+  const loadDeepStats = async () => {
+    if (!userId) return;
+    setDeepStatsState('loading');
+    try {
+      const decksSnap = await getDocs(query(collection(db, 'decks'), where('ownerId', '==', userId)));
+      const deckList = decksSnap.docs.map((deckDoc) => ({ id: deckDoc.id, ...deckDoc.data() } as Deck));
+      // Reuse the signature-keyed card cache: decks whose cards were
+      // already read for the headline insights cost no extra reads.
+      const cardsPerDeck = await Promise.all(
+        deckList.map((deck) =>
+          fetchDeckCardsCached(deck.id, getDeckCacheSignature(deck as Deck & { updatedAt?: string })).catch(
+            () => [] as DeckCardRecord[],
+          ),
+        ),
+      );
+      const cards = cardsPerDeck.flat();
+      // Reviews of OTHER people's decks are stored only in the user's own
+      // cardProgress docs (same ReviewLog payload, in reviewHistory).
+      // Failing that read must not sink the whole section.
+      let progressDocs: { reviewHistory?: unknown }[] = [];
+      try {
+        const progressSnap = await getDocs(collection(db, 'users', userId, 'cardProgress'));
+        progressDocs = progressSnap.docs.map((progressDoc) => progressDoc.data() as { reviewHistory?: unknown });
+      } catch {
+        progressDocs = [];
+      }
+      // DeckCardRecord is Record<string, any>; narrow it to the structural
+      // subsets deepStats reads (state/stability/suspended, reviewHistory).
+      const logs = collectReviewLogs([...cards, ...progressDocs] as { reviewHistory?: unknown }[]);
+      setDeepStats({
+        maturity: computeCardMaturity(cards as MaturityCardInput[]),
+        summary: summarizeReviewLogs(logs, new Date()),
+      });
+      setDeepStatsState('ready');
+    } catch {
+      setDeepStatsState('error');
+    }
+  };
+
+  const handleToggleDeepStats = () => {
+    const nextOpen = !deepStatsOpen;
+    setDeepStatsOpen(nextOpen);
+    if (nextOpen && deepStatsState !== 'ready' && deepStatsState !== 'loading') {
+      void loadDeepStats();
+    }
+  };
 
   const handleGetAiSuggestion = async () => {
     if (!profile) return;
@@ -610,6 +681,59 @@ export default function Dashboard({ user, profile, recentSessions }: DashboardPr
           </CardContent>
         </Card>
       </motion.section>
+
+      <motion.section variants={cardMotion} transition={{ duration: 0.42, ease: [0.22, 1, 0.36, 1] }}>
+        <Card className="premium-panel overflow-hidden border-0 bg-transparent">
+          <CardHeader className="flex flex-row items-start justify-between gap-4 p-6 pb-3">
+            <div>
+              <p className="mb-2 text-xs font-semibold uppercase text-primary">Phân tích kiểu Anki</p>
+              <CardTitle className="text-xl font-semibold">Thống kê chuyên sâu</CardTitle>
+              <p className="mt-2 max-w-xl text-sm leading-6 text-muted-foreground">
+                Độ chín của thẻ, tỷ lệ nhớ thật và nhịp ôn trong 30 ngày — tính từ lịch sử ôn thật trên mọi bộ thẻ của bạn.
+                Mục này chỉ tải dữ liệu khi bạn mở ra.
+              </p>
+            </div>
+            <div className="flex shrink-0 items-center gap-2">
+              {deepStatsState === 'ready' && deepStatsOpen && (
+                <Button variant="ghost" size="sm" onClick={() => void loadDeepStats()} className="gap-2 text-muted-foreground">
+                  <RefreshCw size={14} />
+                  Tải lại
+                </Button>
+              )}
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleToggleDeepStats}
+                aria-expanded={deepStatsOpen}
+                className="btn-press gap-2 bg-white/70"
+              >
+                {deepStatsOpen ? 'Thu gọn' : 'Xem chi tiết'}
+                <ChevronDown size={15} className={`transition-transform ${deepStatsOpen ? 'rotate-180' : ''}`} />
+              </Button>
+            </div>
+          </CardHeader>
+          {deepStatsOpen && (
+            <CardContent className="p-6 pt-3">
+              {deepStatsState === 'loading' || deepStatsState === 'idle' ? (
+                <div className="flex min-h-44 items-center justify-center gap-3 text-sm text-muted-foreground">
+                  <Loader2 className="h-5 w-5 animate-spin" />
+                  Đang tổng hợp lịch sử ôn tập...
+                </div>
+              ) : deepStatsState === 'error' ? (
+                <div className="flex min-h-44 flex-col items-center justify-center gap-3 rounded-lg border border-dashed border-black/[0.08] bg-white/[0.45] text-center dark:border-white/10 dark:bg-white/[0.03]">
+                  <p className="text-sm text-muted-foreground">Không tải được thống kê chuyên sâu. Kiểm tra kết nối rồi thử lại.</p>
+                  <Button size="sm" onClick={() => void loadDeepStats()} className="btn-press gap-2">
+                    <RefreshCw size={14} />
+                    Thử lại
+                  </Button>
+                </div>
+              ) : deepStats ? (
+                <DeepStatsPanel data={deepStats} />
+              ) : null}
+            </CardContent>
+          )}
+        </Card>
+      </motion.section>
     </motion.div>
   );
 }
@@ -812,6 +936,152 @@ function LearningHeatmap({
           }`}
         />
       ))}
+    </div>
+  );
+}
+
+const MATURITY_SEGMENTS: {
+  key: 'new' | 'learning' | 'young' | 'mature' | 'suspended';
+  label: string;
+  color: string;
+}[] = [
+  { key: 'new', label: 'Mới', color: '#A1A1AA' },
+  { key: 'learning', label: 'Đang học', color: '#F59E0B' },
+  { key: 'young', label: 'Non (ổn định < 21 ngày)', color: '#2DD4BF' },
+  { key: 'mature', label: 'Chín (ổn định ≥ 21 ngày)', color: '#059669' },
+  { key: 'suspended', label: 'Tạm dừng', color: '#FB7185' },
+];
+
+const RATING_ROWS: {
+  key: 'again' | 'hard' | 'good' | 'easy';
+  label: string;
+  color: string;
+}[] = [
+  { key: 'again', label: 'Quên', color: '#F87171' },
+  { key: 'hard', label: 'Khó', color: '#F59E0B' },
+  { key: 'good', label: 'Tốt', color: '#10B981' },
+  { key: 'easy', label: 'Dễ', color: '#0EA5E9' },
+];
+
+function formatRatePercent(rate: number): string {
+  return `${(rate * 100).toFixed(1).replace('.', ',')}%`;
+}
+
+function DeepStatsPanel({ data }: { data: DeepStatsData }) {
+  const { maturity, summary } = data;
+  const { retention, reviewsByDay, distribution } = summary;
+
+  if (maturity.total === 0) {
+    return (
+      <div className="flex min-h-44 items-center justify-center rounded-lg border border-dashed border-black/[0.08] bg-white/[0.45] text-sm text-muted-foreground dark:border-white/10 dark:bg-white/[0.03]">
+        Chưa có bộ thẻ nào để thống kê. Hãy tạo hoặc nhập một bộ thẻ trước.
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-8">
+      <div>
+        <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2">
+          <h3 className="text-sm font-semibold text-zinc-950 dark:text-white">Độ chín của thẻ</h3>
+          <span className="text-xs text-muted-foreground">{maturity.total} thẻ trên mọi bộ thẻ</span>
+        </div>
+        <div className="flex h-4 w-full overflow-hidden rounded-full bg-black/[0.05] dark:bg-white/10">
+          {MATURITY_SEGMENTS.map((segment) => {
+            const count = maturity[segment.key];
+            if (count === 0) return null;
+            return (
+              <div
+                key={segment.key}
+                title={`${segment.label}: ${count}`}
+                style={{ width: `${(count / maturity.total) * 100}%`, backgroundColor: segment.color }}
+                className="h-full"
+              />
+            );
+          })}
+        </div>
+        <ul className="mt-3 grid gap-x-6 gap-y-2 sm:grid-cols-2 lg:grid-cols-3">
+          {MATURITY_SEGMENTS.map((segment) => {
+            const count = maturity[segment.key];
+            return (
+              <li key={segment.key} className="flex items-center gap-2 text-sm">
+                <span className="h-2.5 w-2.5 shrink-0 rounded-sm" style={{ backgroundColor: segment.color }} />
+                <span className="min-w-0 flex-1 truncate text-zinc-700 dark:text-zinc-200">{segment.label}</span>
+                <span className="font-mono text-xs font-semibold text-muted-foreground">
+                  {count} · {Math.round((count / maturity.total) * 100)}%
+                </span>
+              </li>
+            );
+          })}
+        </ul>
+      </div>
+
+      <div className="grid gap-6 lg:grid-cols-2">
+        <div className="rounded-lg border border-black/[0.07] bg-white/[0.62] p-5 shadow-sm dark:border-white/10 dark:bg-white/[0.04]">
+          <p className="text-xs font-semibold uppercase text-muted-foreground">Tỷ lệ nhớ thật (true retention)</p>
+          {retention.rate !== null ? (
+            <>
+              <p className="mt-3 font-mono text-4xl font-semibold text-zinc-950 dark:text-white">
+                {formatRatePercent(retention.rate)}
+              </p>
+              <p className="mt-2 text-sm leading-6 text-muted-foreground">
+                Dựa trên {retention.totalReviewStateReviews} lượt ôn thẻ đã thuộc trong 30 ngày gần nhất —{' '}
+                {retention.retained} lượt không bị quên.
+              </p>
+            </>
+          ) : (
+            <p className="mt-3 text-sm leading-6 text-muted-foreground">
+              Chưa đủ dữ liệu: trong 30 ngày gần nhất chưa có lượt ôn nào trên thẻ đã thuộc (trạng thái review).
+            </p>
+          )}
+          <p className="mt-3 text-xs leading-5 text-muted-foreground">
+            Chỉ tính các lượt ôn mà trước khi chấm thẻ đang ở trạng thái đã thuộc; một lượt bị tính là quên khi bạn chấm
+            nút "Quên". Các thẻ đang học/học lại không nằm trong mẫu số này.
+          </p>
+        </div>
+
+        <div className="rounded-lg border border-black/[0.07] bg-white/[0.62] p-5 shadow-sm dark:border-white/10 dark:bg-white/[0.04]">
+          <p className="text-xs font-semibold uppercase text-muted-foreground">Phân bố nút chấm · 30 ngày</p>
+          {distribution.total > 0 ? (
+            <div className="mt-4 space-y-3">
+              {RATING_ROWS.map((row) => {
+                const count = distribution[row.key];
+                const share = (count / distribution.total) * 100;
+                return (
+                  <div key={row.key}>
+                    <div className="mb-1 flex items-center justify-between gap-3 text-sm">
+                      <span className="font-medium text-zinc-700 dark:text-zinc-200">{row.label}</span>
+                      <span className="font-mono text-xs font-semibold text-muted-foreground">
+                        {count} · {Math.round(share)}%
+                      </span>
+                    </div>
+                    <div className="h-2 overflow-hidden rounded-full bg-black/[0.06] dark:bg-white/10">
+                      <div className="h-full rounded-full" style={{ width: `${share}%`, backgroundColor: row.color }} />
+                    </div>
+                  </div>
+                );
+              })}
+              <p className="pt-1 text-xs text-muted-foreground">Tổng {distribution.total} lượt ôn trong 30 ngày gần nhất.</p>
+            </div>
+          ) : (
+            <p className="mt-3 text-sm leading-6 text-muted-foreground">
+              Chưa có lượt ôn nào được ghi lại trong 30 ngày gần nhất.
+            </p>
+          )}
+        </div>
+      </div>
+
+      <div>
+        <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2">
+          <h3 className="text-sm font-semibold text-zinc-950 dark:text-white">Lượt ôn theo ngày</h3>
+          <span className="text-xs text-muted-foreground">30 ngày gần nhất</span>
+        </div>
+        <div className="h-[260px]">
+          <Suspense fallback={<div className="h-full animate-pulse rounded-lg bg-black/[0.04] dark:bg-white/[0.06]" />}>
+            <DeepStatsChart data={reviewsByDay.map((point) => ({ label: point.label, count: point.count }))} />
+          </Suspense>
+        </div>
+      </div>
     </div>
   );
 }

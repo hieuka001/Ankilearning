@@ -35,6 +35,18 @@ export interface SchedulerConfig {
   minimumEaseFactor: number;
   leechThreshold: number;
   leechAction: LeechAction;
+  /**
+   * Personalized FSRS-6 weights (21 numbers for FSRS-6), produced by the
+   * in-app optimizer from the user's own review history. Absent = use the
+   * ts-fsrs default weights. `normalizeSchedulerConfig` validates the
+   * length and clamps every weight into a safe window around its default,
+   * so a malformed stored value can never reach the engine.
+   */
+  fsrsWeights?: number[];
+  /** ISO timestamp of the optimization run that produced `fsrsWeights`. */
+  fsrsOptimizedAt?: string;
+  /** Number of prediction samples the optimization was fitted on. */
+  fsrsOptimizationSamples?: number;
 }
 
 export interface SchedulerConfigInput extends Partial<Omit<SchedulerConfig, 'initialStability'>> {

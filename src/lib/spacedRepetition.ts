@@ -16,9 +16,13 @@ export type {
 
 export {
   calculateSchedulerReview,
+  clampFsrsWeights,
   createInitialCardSchedule,
+  DEFAULT_FSRS_WEIGHTS,
   DEFAULT_SCHEDULER_CONFIG,
   FSRS_VERSION,
+  FSRS_WEIGHT_BOUNDS,
+  FSRS_WEIGHT_COUNT,
   getCardDueDate,
   getLocalTomorrowIso,
   getRatingOptions,

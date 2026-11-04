@@ -14,18 +14,25 @@ import {
   ArrowRight,
   RotateCcw,
   FileUp,
-  Tag as TagIcon
+  Tag as TagIcon,
+  ChevronDown,
+  ChevronRight,
+  GraduationCap,
+  FolderTree
 } from 'lucide-react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
 import { useSettings } from '../contexts/SettingsContext';
 import { createInitialCardSchedule } from '../lib/spacedRepetition';
 import {
+  aggregateDeckStats,
+  buildDeckTree,
   computeDeckStudyStats,
   fetchDeckCardsCached,
   getDeckCacheSignature,
   invalidateDeckCardsCache,
   type DeckStudyStats,
+  type DeckTreeNode,
 } from '../lib/deckAnalytics';
 import { getCategoryArt } from '../lib/categoryArt';
 import { addDoc } from 'firebase/firestore';
@@ -37,12 +44,16 @@ interface DecksProps {
 
 export default function Decks({ user }: DecksProps) {
   const { settings } = useSettings();
+  const navigate = useNavigate();
   const [decks, setDecks] = useState<Deck[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedTag, setSelectedTag] = useState<string | null>(null);
   const [isImporting, setIsImporting] = useState(false);
   const [deckStats, setDeckStats] = useState<Record<string, DeckStudyStats>>({});
+  // Parent nodes ('Cha' in 'Cha::Con') are expanded by default; this set
+  // holds the full names of the branches the user collapsed.
+  const [collapsedNodes, setCollapsedNodes] = useState<Set<string>>(new Set());
   const fileInputRef = useRef<HTMLInputElement>(null);
   const deckStatsRequestRef = useRef(0);
 
@@ -181,6 +192,10 @@ export default function Decks({ user }: DecksProps) {
             front: card.front,
             back: card.back,
             type: card.type || 'basic',
+            // Contract fields for note types (cloze/reversed) — only when present.
+            ...(card.cardType ? { cardType: card.cardType } : {}),
+            ...(card.clozeText ? { clozeText: card.clozeText } : {}),
+            ...(typeof card.clozeIndex === 'number' ? { clozeIndex: card.clozeIndex } : {}),
             noteType: card.noteType || '',
             noteId: card.noteId || '',
             extraFields: card.extraFields || {},
@@ -236,6 +251,162 @@ export default function Decks({ user }: DecksProps) {
   });
 
   const allTags = Array.from(new Set(decks.flatMap(d => d.tags || [])));
+
+  const toggleNode = (name: string) => {
+    setCollapsedNodes((previous) => {
+      const next = new Set(previous);
+      if (next.has(name)) next.delete(name);
+      else next.add(name);
+      return next;
+    });
+  };
+
+  /** Study route for a whole branch: primary deck in the path, all ids in the query. */
+  const parentStudyPath = (node: DeckTreeNode<Deck>) => {
+    const primaryId = node.deck?.id ?? node.descendantIds[0];
+    return `/study/${primaryId}?decks=${node.descendantIds.join(',')}`;
+  };
+
+  const branchTotalCards = (node: DeckTreeNode<Deck>) =>
+    node.descendantDecks.reduce((sum, deck) => sum + (deck.cardCount || 0), 0);
+
+  // Display rows: while searching we keep the flat filtered list (grouping
+  // would hide matches under collapsed parents); otherwise decks are
+  // grouped into the '::' tree — parents show branch-aggregate stats and
+  // children appear indented below them while the branch is expanded.
+  type DeckDisplayRow =
+    | {
+        kind: 'deck';
+        key: string;
+        deck: Deck;
+        stats: DeckStudyStats;
+        totalCards: number;
+        title: string;
+        parentPath?: string;
+        depth: number;
+        parentNode?: DeckTreeNode<Deck>;
+      }
+    | { kind: 'virtual'; key: string; node: DeckTreeNode<Deck>; depth: number };
+
+  const isSearching = searchTerm.trim().length > 0;
+  const displayRows: DeckDisplayRow[] = [];
+  if (isSearching) {
+    filteredDecks.forEach((deck) => {
+      displayRows.push({
+        kind: 'deck',
+        key: deck.id,
+        deck,
+        stats: deckStats[deck.id] || { learned: 0, mastered: 0, due: 0 },
+        totalCards: deck.cardCount || 0,
+        title: deck.name,
+        depth: 0,
+      });
+    });
+  } else {
+    const walkRows = (nodes: DeckTreeNode<Deck>[], depth: number) => {
+      nodes.forEach((node) => {
+        const parentPath = node.name.includes('::')
+          ? node.name.slice(0, node.name.lastIndexOf('::'))
+          : undefined;
+        if (!node.deck) {
+          displayRows.push({ kind: 'virtual', key: `virtual:${node.name}`, node, depth });
+        } else if (node.children.length > 0) {
+          displayRows.push({
+            kind: 'deck',
+            key: node.deck.id,
+            deck: node.deck,
+            stats: aggregateDeckStats(deckStats, node.descendantIds),
+            totalCards: branchTotalCards(node),
+            title: node.segment,
+            parentPath,
+            depth,
+            parentNode: node,
+          });
+        } else {
+          displayRows.push({
+            kind: 'deck',
+            key: node.deck.id,
+            deck: node.deck,
+            stats: deckStats[node.deck.id] || { learned: 0, mastered: 0, due: 0 },
+            totalCards: node.deck.cardCount || 0,
+            title: depth > 0 ? node.segment : node.deck.name,
+            parentPath,
+            depth,
+          });
+        }
+        if (!collapsedNodes.has(node.name)) {
+          walkRows(node.children, depth + 1);
+        }
+      });
+    };
+    walkRows(buildDeckTree(filteredDecks), 0);
+  }
+
+  const renderVirtualParentRow = (node: DeckTreeNode<Deck>, depth: number) => {
+    const stats = aggregateDeckStats(deckStats, node.descendantIds);
+    const totalCards = branchTotalCards(node);
+    const collapsed = collapsedNodes.has(node.name);
+    return (
+      <div
+        key={`virtual:${node.name}`}
+        style={depth > 0 ? { marginLeft: `${Math.min(depth, 3) * 16}px` } : undefined}
+      >
+        <Card className="h-full flex flex-col rounded-[2rem] border-2 border-dashed border-zinc-300 bg-zinc-50/70 shadow-none dark:border-white/15 dark:bg-white/[0.02]">
+          <CardHeader className="p-8 pb-4">
+            <div className="flex items-start justify-between">
+              <div className="p-3 rounded-2xl bg-zinc-100 dark:bg-white/5 text-zinc-400">
+                <FolderTree size={28} />
+              </div>
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={() => toggleNode(node.name)}
+                className="text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-300 rounded-xl"
+                aria-label={collapsed ? `Mở nhóm ${node.name}` : `Đóng nhóm ${node.name}`}
+              >
+                {collapsed ? <ChevronRight size={20} /> : <ChevronDown size={20} />}
+              </Button>
+            </div>
+            {node.name.includes('::') && (
+              <p className="mt-6 text-[10px] font-bold uppercase tracking-widest text-zinc-400">
+                {node.name.slice(0, node.name.lastIndexOf('::')).split('::').join(' › ')}
+              </p>
+            )}
+            <CardTitle className={`text-2xl font-extrabold ${node.name.includes('::') ? 'mt-1' : 'mt-6'} dark:text-white tracking-tighter`}>
+              {node.segment}
+            </CardTitle>
+            <p className="mt-2 text-xs font-semibold text-zinc-400">
+              Nhóm bộ thẻ · {node.descendantDecks.length} bộ trong nhánh
+            </p>
+          </CardHeader>
+          <CardContent className="flex-1 flex flex-col justify-end px-8 pb-8">
+            <div className="mb-6 grid grid-cols-3 gap-2 text-center rounded-2xl border border-emerald-500/10 bg-emerald-500/[0.035] p-4 dark:border-white/10 dark:bg-white/[0.035]">
+              <div className="mode-chip p-2">
+                <p className="font-mono text-sm font-extrabold text-zinc-900 dark:text-white">{stats.learned}</p>
+                <p className="text-[9px] font-bold uppercase text-zinc-400">Đã học</p>
+              </div>
+              <div className="mode-chip p-2">
+                <p className="font-mono text-sm font-extrabold text-zinc-900 dark:text-white">{stats.due}</p>
+                <p className="text-[9px] font-bold uppercase text-zinc-400">Đến hạn</p>
+              </div>
+              <div className="mode-chip p-2">
+                <p className="font-mono text-sm font-extrabold text-zinc-900 dark:text-white">{totalCards}</p>
+                <p className="text-[9px] font-bold uppercase text-zinc-400">Tổng</p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => navigate(parentStudyPath(node))}
+              className="btn-press flex w-full items-center justify-center gap-2 rounded-2xl bg-primary px-4 py-3 text-xs font-extrabold uppercase tracking-widest text-white shadow-lg shadow-primary/20 transition-all hover:bg-primary/90"
+            >
+              <GraduationCap size={16} />
+              Học deck cha · gộp cả nhánh
+            </button>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  };
 
   if (loading) {
     return (
@@ -332,13 +503,19 @@ export default function Decks({ user }: DecksProps) {
 
       <div className="stagger-children grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
         {filteredDecks.length > 0 ? (
-          filteredDecks.map(deck => {
-            const stats = deckStats[deck.id] || { learned: 0, mastered: 0, due: 0 };
-            const totalCards = Math.max(deck.cardCount || 0, 1);
+          displayRows.map((row) => {
+            if (row.kind === 'virtual') {
+              return renderVirtualParentRow(row.node, row.depth);
+            }
+            const deck = row.deck;
+            const stats = row.stats;
+            const totalCards = Math.max(row.totalCards || 0, 1);
             const progress = Math.min(100, Math.round((stats.mastered / totalCards) * 100));
+            const parentNode = row.parentNode;
+            const parentCollapsed = parentNode ? collapsedNodes.has(parentNode.name) : false;
 
             return (
-            <Link key={deck.id} to={`/decks/${deck.id}`}>
+            <Link key={deck.id} to={`/decks/${deck.id}`} style={row.depth > 0 ? { marginLeft: `${Math.min(row.depth, 3) * 16}px` } : undefined}>
               <Card className="cv-auto card-hover deck-card-premium hover:shadow-2xl hover:-tranzinc-y-2 transition-all duration-500 border shadow-xl group overflow-hidden h-full flex flex-col rounded-[2rem]">
                 <div className="relative h-28 w-full shrink-0 overflow-hidden">
                   <img
@@ -371,13 +548,36 @@ export default function Decks({ user }: DecksProps) {
                         <BookOpen size={28} />
                       </div>
                     </div>
-                    <Button variant="ghost" size="icon" className="text-zinc-300 hover:text-zinc-600 dark:hover:text-zinc-400 rounded-xl">
-                      <MoreVertical size={20} />
-                    </Button>
+                    <div className="flex items-center gap-1">
+                      {parentNode && (
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          onClick={(e) => { e.preventDefault(); e.stopPropagation(); toggleNode(parentNode.name); }}
+                          className="text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-300 rounded-xl"
+                          aria-label={parentCollapsed ? `Mở nhóm ${parentNode.name}` : `Đóng nhóm ${parentNode.name}`}
+                        >
+                          {parentCollapsed ? <ChevronRight size={20} /> : <ChevronDown size={20} />}
+                        </Button>
+                      )}
+                      <Button variant="ghost" size="icon" className="text-zinc-300 hover:text-zinc-600 dark:hover:text-zinc-400 rounded-xl">
+                        <MoreVertical size={20} />
+                      </Button>
+                    </div>
                   </div>
-                  <CardTitle className="text-2xl font-extrabold mt-6 group-hover:text-primary transition-colors dark:text-white tracking-tighter">
-                    {deck.name}
+                  {row.parentPath && (
+                    <p className="mt-6 text-[10px] font-bold uppercase tracking-widest text-zinc-400">
+                      {row.parentPath.split('::').join(' › ')}
+                    </p>
+                  )}
+                  <CardTitle className={`text-2xl font-extrabold ${row.parentPath ? 'mt-1' : 'mt-6'} group-hover:text-primary transition-colors dark:text-white tracking-tighter`}>
+                    {row.title}
                   </CardTitle>
+                  {parentNode && (
+                    <p className="mt-2 text-xs font-semibold text-zinc-400">
+                      Bộ cha · số liệu gộp {parentNode.descendantDecks.length} bộ thẻ trong nhánh
+                    </p>
+                  )}
                   {deck.tags && deck.tags.length > 0 && (
                     <div className="flex flex-wrap gap-2 mt-3">
                       {deck.tags.map(tag => (
@@ -411,7 +611,7 @@ export default function Decks({ user }: DecksProps) {
                         <p className="text-[9px] font-bold uppercase text-zinc-400">Đến hạn</p>
                       </div>
                       <div className="mode-chip p-2">
-                        <p className="font-mono text-sm font-extrabold text-zinc-900 dark:text-white">{deck.cardCount}</p>
+                        <p className="font-mono text-sm font-extrabold text-zinc-900 dark:text-white">{row.totalCards}</p>
                         <p className="text-[9px] font-bold uppercase text-zinc-400">Tổng</p>
                       </div>
                     </div>
@@ -420,10 +620,21 @@ export default function Decks({ user }: DecksProps) {
                     </p>
                   </div>
 
+                  {parentNode && (
+                    <button
+                      type="button"
+                      onClick={(e) => { e.preventDefault(); e.stopPropagation(); navigate(parentStudyPath(parentNode)); }}
+                      className="btn-press mb-6 flex w-full items-center justify-center gap-2 rounded-2xl bg-primary px-4 py-3 text-xs font-extrabold uppercase tracking-widest text-white shadow-lg shadow-primary/20 transition-all hover:bg-primary/90"
+                    >
+                      <GraduationCap size={16} />
+                      Học deck cha · gộp cả nhánh
+                    </button>
+                  )}
+
                   <div className="flex items-center justify-between pt-6 border-t border-zinc-100 dark:border-white/5">
                     <div className="flex flex-col">
                       <span className="text-[9px] font-extrabold text-zinc-400 uppercase tracking-[0.2em]">Dung lượng</span>
-                      <span className="text-2xl font-extrabold text-zinc-900 dark:text-white font-mono tracking-tighter">{deck.cardCount}</span>
+                      <span className="text-2xl font-extrabold text-zinc-900 dark:text-white font-mono tracking-tighter">{row.totalCards}</span>
                     </div>
                     <div className="flex flex-col items-end">
                       <span className="text-[9px] font-extrabold text-zinc-400 uppercase tracking-[0.2em]">Danh mục</span>
