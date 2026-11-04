@@ -599,8 +599,8 @@ export default function Settings({ user, profile }: SettingsProps) {
 
     const nextReminder = {
       enabled: reminderDraft.enabled,
-      time: '21:00',
-      timezone: 'Asia/Bangkok',
+      time: reminderDraft.time || '21:00',
+      timezone: reminderDraft.timezone || 'Asia/Bangkok',
     };
 
     setIsSavingReminder(true);
@@ -619,7 +619,7 @@ export default function Settings({ user, profile }: SettingsProps) {
         .then(({ syncShellReminders }) => syncShellReminders(null, nextReminder, { force: true }))
         .catch(() => {});
       setReminderDraft((draft) => ({ ...draft, enabled: nextReminder.enabled }));
-      toast.success(nextReminder.enabled ? 'Đã bật thông báo học lúc 21:00.' : 'Đã tắt thông báo học.');
+      toast.success(nextReminder.enabled ? `Đã bật thông báo học lúc ${nextReminder.time}.` : 'Đã tắt thông báo học.');
     } catch {
       toast.error('Không thể lưu cài đặt nhắc học.');
     } finally {
