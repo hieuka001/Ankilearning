@@ -1,71 +1,155 @@
-import { useState } from 'react';
-import { GoogleAuthProvider, signInWithPopup, signOut } from 'firebase/auth';
+import { useEffect, useState } from 'react';
 import { ArrowRight, Loader2, MonitorSmartphone } from 'lucide-react';
-import { auth } from '../firebase';
 import { Button } from '@/components/ui/button';
 import Logo from '../components/Logo';
 
 /**
- * Desktop-shell sign-in landing page (`/desktop-auth`).
+ * Shell sign-in landing page (`/desktop-auth`).
  *
- * The Tauri/WebView2 shell cannot complete a Google sign-in inside its own
- * webview (the popup child window cannot hand its result back, and the
- * redirect round trip loses it), so the shell opens THIS page in the user's
- * real system browser instead. Here the normal popup flow works; once we
- * have the Google ID token we hand it back to the installed app through the
- * `ankilearning://` deep link, and the app exchanges it for a Firebase
- * session via `signInWithCredential` (see the `#glink=` consumer in App.tsx).
+ * The installed shell (Tauri/WebView2 on desktop, WKWebView on iOS) cannot
+ * complete a Google sign-in inside its own webview, so the shell opens THIS
+ * page in the user's real system browser instead. The token handoff back to
+ * the app goes through the `ankilearning://` deep link, and the app
+ * exchanges the Google ID token for a Firebase session via
+ * `signInWithCredential` (see the `#glink=`/`?glink=` consumer in App.tsx).
+ *
+ * This page deliberately does NOT use the Firebase Auth SDK: its
+ * `signInWithPopup` hangs forever in iOS Safari (the popup never returns).
+ * Instead it runs a manual OAuth 2.0 implicit flow — a full-page redirect to
+ * Google with `response_type=id_token` — and validates the returned token's
+ * `state` and `nonce` against values planted in sessionStorage before the
+ * redirect. The Google ID token itself is handed to the app untouched; the
+ * app-side Firebase sign-in verifies it.
  */
+
+// Public OAuth client identifier (not a secret) for the web sign-in flow.
+const GOOGLE_CLIENT_ID =
+  '369032392339-onq00t4eiq8574ev77ehnpop3f1ah24k.apps.googleusercontent.com';
+const GOOGLE_AUTH_ENDPOINT = 'https://accounts.google.com/o/oauth2/v2/auth';
+const STATE_STORAGE_KEY = 'ankilearning:oauth-state';
+const NONCE_STORAGE_KEY = 'ankilearning:oauth-nonce';
 
 type Status = 'idle' | 'working' | 'sent' | 'error';
 
-export default function DesktopAuth() {
-  const [status, setStatus] = useState<Status>('idle');
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  const [deepLink, setDeepLink] = useState<string | null>(null);
+type HashOutcome =
+  | { kind: 'none' }
+  | { kind: 'provider-error'; error: string }
+  | { kind: 'token'; idToken: string; valid: boolean };
 
-  const startBrowserSignIn = async () => {
+/** 16 random bytes rendered as 32 lowercase hex characters. */
+function randomHex(): string {
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+/** Decode a JWT payload (base64url, UTF-8 safe). Returns null on any failure. */
+function decodeJwtPayload(token: string): Record<string, unknown> | null {
+  try {
+    const part = token.split('.')[1];
+    if (!part) return null;
+    const base64 = part.replace(/-/g, '+').replace(/_/g, '/');
+    const padded = base64.padEnd(base64.length + ((4 - (base64.length % 4)) % 4), '=');
+    const binary = atob(padded);
+    const utf8 = decodeURIComponent(
+      Array.from(binary, (c) => `%${c.charCodeAt(0).toString(16).padStart(2, '0')}`).join(''),
+    );
+    return JSON.parse(utf8) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Inspect the URL fragment Google redirected back with. Pure reads only —
+ * the side effects (clearing storage/URL, firing the deep link) happen in
+ * the component's effect.
+ */
+function inspectHash(): HashOutcome {
+  const raw = window.location.hash.replace(/^#/, '');
+  if (!raw) return { kind: 'none' };
+  const params = new URLSearchParams(raw);
+
+  const error = params.get('error');
+  if (error) return { kind: 'provider-error', error };
+
+  const idToken = params.get('id_token');
+  if (!idToken) return { kind: 'none' };
+
+  const expectedState = sessionStorage.getItem(STATE_STORAGE_KEY);
+  const expectedNonce = sessionStorage.getItem(NONCE_STORAGE_KEY);
+  const stateOk = !!expectedState && params.get('state') === expectedState;
+  const payload = decodeJwtPayload(idToken);
+  const nonceOk = !!expectedNonce && !!payload && payload.nonce === expectedNonce;
+  return { kind: 'token', idToken, valid: stateOk && nonceOk };
+}
+
+function buildDeepLink(idToken: string): string {
+  return `ankilearning://auth#t=${encodeURIComponent(idToken)}`;
+}
+
+export default function DesktopAuth() {
+  // Evaluate the return-from-Google hash exactly once, before first paint,
+  // so a completed sign-in never flashes the idle button.
+  const [outcome] = useState<HashOutcome>(inspectHash);
+  const [status, setStatus] = useState<Status>(() => {
+    if (outcome.kind === 'token') return outcome.valid ? 'sent' : 'error';
+    if (outcome.kind === 'provider-error') return 'error';
+    return 'idle';
+  });
+  const [errorMsg, setErrorMsg] = useState<string | null>(() => {
+    if (outcome.kind === 'token' && !outcome.valid) {
+      return 'Phiên đăng nhập không hợp lệ, thử lại nhé';
+    }
+    if (outcome.kind === 'provider-error') {
+      return outcome.error === 'access_denied'
+        ? 'Bạn đã hủy đăng nhập Google. Bấm nút bên dưới để thử lại.'
+        : 'Đăng nhập bằng Google không hoàn tất. Vui lòng thử lại.';
+    }
+    return null;
+  });
+  const [deepLink] = useState<string | null>(() =>
+    outcome.kind === 'token' && outcome.valid ? buildDeepLink(outcome.idToken) : null,
+  );
+
+  // One-shot side effects for a return-from-Google load: drop the stored
+  // state/nonce, scrub the token out of the address bar, and — only for a
+  // fully validated token — hand it to the installed app.
+  useEffect(() => {
+    if (outcome.kind === 'none') return;
+    sessionStorage.removeItem(STATE_STORAGE_KEY);
+    sessionStorage.removeItem(NONCE_STORAGE_KEY);
+    window.history.replaceState(
+      null,
+      '',
+      `${window.location.pathname}${window.location.search}`,
+    );
+    if (outcome.kind === 'token' && outcome.valid) {
+      window.location.href = buildDeepLink(outcome.idToken);
+    }
+    // `outcome` is a mount-time constant by construction.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const startSignIn = () => {
     setErrorMsg(null);
     setStatus('working');
 
-    // Start from a clean slate so the account the user picks here is the
-    // one that ends up in the desktop app, even if this browser profile was
-    // still signed in as someone else. A failed sign-out is not fatal.
-    try {
-      await signOut(auth);
-    } catch {
-      // Ignore — continue with the popup either way.
-    }
+    const state = randomHex();
+    const nonce = randomHex();
+    sessionStorage.setItem(STATE_STORAGE_KEY, state);
+    sessionStorage.setItem(NONCE_STORAGE_KEY, nonce);
 
-    try {
-      const provider = new GoogleAuthProvider();
-      const result = await signInWithPopup(auth, provider);
-      const credential = GoogleAuthProvider.credentialFromResult(result);
-      const idToken = credential?.idToken;
-      if (!idToken) {
-        setStatus('error');
-        setErrorMsg('Không lấy được mã đăng nhập từ Google. Vui lòng thử lại.');
-        return;
-      }
-
-      const link = `ankilearning://auth#t=${encodeURIComponent(idToken)}`;
-      setDeepLink(link);
-      setStatus('sent');
-      // Hand the token back to the installed app. If the protocol handler
-      // is missing (app uninstalled), the manual link below stays visible.
-      window.location.href = link;
-    } catch (error) {
-      const code = (error as { code?: string } | null)?.code ?? '';
-      setStatus('error');
-      if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') {
-        setErrorMsg('Bạn đã đóng cửa sổ đăng nhập Google. Bấm nút bên dưới để thử lại.');
-      } else if (code === 'auth/popup-blocked') {
-        setErrorMsg('Trình duyệt đã chặn cửa sổ đăng nhập. Hãy cho phép cửa sổ bật lên (popup) cho trang này rồi thử lại.');
-      } else {
-        console.error('Desktop browser sign-in error:', error);
-        setErrorMsg('Đăng nhập bằng Google thất bại. Vui lòng thử lại.');
-      }
-    }
+    const params = new URLSearchParams({
+      client_id: GOOGLE_CLIENT_ID,
+      redirect_uri: `${window.location.origin}/desktop-auth`,
+      response_type: 'id_token',
+      scope: 'openid email profile',
+      nonce,
+      state,
+      prompt: 'select_account',
+    });
+    window.location.assign(`${GOOGLE_AUTH_ENDPOINT}?${params.toString()}`);
   };
 
   return (
@@ -88,11 +172,11 @@ export default function DesktopAuth() {
         </span>
 
         <h1 className="text-xl font-semibold text-zinc-950 dark:text-white">
-          Đăng nhập để mở AnkiLearning trên máy tính
+          Đăng nhập để mở AnkiLearning
         </h1>
         <p className="mt-2 text-sm leading-6 text-muted-foreground">
           Đăng nhập bằng Google ngay tại trình duyệt này. Hoàn tất xong, ứng dụng
-          AnkiLearning trên máy tính sẽ tự mở ra trong trạng thái đã đăng nhập.
+          AnkiLearning sẽ tự mở ra trong trạng thái đã đăng nhập.
         </p>
 
         {status === 'sent' ? (
@@ -116,14 +200,14 @@ export default function DesktopAuth() {
         ) : (
           <div className="mt-7">
             <Button
-              onClick={startBrowserSignIn}
+              onClick={startSignIn}
               disabled={status === 'working'}
               className="btn-press h-11 w-full gap-2"
             >
               {status === 'working' ? (
                 <>
                   <Loader2 size={16} className="animate-spin" />
-                  Đang chờ đăng nhập Google…
+                  Đang chuyển tới Google…
                 </>
               ) : (
                 <>
