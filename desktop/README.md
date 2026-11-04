@@ -17,6 +17,22 @@ cũng build được bản iPhone dạng IPA chưa ký — xem mục iOS bên d�
   kiểm tra `latest.json` trên GitHub Releases; có vỏ mới thì hiện hộp thoại
   "Cập nhật ngay / Để sau", tải, cài và tự khởi động lại.
 
+## Thay đổi ở bản vỏ 1.0.3
+
+- **Thông báo nhắc ôn tập cục bộ:** bản web đồng bộ lịch nhắc học qua deep
+  link `ankilearning://reminders`, vỏ chuyển thành **thông báo hẹn giờ của
+  hệ điều hành** (plugin notification chính thức của Tauri) — tới giờ ôn
+  tập máy tự báo kể cả khi app đang đóng, điều mà thông báo web bên trong
+  vỏ không làm được. Mỗi lần đồng bộ, các nhắc cũ của tính năng này (id
+  2000–2099) được huỷ và đặt lại toàn bộ theo lịch mới, tối đa 20 mục.
+- **Lần đồng bộ đầu tiên, iOS/Windows sẽ hỏi quyền thông báo** — chọn
+  **Cho phép** thì nhắc mới hiện được; nếu lỡ từ chối, vào cài đặt thông
+  báo của hệ điều hành bật lại cho AnkiLearning.
+- Khác biệt nền tảng theo giới hạn của plugin: **bản iPhone hẹn đúng giờ
+  hẹn**; bản máy tính (Windows/macOS) chưa được plugin hỗ trợ hẹn giờ nên
+  nhắc hiện ngay tại thời điểm đồng bộ thay vì đúng giờ hẹn, và cũng không
+  có cơ chế huỷ nhắc cũ. Nội dung nhắc vẫn đến tay người dùng như nhau.
+
 ## Thay đổi ở bản vỏ 1.0.2
 
 - **Đăng nhập Google qua trình duyệt hệ thống + deep link:** cả popup lẫn

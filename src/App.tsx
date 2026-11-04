@@ -1,4 +1,4 @@
-import { Component, useEffect, useState, lazy, Suspense, type ErrorInfo, type ReactNode } from 'react';
+import { Component, useEffect, useRef, useState, lazy, Suspense, type ErrorInfo, type ReactNode } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate, Link, useLocation } from 'react-router-dom';
 import { getRedirectResult, onAuthStateChanged, signInWithCredential, signInWithPopup, signInWithRedirect, GoogleAuthProvider, signOut, User } from 'firebase/auth';
 import { collection, doc, getDoc, limit, onSnapshot, orderBy, query, setDoc } from 'firebase/firestore';
@@ -172,6 +172,25 @@ export default function App() {
       .then(({ flushReviewQueue }) => flushReviewQueue())
       .catch((error) => console.warn('Review queue sync failed.', error));
   }, [user?.uid]);
+
+  // Inside the desktop/iOS shell, hand the study-reminder schedule to the
+  // shell once per session (after the profile — which carries the reminder
+  // config — has loaded) so it can post local notifications on the device.
+  // No-op in a regular browser/PWA; Settings re-syncs with force on save.
+  const shellReminderSyncedForRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!user?.uid || !profile) return;
+    if (shellReminderSyncedForRef.current === user.uid) return;
+    shellReminderSyncedForRef.current = user.uid;
+    const reminderConfig = profile.settings?.studyReminder || {
+      enabled: false,
+      time: '21:00',
+      timezone: 'Asia/Bangkok',
+    };
+    import('./lib/shellReminders')
+      .then(({ syncShellReminders }) => syncShellReminders(null, reminderConfig))
+      .catch((error) => console.warn('Shell reminder sync failed.', error));
+  }, [user?.uid, profile]);
 
   // Celebrate freshly unlocked badges (gamificationService dispatches
   // 'ankilearning:badge' for every badge unlocked by an activity).

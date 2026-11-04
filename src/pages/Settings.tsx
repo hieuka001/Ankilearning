@@ -612,6 +612,12 @@ export default function Settings({ user, profile }: SettingsProps) {
         },
       });
       updateSettings({ studyReminder: nextReminder });
+      // Inside the desktop/iOS shell, push the updated reminder schedule to
+      // the shell right away (it owns the device notifications). No-op in a
+      // regular browser/PWA, and never blocks the save feedback.
+      import('../lib/shellReminders')
+        .then(({ syncShellReminders }) => syncShellReminders(null, nextReminder, { force: true }))
+        .catch(() => {});
       setReminderDraft((draft) => ({ ...draft, enabled: nextReminder.enabled }));
       toast.success(nextReminder.enabled ? 'Đã bật thông báo học lúc 21:00.' : 'Đã tắt thông báo học.');
     } catch {

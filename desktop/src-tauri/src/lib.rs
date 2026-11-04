@@ -34,13 +34,23 @@
 // On Windows/Linux a deep link for an already-running app arrives as the CLI
 // arguments of a second process — the single-instance plugin (registered
 // FIRST on desktop, as its docs require) forwards them to
-// `handle_auth_deep_link`; a cold start is covered by
-// `deep_link().get_current()` in `setup`, and `on_open_url` covers macOS,
-// iOS and any other platform-delivered events. On iOS, `on_open_url` /
-// `get_current` are the delivery paths because there is no second process.
+// `handle_deep_link` (which routes to the auth and reminders handlers); a
+// cold start is covered by `deep_link().get_current()` in `setup`, and
+// `on_open_url` covers macOS, iOS and any other platform-delivered events.
+// On iOS, `on_open_url` / `get_current` are the delivery paths because
+// there is no second process.
+
+// Study reminders (shell 1.0.3+): the web app syncs its reminder schedule
+// through `ankilearning://reminders#d=<base64url(JSON)>` deep links, and the
+// shell turns them into real local notifications with the device's own
+// notification system (the official Tauri notification plugin), so a
+// reminder can fire at its set time even while the app is closed — the
+// in-webview service worker cannot do that inside a native shell. Every
+// sync replaces the previous set placed by this feature.
 
 use tauri::{Manager, WebviewWindowBuilder};
 use tauri_plugin_deep_link::DeepLinkExt;
+use tauri_plugin_notification::{NotificationExt, PermissionState, Schedule};
 use tauri_plugin_opener::OpenerExt;
 
 #[cfg(desktop)]
@@ -58,6 +68,14 @@ const DESKTOP_AUTH_TRIGGER: &str = "https://learning-with-trunghieu.vercel.app/_
 /// calling the `ankilearning://auth#t=<token>` deep link.
 const DESKTOP_AUTH_PAGE: &str = "https://learning-with-trunghieu.vercel.app/desktop-auth";
 const DEEP_LINK_PREFIX: &str = "ankilearning://auth";
+const REMINDERS_DEEP_LINK_PREFIX: &str = "ankilearning://reminders";
+/// Notification ids owned by the study-reminder feature. Every sync cancels
+/// this range (on platforms whose plugin can cancel) before placing the new
+/// set, so reminders from an older schedule never survive an update.
+const REMINDER_ID_FIRST: i32 = 2000;
+const REMINDER_ID_LAST: i32 = 2099;
+/// Contract cap from the web side: at most 20 reminder items per sync.
+const REMINDER_MAX_ITEMS: usize = 20;
 
 /// Extract the sign-in token from an `ankilearning://auth#t=<token>` deep
 /// link. Returns `None` for anything that does not match the expected shape
@@ -112,6 +130,190 @@ fn handle_auth_deep_link(app: &tauri::AppHandle, raw_url: &str) {
             let _ = window.navigate(url);
         }
     }
+}
+
+/// The reminder schedule exactly as the web app sends it in the
+/// `ankilearning://reminders#d=` payload. `at` values are wall-clock times
+/// in the device's own timezone ("2026-11-05T21:00:00"), not UTC instants.
+#[derive(serde::Deserialize)]
+struct ReminderSyncPayload {
+    v: u32,
+    items: Vec<ReminderSyncItem>,
+}
+
+#[derive(serde::Deserialize)]
+struct ReminderSyncItem {
+    at: String,
+    title: String,
+    body: String,
+}
+
+/// Decode base64url, tolerating missing padding (and stripping any padding
+/// that is present). Returns `None` on invalid input.
+fn decode_base64url(value: &str) -> Option<Vec<u8>> {
+    use base64::Engine;
+    // A fragment value may arrive percent-encoded; `=` is the only escaped
+    // character that can legitimately appear in base64url output.
+    let value = value.replace("%3D", "=").replace("%3d", "=");
+    let cleaned: String = value
+        .trim()
+        .trim_end_matches('=')
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect();
+    base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(cleaned)
+        .ok()
+}
+
+/// Extract and decode the reminder payload from an
+/// `ankilearning://reminders#d=<base64url(JSON)>` deep link. Returns `None`
+/// for anything else (auth links, unrelated args, malformed payloads).
+fn extract_reminders_payload(raw_url: &str) -> Option<ReminderSyncPayload> {
+    let raw_url = raw_url.trim();
+    if !raw_url
+        .to_ascii_lowercase()
+        .starts_with(REMINDERS_DEEP_LINK_PREFIX)
+    {
+        return None;
+    }
+    let fragment = raw_url.split('#').nth(1)?;
+    for pair in fragment.split('&') {
+        if let Some(data) = pair.strip_prefix("d=") {
+            let bytes = decode_base64url(data)?;
+            return serde_json::from_slice(&bytes).ok();
+        }
+    }
+    None
+}
+
+/// Parse a "YYYY-MM-DDTHH:MM:SS" wall-clock time in the device's local
+/// timezone into an absolute instant. Returns `None` when the string does
+/// not parse or the calendar date does not exist. If the local UTC offset
+/// cannot be determined (rare; the platforms this shell ships on all
+/// provide it), UTC is used as a fallback rather than failing the sync.
+fn parse_local_datetime(value: &str) -> Option<time::OffsetDateTime> {
+    let (date_part, time_part) = value.trim().split_once('T')?;
+    let mut date_fields = date_part.split('-');
+    let year: i32 = date_fields.next()?.parse().ok()?;
+    let month: u8 = date_fields.next()?.parse().ok()?;
+    let day: u8 = date_fields.next()?.parse().ok()?;
+    if date_fields.next().is_some() {
+        return None;
+    }
+    let mut time_fields = time_part.split(':');
+    let hour: u8 = time_fields.next()?.parse().ok()?;
+    let minute: u8 = time_fields.next()?.parse().ok()?;
+    // Seconds are part of the contract format but tolerated when absent or
+    // followed by fractional digits.
+    let second: u8 = time_fields
+        .next()
+        .map(|field| {
+            field
+                .chars()
+                .take_while(|c| c.is_ascii_digit())
+                .collect::<String>()
+        })
+        .and_then(|digits| digits.parse().ok())
+        .unwrap_or(0);
+    let date = time::Date::from_calendar_date(year, time::Month::try_from(month).ok()?, day)
+        .ok()?;
+    let time_of_day = time::Time::from_hms(hour, minute, second).ok()?;
+    let offset = time::UtcOffset::current_local_offset().unwrap_or(time::UtcOffset::UTC);
+    Some(time::PrimitiveDateTime::new(date, time_of_day).assume_offset(offset))
+}
+
+/// Handle a possible reminder-sync deep link: replace the notifications
+/// this feature scheduled earlier with the new set from the payload.
+///
+/// Reminders are auxiliary — every step is best-effort and swallows its
+/// errors, so a malformed payload or a platform refusal can never crash
+/// the shell or surface a dialog. Platform notes (Tauri notification
+/// plugin v2, verified against docs.rs):
+/// - Permission: `permission_state` / `request_permission` exist on both
+///   families. On desktop they always resolve to Granted without a prompt;
+///   on iOS the request is what shows the system permission alert.
+/// - Scheduling uses the builder's `Schedule::At { date, repeating,
+///   allow_while_idle }`. Scheduling is only implemented on mobile; the
+///   desktop implementation ignores the schedule and delivers the
+///   notification immediately, so on Windows/macOS a sync surfaces the
+///   reminders right away instead of at their set times.
+/// - Cancelling the previous set is only possible on mobile: the desktop
+///   `Notification` API has no `pending` / `cancel` at all.
+fn handle_reminders_deep_link(app: &tauri::AppHandle, raw_url: &str) {
+    // Scheduling exists only on mobile: the notification plugin delivers
+    // immediately and cannot cancel on desktop, so ignore reminder links there.
+    #[cfg(not(mobile))]
+    {
+        let _ = (app, raw_url);
+        return;
+    }
+    let Some(payload) = extract_reminders_payload(raw_url) else {
+        return;
+    };
+    if payload.v != 1 {
+        return;
+    }
+
+    let notifications = app.notification();
+
+    // Ask for the notification permission if it was not granted yet.
+    match notifications.permission_state() {
+        Ok(PermissionState::Granted) => {}
+        _ => {
+            let _ = notifications.request_permission();
+        }
+    }
+
+    // Cancel the pending notifications this feature placed previously.
+    // Mobile only — see the platform notes above.
+    #[cfg(mobile)]
+    {
+        if let Ok(pending) = notifications.pending() {
+            let stale_ids: Vec<i32> = pending
+                .iter()
+                .map(|notification| notification.id())
+                .filter(|id| (REMINDER_ID_FIRST..=REMINDER_ID_LAST).contains(id))
+                .collect();
+            if !stale_ids.is_empty() {
+                let _ = notifications.cancel(stale_ids);
+            }
+        }
+    }
+
+    // Place the new set. Past-due and unparseable items are skipped; ids
+    // ascend from REMINDER_ID_FIRST so the next sync can cancel exactly
+    // this feature's range again.
+    let now = time::OffsetDateTime::now_utc();
+    let mut next_id = REMINDER_ID_FIRST;
+    for item in payload.items.iter().take(REMINDER_MAX_ITEMS) {
+        let Some(when) = parse_local_datetime(&item.at) else {
+            continue;
+        };
+        if when <= now {
+            continue;
+        }
+        let _ = notifications
+            .builder()
+            .id(next_id)
+            .title(item.title.clone())
+            .body(item.body.clone())
+            .schedule(Schedule::At {
+                date: when,
+                repeating: false,
+                allow_while_idle: false,
+            })
+            .show();
+        next_id += 1;
+    }
+}
+
+/// Single entry point for every deep link the shell receives, whatever the
+/// delivery path: each `ankilearning://…` family has its own handler and
+/// silently ignores URLs that are not theirs.
+fn handle_deep_link(app: &tauri::AppHandle, raw_url: &str) {
+    handle_auth_deep_link(app, raw_url);
+    handle_reminders_deep_link(app, raw_url);
 }
 
 /// Navigation policy shared by desktop and mobile: sign-in leaves the
@@ -222,12 +424,13 @@ pub fn run() {
     let builder = builder.plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
         focus_main_window(app);
         for arg in &args {
-            handle_auth_deep_link(app, arg);
+            handle_deep_link(app, arg);
         }
     }));
 
     let builder = builder
         .plugin(tauri_plugin_deep_link::init())
+        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_opener::init());
 
     // Desktop only: the Tauri updater supports Windows/Linux/macOS, and the
@@ -244,7 +447,7 @@ pub fn run() {
             // Deep links that launched the app (cold start).
             if let Ok(Some(urls)) = app.handle().deep_link().get_current() {
                 for url in &urls {
-                    handle_auth_deep_link(app.handle(), url.as_str());
+                    handle_deep_link(app.handle(), url.as_str());
                 }
             }
             // Deep links delivered while the app is already running. This is
@@ -254,7 +457,7 @@ pub fn run() {
             let deep_link_handle = app.handle().clone();
             app.handle().deep_link().on_open_url(move |event| {
                 for url in event.urls().iter() {
-                    handle_auth_deep_link(&deep_link_handle, url.as_str());
+                    handle_deep_link(&deep_link_handle, url.as_str());
                 }
             });
 

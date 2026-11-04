@@ -330,6 +330,12 @@
     padding-top: env(safe-area-inset-top);
   }
 
+  /* Toasts render top-center; on notched phones the fixed toaster would sit
+     under the status bar without this extra inset (0 on other devices). */
+  [data-sonner-toaster][data-y-position='top'] {
+    top: calc(var(--offset-top, 24px) + env(safe-area-inset-top, 0px)) !important;
+  }
+
   /* Static gradient: the old canvasDrift animation repainted the whole
      background continuously (background-position is a paint property). */
   .app-surface {
@@ -719,7 +725,10 @@
     position: relative;
     z-index: 2;
     display: flex;
-    height: 4rem;
+    /* Grow past the notch/status bar on phones (viewport-fit=cover): the
+       inset is 0 on devices without one, so nothing changes there. */
+    height: calc(4rem + env(safe-area-inset-top, 0px));
+    padding-top: env(safe-area-inset-top, 0px);
     flex-shrink: 0;
     align-items: center;
     justify-content: space-between;
@@ -734,7 +743,8 @@
 
   @media (min-width: 768px) {
     .app-topbar {
-      height: 5.25rem;
+      height: calc(5.25rem + env(safe-area-inset-top, 0px));
+      padding-top: env(safe-area-inset-top, 0px);
       padding-inline: 2rem;
     }
   }

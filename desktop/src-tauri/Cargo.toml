@@ -1,6 +1,6 @@
 [package]
 name = "ankilearning-desktop"
-version = "1.0.2"
+version = "1.0.3"
 description = "AnkiLearning desktop shell"
 edition = "2021"
 
@@ -14,9 +14,15 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-deep-link = "2"
+tauri-plugin-notification = "2"
 tauri-plugin-opener = "2"
+base64 = "0.22"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Needed to name the `OffsetDateTime` in the notification plugin's public
+# `Schedule::At { date, .. }` API. `local-offset` powers the conversion of
+# the web side's device-local wall-clock times into absolute instants.
+time = { version = "0.3", features = ["local-offset"] }
 
 # Desktop-only plugins. The updater supports Windows/Linux/macOS only, and
 # single-instance has no mobile equivalent; dialog is only used by the
