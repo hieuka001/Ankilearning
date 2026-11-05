@@ -390,10 +390,29 @@ export default function App() {
       // Desktop shell: sign-in must happen in the user's system browser.
       // The popup's child window cannot hand its result back to the shell
       // window, and the redirect round trip loses it too — both dead-end
-      // here. Instead, navigate to a magic path the shell intercepts: it
-      // opens /desktop-auth in the system browser, the user signs in
-      // there, and the resulting Google ID token deep-links back into this
+      // here. Primary trigger (shell 1.0.5+): ask the shell directly over
+      // the Tauri IPC bridge to open /desktop-auth in the system browser.
+      // The older trigger — navigating to a magic path the shell
+      // intercepts — is kept as the fallback: it is proven on desktop and
+      // iOS, but on Android the embedded WebView can swallow the
+      // navigation before the shell's handler ever sees it, which left
+      // the login button visibly dead. The user signs in in the browser,
+      // and the resulting Google ID token deep-links back into this
       // window (consumed by the `#glink=` effect above).
+      const internals = (
+        window as unknown as {
+          __TAURI_INTERNALS__?: { invoke?: (cmd: string) => Promise<unknown> };
+        }
+      ).__TAURI_INTERNALS__;
+      if (internals?.invoke) {
+        try {
+          await internals.invoke('start_google_signin');
+          return;
+        } catch {
+          // Shell without the command (pre-1.0.5) or a bridge hiccup —
+          // fall through to the navigation trigger below.
+        }
+      }
       window.location.assign('/__desktop_auth');
       return;
     }

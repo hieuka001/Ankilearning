@@ -326,6 +326,42 @@ fn handle_reminders_deep_link(app: &tauri::AppHandle, raw_url: &str) {
 fn handle_deep_link(app: &tauri::AppHandle, raw_url: &str) {
     handle_auth_deep_link(app, raw_url);
     handle_reminders_deep_link(app, raw_url);
+    handle_desktop_auth_deep_link(app, raw_url);
+}
+
+/// Tauri command the web app calls (through the always-present
+/// `__TAURI_INTERNALS__.invoke` bridge) to start the Google sign-in.
+///
+/// This is the PRIMARY trigger on Android: the in-webview navigation
+/// interception below (`on_navigation`) is proven on desktop and iOS, but
+/// on Android the button press produced no visible reaction at all — the
+/// embedded WebView gives the navigation layer extra ways to swallow the
+/// trigger (service-worker-handled navigations, scheme handling) that the
+/// other platforms do not have. The IPC bridge is core Tauri plumbing and
+/// does not depend on any navigation behaviour: the web app calls this
+/// command and the shell opens the sign-in page in the system browser,
+/// exactly like the navigation handler does.
+#[tauri::command]
+fn start_google_signin(app: tauri::AppHandle) -> Result<(), String> {
+    app.opener()
+        .open_url(DESKTOP_AUTH_PAGE, None::<&str>)
+        .map_err(|e| e.to_string())
+}
+
+/// Handle a possible `ankilearning://desktop-auth` deep link: the web app
+/// can also fire this scheme as a sign-in trigger, and the shell answers it
+/// the same way as every other trigger — by opening the sign-in page in the
+/// system browser. Belt-and-braces alongside the IPC command and the
+/// in-webview navigation interception, so the sign-in has three independent
+/// ways out of the webview.
+fn handle_desktop_auth_deep_link(app: &tauri::AppHandle, raw_url: &str) {
+    if raw_url
+        .trim()
+        .to_ascii_lowercase()
+        .starts_with("ankilearning://desktop-auth")
+    {
+        let _ = app.opener().open_url(DESKTOP_AUTH_PAGE, None::<&str>);
+    }
 }
 
 /// Navigation policy shared by desktop and mobile: sign-in leaves the
@@ -603,6 +639,7 @@ pub fn run() {
     let builder = builder.plugin(tauri_plugin_apk_installer::init());
 
     builder
+        .invoke_handler(tauri::generate_handler![start_google_signin])
         .setup(|app| {
             build_main_window(app)?;
 
