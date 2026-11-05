@@ -1885,12 +1885,12 @@ export default function DeckDetail({ user, profile }: DeckDetailProps) {
 
       {/* Add Card Modal */}
       <Dialog open={isAddModalOpen} onOpenChange={setIsAddModalOpen}>
-        <DialogContent className="max-w-3xl rounded-3xl">
+        <DialogContent className="flex max-w-3xl flex-col rounded-3xl">
           <DialogHeader>
             <DialogTitle>Thêm thẻ mới</DialogTitle>
           </DialogHeader>
           
-          <div className="space-y-6 py-4">
+          <div className="min-h-0 space-y-6 overflow-y-auto py-4 pr-1">
             {/* AI Section */}
             <div className="p-4 bg-emerald-50 dark:bg-emerald-500/10 rounded-2xl border border-emerald-100 dark:border-emerald-500/20 space-y-3">
               <div className="flex items-center gap-2 text-emerald-700 dark:text-emerald-300 font-bold">
