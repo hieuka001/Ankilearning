@@ -24,15 +24,14 @@ import { collection, addDoc, serverTimestamp, writeBatch, doc, query, where, get
 import { db } from '../firebase';
 import { useNavigate } from 'react-router-dom';
 import { createInitialCardSchedule } from '../lib/spacedRepetition';
-import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
+import { extractTextFromDocument } from '../lib/documentText';
 import tesseractWorkerUrl from 'tesseract.js/dist/worker.min.js?url';
 
-// pdfjs (thư viện ~452KB) được nạp lười bên trong handler xử lý PDF để không
-// tải kèm trang; chỉ URL của worker (chuỗi) được import tĩnh tại đây.
-// Tesseract cũng tự host toàn bộ: worker từ bundle, core WASM + dữ liệu ngôn
+// Trích xuất tài liệu (PDF/DOCX/TXT/MD) dùng lib chung src/lib/documentText.ts
+// — pdfjs và mammoth đều nạp lười trong lib nên không tải kèm trang.
+// Tesseract tự host toàn bộ: worker từ bundle, core WASM + dữ liệu ngôn
 // ngữ eng/vie từ public/tesseract-core và public/tessdata (không còn CDN).
 
-const MAX_PDF_PAGES = 30;
 const MAX_MATERIAL_CHARS = 60000;
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 const EMPTY_CARDS_MESSAGE = 'AI không tạo được thẻ nào từ nội dung này — thử rút gọn/chia nhỏ tài liệu hoặc kiểm tra lại nội dung.';
@@ -42,31 +41,6 @@ const TRUNCATED_MESSAGE = `Nội dung quá dài nên đã được cắt còn ${
 function capMaterialText(text: string): { text: string; truncated: boolean } {
   if (text.length <= MAX_MATERIAL_CHARS) return { text, truncated: false };
   return { text: text.slice(0, MAX_MATERIAL_CHARS), truncated: true };
-}
-
-// Trích text từ một trang PDF nhưng giữ cấu trúc dòng/đoạn:
-// xuống dòng khi toạ độ dọc thay đổi, cách đoạn khi khoảng cách dọc lớn.
-function extractPdfPageText(items: any[]): string {
-  let text = '';
-  let lastY: number | null = null;
-  let lastHeight = 12;
-  for (const item of items) {
-    if (typeof item?.str !== 'string') continue;
-    const y = Array.isArray(item.transform) ? Number(item.transform[5]) : null;
-    const height = typeof item.height === 'number' && item.height > 0 ? item.height : lastHeight;
-    if (y !== null && lastY !== null) {
-      const gap = Math.abs(y - lastY);
-      if (gap > Math.max(2, height * 0.5) && text && !text.endsWith('\n')) {
-        text += gap > height * 1.6 ? '\n\n' : '\n';
-      }
-    }
-    if (text && !text.endsWith('\n') && !text.endsWith(' ') && item.str) text += ' ';
-    text += item.str;
-    if (item.hasEOL) text += '\n';
-    if (y !== null) lastY = y;
-    lastHeight = height;
-  }
-  return text.trim();
 }
 
 // Nén ảnh trước khi gửi Vision: cạnh dài tối đa 1600px, JPEG chất lượng 0.85.
@@ -196,54 +170,34 @@ export default function AIHelper({ user, profile }: AIHelperProps) {
     }
   };
 
-  const handlePdfUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleDocumentUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file && file.type !== 'application/pdf') {
-      toast.error("Vui lòng chọn đúng file PDF.");
-      e.target.value = '';
-      return;
-    }
-    if (file && file.type === 'application/pdf') {
-      setIsProcessing(true);
-      setOcrText('');
-      const reader = new FileReader();
-      reader.onload = async (event) => {
-        const typedArray = new Uint8Array(event.target?.result as ArrayBuffer);
-        try {
-          const pdfjsLib = await import('pdfjs-dist');
-          pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
-          const pdf = await pdfjsLib.getDocument(typedArray).promise;
-          const totalPages = pdf.numPages;
-          const pagesToRead = Math.min(totalPages, MAX_PDF_PAGES);
-          if (totalPages > MAX_PDF_PAGES) {
-            toast.warning(`PDF có ${totalPages} trang — chỉ trích xuất ${MAX_PDF_PAGES} trang đầu tiên. Hãy tách file nếu cần nội dung các trang sau.`);
-          }
-          const pageTexts: string[] = [];
-          const toastId = toast.loading(`Đang xử lý PDF: 0/${pagesToRead} trang...`);
-
-          for (let i = 1; i <= pagesToRead; i++) {
-            const page = await pdf.getPage(i);
-            const content = await page.getTextContent();
-            pageTexts.push(extractPdfPageText(content.items as any[]));
-            toast.loading(`Đang xử lý PDF: ${i}/${pagesToRead} trang...`, { id: toastId });
-          }
-
-          const capped = capMaterialText(pageTexts.join('\n\n').trim());
-          setOcrText(capped.text);
-          if (capped.truncated) toast.warning(TRUNCATED_MESSAGE);
-          toast.success(`Đã trích xuất xong ${pagesToRead}${totalPages > pagesToRead ? `/${totalPages}` : ''} trang PDF!`, { id: toastId });
-        } catch (error: any) {
-          console.error(error);
-          toast.error(error?.message ? `Lỗi khi đọc file PDF: ${error.message}` : "Lỗi khi đọc file PDF.");
-        } finally {
-          setIsProcessing(false);
-        }
-      };
-      reader.onerror = () => {
-        setIsProcessing(false);
-        toast.error("Không đọc được file PDF. Vui lòng thử lại với file khác.");
-      };
-      reader.readAsArrayBuffer(file);
+    e.target.value = '';
+    if (!file) return;
+    setIsProcessing(true);
+    setOcrText('');
+    const toastId = toast.loading('Đang trích xuất nội dung từ file...');
+    try {
+      const result = await extractTextFromDocument(file, {
+        onPdfProgress: (read, total) =>
+          toast.loading(`Đang xử lý PDF: ${read}/${total} trang...`, { id: toastId }),
+      });
+      if (result.kind === 'pdf' && (result.totalPages ?? 0) > (result.pagesRead ?? 0)) {
+        toast.warning(`PDF có ${result.totalPages} trang — chỉ trích xuất ${result.pagesRead} trang đầu tiên. Hãy tách file nếu cần nội dung các trang sau.`);
+      }
+      const capped = capMaterialText(result.text);
+      setOcrText(capped.text);
+      if (capped.truncated || result.truncated) toast.warning(TRUNCATED_MESSAGE);
+      if (result.kind === 'pdf') {
+        toast.success(`Đã trích xuất xong ${result.pagesRead}${(result.totalPages ?? 0) > (result.pagesRead ?? 0) ? `/${result.totalPages}` : ''} trang PDF!`, { id: toastId });
+      } else {
+        toast.success('Đã trích xuất xong nội dung từ file!', { id: toastId });
+      }
+    } catch (error: any) {
+      console.error(error);
+      toast.error(error?.message || 'Không đọc được file. Vui lòng thử lại với file khác.', { id: toastId });
+    } finally {
+      setIsProcessing(false);
     }
   };
 
@@ -415,7 +369,7 @@ export default function AIHelper({ user, profile }: AIHelperProps) {
               <div className="space-y-4">
                 <label className="text-[9px] md:text-[10px] font-extrabold text-zinc-400 uppercase tracking-[0.2em] flex items-center gap-2">
                   <FileText className="w-3.5 h-3.5" />
-                  Tài liệu PDF
+                  Tài liệu
                 </label>
                 <div 
                   onClick={() => pdfInputRef.current?.click()}
@@ -426,16 +380,16 @@ export default function AIHelper({ user, profile }: AIHelperProps) {
                       <FileText className="w-6 h-6" />
                     </div>
                     <div className="text-left">
-                      <p className="text-sm font-extrabold text-zinc-700 dark:text-zinc-200 uppercase tracking-widest">Tải lên file PDF</p>
-                      <p className="text-[10px] text-zinc-400 font-medium">Trích xuất văn bản tối đa 30 trang đầu, giữ cấu trúc đoạn</p>
+                      <p className="text-sm font-extrabold text-zinc-700 dark:text-zinc-200 uppercase tracking-widest">Tải lên tài liệu</p>
+                      <p className="text-[10px] text-zinc-400 font-medium">PDF (tối đa 30 trang đầu), Word DOCX, TXT, MD — trích xuất văn bản để tạo thẻ</p>
                     </div>
                   </div>
                   <input 
                     type="file" 
                     ref={pdfInputRef} 
-                    onChange={handlePdfUpload} 
+                    onChange={handleDocumentUpload} 
                     className="hidden" 
-                    accept="application/pdf"
+                    accept="application/pdf,.docx,.txt,.md"
                   />
                 </div>
               </div>

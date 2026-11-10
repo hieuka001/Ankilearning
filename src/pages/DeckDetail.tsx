@@ -54,6 +54,7 @@ import {
 } from '../lib/spacedRepetition';
 import { getCategoryArt } from '../lib/categoryArt';
 import { resolveDeckSchedulerConfig } from '../lib/deckOptions';
+import { extractTextFromDocument } from '../lib/documentText';
 import CardTypeFields from '../components/CardTypeFields';
 import {
   buildNoteCards,
@@ -284,6 +285,8 @@ export default function DeckDetail({ user, profile }: DeckDetailProps) {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [aiText, setAiText] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
+  const [isImportingAiFile, setIsImportingAiFile] = useState(false);
+  const aiFileInputRef = useRef<HTMLInputElement>(null);
   const [mindmap, setMindmap] = useState('');
   const [aiMindmap, setAiMindmap] = useState('');
   const [showMindmap, setShowMindmap] = useState(true);
@@ -569,6 +572,28 @@ export default function DeckDetail({ user, profile }: DeckDetailProps) {
       toast.error("Lỗi khi thêm thẻ.");
     } finally {
       setIsSubmitting(false);
+    }
+  };
+
+  const handleAiFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    setIsImportingAiFile(true);
+    try {
+      const result = await extractTextFromDocument(file);
+      // Nối thêm vào nội dung đang soạn (không ghi đè câm lặng).
+      setAiText(prev => (prev ? prev + '\n\n' : '') + result.text);
+      if (result.truncated) {
+        toast.warning('Nội dung file quá dài nên đã được cắt bớt — hãy chia nhỏ tài liệu nếu cần phần còn lại.');
+      } else {
+        toast.success('Đã đổ nội dung file vào ô nội dung AI.');
+      }
+    } catch (error: any) {
+      console.error(error);
+      toast.error(error?.message || 'Không đọc được file. Vui lòng thử lại với file khác.');
+    } finally {
+      setIsImportingAiFile(false);
     }
   };
 
@@ -1902,6 +1927,23 @@ export default function DeckDetail({ user, profile }: DeckDetailProps) {
                 value={aiText}
                 onChange={(e) => setAiText(e.target.value)}
                 className="bg-white dark:bg-white/5 rounded-xl min-h-[80px]"
+              />
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => aiFileInputRef.current?.click()}
+                disabled={isImportingAiFile || isGenerating}
+                className="w-full gap-2 border-emerald-200 text-emerald-700 hover:bg-emerald-100/60 dark:border-emerald-500/30 dark:text-emerald-300 dark:hover:bg-emerald-500/10"
+              >
+                {isImportingAiFile ? <Loader2 className="animate-spin" size={16} /> : <FileText size={16} />}
+                Nhập từ file (PDF, DOCX, TXT)
+              </Button>
+              <input
+                type="file"
+                ref={aiFileInputRef}
+                className="hidden"
+                accept="application/pdf,.docx,.txt,.md"
+                onChange={handleAiFileUpload}
               />
               <Button 
                 onClick={handleGenerateAI} 

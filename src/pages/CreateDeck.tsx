@@ -35,10 +35,10 @@ import { validateClozeText } from '../review/cloze';
 import { useSettings } from '../contexts/SettingsContext';
 import { createInitialCardSchedule } from '../lib/spacedRepetition';
 import { CATEGORY_PRESETS, getCategoryArt } from '../lib/categoryArt';
-import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
+import { extractTextFromDocument } from '../lib/documentText';
 
-// pdfjs (thư viện ~452KB) được nạp lười bên trong handler xử lý PDF để không
-// tải kèm trang; chỉ URL của worker (chuỗi) được import tĩnh tại đây.
+// pdfjs/mammoth được nạp lười bên trong lib trích xuất tài liệu
+// (src/lib/documentText.ts) nên không cần import gì thêm tại đây.
 
 const EMPTY_CARDS_MESSAGE = 'AI không tạo được thẻ nào từ nội dung này — thử rút gọn/chia nhỏ tài liệu hoặc kiểm tra lại nội dung.';
 
@@ -247,42 +247,34 @@ export default function CreateDeck({ user, profile }: CreateDeckProps) {
     }
   };
 
-  const handlePdfUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleDocumentUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file && file.type === 'application/pdf') {
-      setIsProcessingPdf(true);
-      const reader = new FileReader();
-      reader.onload = async (event) => {
-        const typedArray = new Uint8Array(event.target?.result as ArrayBuffer);
-        try {
-          const pdfjsLib = await import('pdfjs-dist');
-          pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
-          const pdf = await pdfjsLib.getDocument(typedArray).promise;
-          let fullText = '';
-          const toastId = toast.loading(`Đang xử lý PDF: 0/${pdf.numPages} trang...`);
-          
-          for (let i = 1; i <= pdf.numPages; i++) {
-            const page = await pdf.getPage(i);
-            const content = await page.getTextContent();
-            const strings = content.items.map((item: any) => item.str);
-            fullText += strings.join(' ') + '\n\n';
-            toast.loading(`Đang xử lý PDF: ${i}/${pdf.numPages} trang...`, { id: toastId });
-          }
-          
-          setAiText(prev => (prev ? prev + '\n\n' : '') + fullText.trim());
-          toast.success(`Đã thêm ${pdf.numPages} trang PDF vào nội dung AI!`, { id: toastId });
-        } catch (error: any) {
-          console.error(error);
-          toast.error(error?.message ? `Lỗi khi đọc file PDF: ${error.message}` : "Lỗi khi đọc file PDF.");
-        } finally {
-          setIsProcessingPdf(false);
+    e.target.value = '';
+    if (!file) return;
+    setIsProcessingPdf(true);
+    const toastId = toast.loading('Đang trích xuất nội dung từ file...');
+    try {
+      const result = await extractTextFromDocument(file, {
+        onPdfProgress: (read, total) =>
+          toast.loading(`Đang xử lý PDF: ${read}/${total} trang...`, { id: toastId }),
+      });
+      setAiText(prev => (prev ? prev + '\n\n' : '') + result.text);
+      if (result.kind === 'pdf') {
+        toast.success(`Đã thêm ${result.pagesRead}/${result.totalPages} trang PDF vào nội dung AI!`, { id: toastId });
+        if ((result.totalPages ?? 0) > (result.pagesRead ?? 0)) {
+          toast.warning(`PDF có ${result.totalPages} trang — chỉ trích xuất ${result.pagesRead} trang đầu tiên. Hãy tách file nếu cần nội dung các trang sau.`);
         }
-      };
-      reader.onerror = () => {
-        setIsProcessingPdf(false);
-        toast.error("Không đọc được file PDF. Vui lòng thử lại với file khác.");
-      };
-      reader.readAsArrayBuffer(file);
+      } else {
+        toast.success('Đã thêm nội dung từ file vào nội dung AI!', { id: toastId });
+      }
+      if (result.truncated) {
+        toast.warning('Nội dung quá dài nên đã được cắt bớt — hãy chia nhỏ tài liệu nếu cần tạo thẻ từ phần còn lại.');
+      }
+    } catch (error: any) {
+      console.error(error);
+      toast.error(error?.message || 'Không đọc được file. Vui lòng thử lại với file khác.', { id: toastId });
+    } finally {
+      setIsProcessingPdf(false);
     }
   };
 
@@ -545,14 +537,14 @@ export default function CreateDeck({ user, profile }: CreateDeckProps) {
                   className="flex-1 border-primary/20 text-primary hover:bg-primary/5 h-12 rounded-xl gap-2 font-bold"
                 >
                   {isProcessingPdf ? <Loader2 className="animate-spin w-4 h-4" /> : <FileText className="w-4 h-4" />}
-                  Nhập từ PDF
+                  Nhập từ file
                 </Button>
                 <input 
                   type="file" 
                   ref={pdfInputRef} 
                   className="hidden" 
-                  accept="application/pdf" 
-                  onChange={handlePdfUpload}
+                  accept="application/pdf,.docx,.txt,.md" 
+                  onChange={handleDocumentUpload}
                 />
               </div>
               <input 
