@@ -13,6 +13,17 @@ import Logo from '../components/Logo';
  * exchanges the Google ID token for a Firebase session via
  * `signInWithCredential` (see the `#glink=`/`?glink=` consumer in App.tsx).
  *
+ * The page has two return modes. App mode (default) is the shell flow
+ * above. Web mode (`?return=web`) serves plain iOS Safari in a normal
+ * browser tab, where `signInWithPopup` fails the same way it does in
+ * the webview: App.tsx sends those users here, and on success the token
+ * goes back to the web app itself as `#glink=` on the site root (the
+ * fragment keeps it out of server logs) instead of via the deep link.
+ * The mode cannot ride on the Google round trip — the registered
+ * `redirect_uri` must stay exactly `${origin}/desktop-auth` with no
+ * query string — so `startSignIn` plants it in sessionStorage next to
+ * the state/nonce and the return load reads it back from there.
+ *
  * This page deliberately does NOT use the Firebase Auth SDK: its
  * `signInWithPopup` hangs forever in iOS Safari (the popup never returns).
  * Instead it runs a manual OAuth 2.0 implicit flow — a full-page redirect to
@@ -28,6 +39,9 @@ const GOOGLE_CLIENT_ID =
 const GOOGLE_AUTH_ENDPOINT = 'https://accounts.google.com/o/oauth2/v2/auth';
 const STATE_STORAGE_KEY = 'ankilearning:oauth-state';
 const NONCE_STORAGE_KEY = 'ankilearning:oauth-nonce';
+const RETURN_STORAGE_KEY = 'ankilearning:oauth-return';
+
+type ReturnMode = 'app' | 'web';
 
 type Status = 'idle' | 'working' | 'sent' | 'error';
 
@@ -92,6 +106,22 @@ export default function DesktopAuth() {
   // Evaluate the return-from-Google hash exactly once, before first paint,
   // so a completed sign-in never flashes the idle button.
   const [outcome] = useState<HashOutcome>(inspectHash);
+  // Return mode, also resolved once at mount. A fresh start page reads it
+  // from its own `?return=` parameter; a return-from-Google load has no
+  // such parameter (the registered redirect_uri carries no query), so it
+  // reads the flag `startSignIn` planted in sessionStorage instead.
+  const [returnMode] = useState<ReturnMode>(() => {
+    if (outcome.kind !== 'none') {
+      try {
+        return sessionStorage.getItem(RETURN_STORAGE_KEY) === 'web' ? 'web' : 'app';
+      } catch {
+        return 'app';
+      }
+    }
+    return new URLSearchParams(window.location.search).get('return') === 'web'
+      ? 'web'
+      : 'app';
+  });
   const [status, setStatus] = useState<Status>(() => {
     if (outcome.kind === 'token') return outcome.valid ? 'sent' : 'error';
     if (outcome.kind === 'provider-error') return 'error';
@@ -109,25 +139,36 @@ export default function DesktopAuth() {
     return null;
   });
   const [deepLink] = useState<string | null>(() =>
-    outcome.kind === 'token' && outcome.valid ? buildDeepLink(outcome.idToken) : null,
+    outcome.kind === 'token' && outcome.valid && returnMode === 'app'
+      ? buildDeepLink(outcome.idToken)
+      : null,
   );
 
   // One-shot side effects for a return-from-Google load: drop the stored
-  // state/nonce, scrub the token out of the address bar, and — only for a
-  // fully validated token — hand it to the installed app.
+  // state/nonce/return flag, scrub the token out of the address bar, and
+  // — only for a fully validated token — hand it to its destination: the
+  // installed app via deep link, or (web mode) the web app itself at the
+  // site root with the token in the fragment.
   useEffect(() => {
     if (outcome.kind === 'none') return;
     sessionStorage.removeItem(STATE_STORAGE_KEY);
     sessionStorage.removeItem(NONCE_STORAGE_KEY);
+    sessionStorage.removeItem(RETURN_STORAGE_KEY);
     window.history.replaceState(
       null,
       '',
       `${window.location.pathname}${window.location.search}`,
     );
     if (outcome.kind === 'token' && outcome.valid) {
-      window.location.href = buildDeepLink(outcome.idToken);
+      if (returnMode === 'web') {
+        window.location.replace(
+          `${window.location.origin}/#glink=${encodeURIComponent(outcome.idToken)}`,
+        );
+      } else {
+        window.location.href = buildDeepLink(outcome.idToken);
+      }
     }
-    // `outcome` is a mount-time constant by construction.
+    // `outcome` and `returnMode` are mount-time constants by construction.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -139,6 +180,15 @@ export default function DesktopAuth() {
     const nonce = randomHex();
     sessionStorage.setItem(STATE_STORAGE_KEY, state);
     sessionStorage.setItem(NONCE_STORAGE_KEY, nonce);
+    // The `return` parameter cannot survive the Google round trip (the
+    // redirect_uri below must match the registered one exactly, query
+    // included), so the mode travels in sessionStorage instead and is
+    // cleared together with state/nonce when the flow returns.
+    if (returnMode === 'web') {
+      sessionStorage.setItem(RETURN_STORAGE_KEY, 'web');
+    } else {
+      sessionStorage.removeItem(RETURN_STORAGE_KEY);
+    }
 
     const params = new URLSearchParams({
       client_id: GOOGLE_CLIENT_ID,
@@ -175,27 +225,32 @@ export default function DesktopAuth() {
           Đăng nhập để mở AnkiLearning
         </h1>
         <p className="mt-2 text-sm leading-6 text-muted-foreground">
-          Đăng nhập bằng Google ngay tại trình duyệt này. Hoàn tất xong, ứng dụng
-          AnkiLearning sẽ tự mở ra trong trạng thái đã đăng nhập.
+          {returnMode === 'web'
+            ? 'Đăng nhập bằng Google ngay tại trình duyệt này. Hoàn tất xong, bạn sẽ được đưa trở lại AnkiLearning trong trạng thái đã đăng nhập.'
+            : 'Đăng nhập bằng Google ngay tại trình duyệt này. Hoàn tất xong, ứng dụng AnkiLearning sẽ tự mở ra trong trạng thái đã đăng nhập.'}
         </p>
 
         {status === 'sent' ? (
           <div className="mt-7">
             <p className="inline-flex items-center gap-2 text-sm font-medium text-emerald-700 dark:text-emerald-300">
               <Loader2 size={16} className="animate-spin" />
-              Đang mở lại ứng dụng…
+              {returnMode === 'web' ? 'Đang quay lại AnkiLearning…' : 'Đang mở lại ứng dụng…'}
             </p>
-            {deepLink && (
-              <a
-                href={deepLink}
-                className="mt-4 block text-sm font-medium text-emerald-700 underline underline-offset-4 transition hover:text-emerald-600 dark:text-emerald-300 dark:hover:text-emerald-200"
-              >
-                Nếu ứng dụng không tự mở, bấm vào đây
-              </a>
+            {returnMode === 'app' && (
+              <>
+                {deepLink && (
+                  <a
+                    href={deepLink}
+                    className="mt-4 block text-sm font-medium text-emerald-700 underline underline-offset-4 transition hover:text-emerald-600 dark:text-emerald-300 dark:hover:text-emerald-200"
+                  >
+                    Nếu ứng dụng không tự mở, bấm vào đây
+                  </a>
+                )}
+                <p className="mt-4 text-xs leading-5 text-muted-foreground">
+                  Bạn có thể đóng tab này sau khi app mở.
+                </p>
+              </>
             )}
-            <p className="mt-4 text-xs leading-5 text-muted-foreground">
-              Bạn có thể đóng tab này sau khi app mở.
-            </p>
           </div>
         ) : (
           <div className="mt-7">

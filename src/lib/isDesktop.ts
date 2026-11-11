@@ -74,3 +74,64 @@ export function isDesktopShell(): boolean {
 
   return cached;
 }
+
+export interface UaSignals {
+  userAgent: string;
+  platform: string;
+  maxTouchPoints: number;
+}
+
+/**
+ * Pure core of `isIosSafari()` — separated so tests can feed it captured
+ * UA strings without stubbing `window`.
+ *
+ * iOS hardware means an iPhone/iPad/iPod UA token, OR the iPadOS 13+
+ * desktop-mode disguise: the UA claims to be a Mac (`platform` is
+ * `MacIntel`), but a real Mac reports `maxTouchPoints === 0` while every
+ * iPad has a touchscreen.
+ *
+ * On top of that the browser must be the one that calls itself plain
+ * Safari: third-party iOS browsers (Chrome `CriOS`, Firefox `FxiOS`,
+ * Edge `EdgiOS`, Opera `OPiOS`) identify themselves in the UA even
+ * though they are WebKit under the hood, and they keep the standard
+ * Firebase popup flow — only plain Safari is routed elsewhere.
+ */
+export function detectIosSafari(signals: UaSignals): boolean {
+  const ua = signals.userAgent;
+
+  const onIosHardware =
+    ua.includes('iPhone') ||
+    ua.includes('iPad') ||
+    ua.includes('iPod') ||
+    (signals.platform === 'MacIntel' && signals.maxTouchPoints > 1);
+  if (!onIosHardware) return false;
+
+  if (/CriOS|FxiOS|EdgiOS|OPiOS/.test(ua)) return false;
+  return ua.includes('Safari');
+}
+
+/**
+ * Detects Safari on iOS/iPadOS in a regular browser tab.
+ *
+ * Why it matters: Firebase Auth's `signInWithPopup` cannot complete
+ * there — the `*.firebaseapp.com` handler page stalls (especially on a
+ * weak connection) and the popup result never makes it back, so the
+ * user silently lands on the login screen again. `handleLogin` in
+ * App.tsx therefore routes these users to `/desktop-auth?return=web`,
+ * which runs the same manual full-page OAuth flow the shell uses and
+ * hands the token back as `#glink=` on the site root. Callers must check
+ * `isDesktopShell()` first — the shell has its own sign-in route and
+ * takes priority.
+ */
+export function isIosSafari(): boolean {
+  if (typeof window === 'undefined') return false;
+
+  const nav = window.navigator;
+  if (!nav) return false;
+
+  return detectIosSafari({
+    userAgent: nav.userAgent ?? '',
+    platform: nav.platform ?? '',
+    maxTouchPoints: nav.maxTouchPoints ?? 0,
+  });
+}

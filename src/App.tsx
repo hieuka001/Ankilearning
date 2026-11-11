@@ -32,7 +32,7 @@ import Logo from './components/Logo';
 import NotificationCenter from './components/NotificationCenter';
 import { BADGES, getXpProgress, type BadgeUnlock } from './lib/gamification';
 import { useServiceWorkerUpdate } from './lib/swUpdate';
-import { isDesktopShell, markShellFromUrl } from './lib/isDesktop';
+import { isDesktopShell, isIosSafari, markShellFromUrl } from './lib/isDesktop';
 import DesktopAuth from './pages/DesktopAuth';
 
 // Marks "a Google sign-in redirect is in flight" in sessionStorage. Set right
@@ -414,6 +414,18 @@ export default function App() {
         }
       }
       window.location.assign('/__desktop_auth');
+      return;
+    }
+
+    if (isIosSafari()) {
+      // iOS Safari: the popup flow dead-ends here too — the Firebase
+      // handler page stalls (worst on a weak connection) and its result
+      // never reaches this tab, so sign-in silently falls back to the
+      // login screen. Route through the same manual full-page OAuth flow
+      // the shell uses instead: /desktop-auth in web mode runs the
+      // implicit flow in this tab and returns the Google ID token as
+      // `#glink=` on the site root (consumed by the effect above).
+      window.location.assign('/desktop-auth?return=web');
       return;
     }
 

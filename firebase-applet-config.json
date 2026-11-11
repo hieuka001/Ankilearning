@@ -2,7 +2,7 @@
   "projectId": "anki-learning-78dac",
   "appId": "1:369032392339:web:c9276325497fc17dcde766",
   "apiKey": "AIzaSyBaB3M2rALaH0NNT4lNvofbIiBtkt3x-sg",
-  "authDomain": "anki-learning-78dac.firebaseapp.com",
+  "authDomain": "learning-with-trunghieu.vercel.app",
   "firestoreDatabaseId": "(default)",
   "storageBucket": "anki-learning-78dac.firebasestorage.app",
   "messagingSenderId": "369032392339",
