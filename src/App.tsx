@@ -29,6 +29,7 @@ import {
 import { SettingsProvider } from './contexts/SettingsContext';
 import BackgroundMusic from './components/BackgroundMusic';
 import Logo from './components/Logo';
+import ScrollManager, { scrollMainContentToTop } from './components/ScrollManager';
 import NotificationCenter from './components/NotificationCenter';
 import { BADGES, getXpProgress, type BadgeUnlock } from './lib/gamification';
 import { useServiceWorkerUpdate } from './lib/swUpdate';
@@ -517,6 +518,7 @@ export default function App() {
     <SettingsProvider initialTheme={profile?.settings?.theme}>
       <BackgroundMusic />
       <Router>
+        <ScrollManager />
         <div className="app-shell font-sans text-foreground">
           {sidebarOpen && (
             <button
@@ -632,7 +634,7 @@ export default function App() {
               <NotificationCenter user={user} profile={profile} />
             </header>
 
-            <div className="smooth-scroll min-w-0 flex-1 overflow-y-auto">
+            <div data-scroll-root className="smooth-scroll min-w-0 flex-1 overflow-y-auto">
               <div className="page-shell">
                 <Suspense fallback={<PageLoader />}>
                   <AnimatedRoutes user={user} profile={profile} recentSessions={recentSessions} />
@@ -719,6 +721,14 @@ function BottomNav() {
             key={item.to}
             to={item.to}
             aria-current={isActive ? 'page' : undefined}
+            onClick={() => {
+              // Re-tapping the tab of the page already on screen scrolls
+              // it back to the top (standard mobile pattern) instead of a
+              // duplicate navigation that goes nowhere. Exact pathname
+              // only: from a sub-page (e.g. a deck detail) the tab still
+              // navigates to its root page as usual.
+              if (location.pathname === item.to) scrollMainContentToTop();
+            }}
             className={`bottom-nav-item ${isActive ? 'bottom-nav-item-active' : ''}`}
           >
             {item.icon}
@@ -893,8 +903,16 @@ function SidebarLink({
   const location = useLocation();
   const isActive = to === '/' ? location.pathname === '/' : location.pathname.startsWith(to);
 
+  const handleClick = () => {
+    // Same re-tap pattern as the bottom nav: clicking the section that is
+    // already on screen scrolls it back to the top. Exact pathname only —
+    // from a sub-page the link still navigates to the section root.
+    if (location.pathname === to) scrollMainContentToTop();
+    onClick?.();
+  };
+
   return (
-    <Link to={to} onClick={onClick} title={label} className={`nav-item ${isActive ? 'nav-item-active' : ''}`}>
+    <Link to={to} onClick={handleClick} title={label} className={`nav-item ${isActive ? 'nav-item-active' : ''}`}>
       <span className="nav-item-icon">{icon}</span>
       <span className="nav-label min-w-0 flex-1 truncate">{label}</span>
       {isActive && (
