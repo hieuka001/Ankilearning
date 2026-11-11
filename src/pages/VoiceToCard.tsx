@@ -328,7 +328,7 @@ export default function VoiceToCard({ user, profile }: VoiceToCardProps) {
   return (
     <div className="max-w-5xl mx-auto space-y-8 md:space-y-12 animate-in fade-in slide-in-from-bottom-8 duration-700 pb-20">
       <header className="text-center space-y-4 md:space-y-6">
-        <div className="inline-flex p-4 md:p-6 bg-red-500/10 text-red-500 rounded-[2rem] shadow-2xl shadow-red-500/10 animate-pulse">
+        <div className="inline-flex p-4 md:p-6 bg-red-500/10 text-red-500 rounded-3xl shadow-2xl shadow-red-500/10 animate-pulse">
           <Mic className="w-8 h-8 md:w-12 md:h-12" />
         </div>
         <div className="space-y-2">
@@ -373,7 +373,7 @@ export default function VoiceToCard({ user, profile }: VoiceToCardProps) {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 md:gap-12">
         {/* Recording Section */}
         <div className="space-y-6">
-          <Card className="border-none shadow-2xl bg-white dark:bg-[#0C0D0E] rounded-[2.5rem] overflow-hidden">
+          <Card className="border-none shadow-2xl bg-white dark:bg-[#0C0D0E] rounded-3xl overflow-hidden">
             <CardHeader className="p-8 md:p-10 border-b border-zinc-100 dark:border-white/5">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-3">
@@ -391,7 +391,7 @@ export default function VoiceToCard({ user, profile }: VoiceToCardProps) {
               </div>
             </CardHeader>
             <CardContent className="p-8 md:p-10 space-y-8">
-              <div className="relative min-h-[300px] md:min-h-[400px] bg-zinc-50 dark:bg-black/40 rounded-[2rem] p-6 md:p-10 overflow-hidden border border-zinc-100 dark:border-white/5 flex flex-col">
+              <div className="relative min-h-[300px] md:min-h-[400px] bg-zinc-50 dark:bg-black/40 rounded-3xl p-6 md:p-10 overflow-hidden border border-zinc-100 dark:border-white/5 flex flex-col">
                 <input 
                   type="file" 
                   ref={fileInputRef}
@@ -437,7 +437,7 @@ export default function VoiceToCard({ user, profile }: VoiceToCardProps) {
                   </div>
                 ) : selectedFile ? (
                   <div className="flex-1 flex flex-col items-center justify-center space-y-6">
-                    <div className="relative p-8 bg-white dark:bg-white/5 rounded-[2.5rem] shadow-2xl border border-white/5 flex flex-col items-center gap-4">
+                    <div className="relative p-8 bg-white dark:bg-white/5 rounded-3xl shadow-2xl border border-white/5 flex flex-col items-center gap-4">
                       {selectedFile.type.startsWith('video') ? (
                         <FileVideo className="w-16 h-16 text-red-500" />
                       ) : (
@@ -487,7 +487,7 @@ export default function VoiceToCard({ user, profile }: VoiceToCardProps) {
               <div className="flex flex-wrap gap-4">
                 <Button 
                   onClick={toggleListening}
-                  className={`flex-1 h-16 md:h-20 rounded-2xl md:rounded-[2rem] font-extrabold text-base md:text-xl shadow-2xl transition-all active:scale-95 ${
+                  className={`flex-1 h-16 md:h-20 rounded-2xl md:rounded-3xl font-extrabold text-base md:text-xl shadow-2xl transition-all active:scale-95 ${
                     isListening 
                       ? 'bg-red-500 hover:bg-red-600 shadow-red-500/20' 
                       : 'bg-primary hover:bg-primary/90 shadow-primary/20'
@@ -502,7 +502,7 @@ export default function VoiceToCard({ user, profile }: VoiceToCardProps) {
                 <Button 
                   variant="outline" 
                   onClick={handleClear}
-                  className="w-16 md:w-20 h-16 md:h-20 rounded-2xl md:rounded-[2rem] border-2 border-zinc-100 dark:border-white/5 bg-zinc-50 dark:bg-white/5 hover:bg-red-50 dark:hover:bg-red-500/10 hover:text-red-500 transition-all"
+                  className="w-16 md:w-20 h-16 md:h-20 rounded-2xl md:rounded-3xl border-2 border-zinc-100 dark:border-white/5 bg-zinc-50 dark:bg-white/5 hover:bg-red-50 dark:hover:bg-red-500/10 hover:text-red-500 transition-all"
                 >
                   <RotateCcw size={24} />
                 </Button>
@@ -511,7 +511,7 @@ export default function VoiceToCard({ user, profile }: VoiceToCardProps) {
               <Button 
                 onClick={handleGenerate}
                 disabled={(!(transcript + interimTranscript).trim() && !fileBase64) || isGenerating || isListening}
-                className="w-full bg-zinc-900 dark:bg-white dark:text-zinc-900 hover:bg-zinc-800 dark:hover:bg-zinc-100 h-16 md:h-20 rounded-2xl md:rounded-[2rem] font-extrabold text-base md:text-xl shadow-2xl transition-all active:scale-95 gap-3"
+                className="w-full bg-zinc-900 dark:bg-white dark:text-zinc-900 hover:bg-zinc-800 dark:hover:bg-zinc-100 h-16 md:h-20 rounded-2xl md:rounded-3xl font-extrabold text-base md:text-xl shadow-2xl transition-all active:scale-95 gap-3"
               >
                 {isGenerating ? <Loader2 className="animate-spin w-6 h-6" /> : <Zap className="w-6 h-6" />}
                 {isMedical ? 'TẠO FLASHCARDS Y KHOA' : 'TẠO FLASHCARDS'}
@@ -530,7 +530,7 @@ export default function VoiceToCard({ user, profile }: VoiceToCardProps) {
                 exit={{ opacity: 0, scale: 0.95 }}
                 className="space-y-6"
               >
-                <div className="bg-zinc-900 dark:bg-black p-8 md:p-10 rounded-[2.5rem] shadow-2xl space-y-8">
+                <div className="bg-zinc-900 dark:bg-black p-8 md:p-10 rounded-3xl shadow-2xl space-y-8">
                   <div className="flex items-center justify-between border-b border-white/5 pb-6">
                     <div className="flex items-center gap-3">
                       <div className="p-2 bg-primary/10 text-primary rounded-xl">
@@ -602,7 +602,7 @@ export default function VoiceToCard({ user, profile }: VoiceToCardProps) {
                 </div>
               </motion.div>
             ) : (
-              <div className="h-full flex flex-col items-center justify-center text-center p-12 space-y-10 bg-zinc-50 dark:bg-white/5 rounded-[2.5rem] border border-dashed border-zinc-200 dark:border-white/10 opacity-60">
+              <div className="h-full flex flex-col items-center justify-center text-center p-12 space-y-10 bg-zinc-50 dark:bg-white/5 rounded-3xl border border-dashed border-zinc-200 dark:border-white/10 opacity-60">
                 <div className="relative">
                   <div className="w-24 h-24 bg-white dark:bg-white/5 rounded-full flex items-center justify-center shadow-xl">
                     <BrainCircuit className="text-zinc-300 w-12 h-12" />

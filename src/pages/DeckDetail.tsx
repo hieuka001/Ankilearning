@@ -149,7 +149,7 @@ const DeckCardRow = memo(function DeckCardRow({
         if ((event.target as HTMLElement).closest('button, a, input, select, textarea, label')) return;
         onPreview(card);
       }}
-      className={`cv-auto border-none shadow-xl hover:shadow-2xl transition-all duration-500 group overflow-hidden bg-white dark:bg-zinc-900 rounded-[2rem] ${selected ? 'ring-2 ring-emerald-500' : ''} ${isOwner ? 'cursor-pointer' : ''}`}
+      className={`cv-auto border-none shadow-xl hover:shadow-2xl transition-all duration-500 group overflow-hidden bg-white dark:bg-zinc-900 rounded-3xl ${selected ? 'ring-2 ring-emerald-500' : ''} ${isOwner ? 'cursor-pointer' : ''}`}
     >
       <CardContent className="p-0 flex items-stretch">
         {isOwner && (
@@ -1122,12 +1122,12 @@ export default function DeckDetail({ user, profile }: DeckDetailProps) {
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 md:gap-8">
           {[0, 1, 2].map((i) => (
-            <div key={i} className="skeleton-block animate-pulse h-36 rounded-[2rem] bg-zinc-200/50 dark:bg-white/5" />
+            <div key={i} className="skeleton-block animate-pulse h-36 rounded-3xl bg-zinc-200/50 dark:bg-white/5" />
           ))}
         </div>
         <div className="space-y-5">
           {[0, 1].map((i) => (
-            <div key={i} className="skeleton-block animate-pulse h-44 rounded-[2rem] bg-zinc-200/50 dark:bg-white/5" />
+            <div key={i} className="skeleton-block animate-pulse h-44 rounded-3xl bg-zinc-200/50 dark:bg-white/5" />
           ))}
         </div>
       </div>
@@ -1170,7 +1170,7 @@ export default function DeckDetail({ user, profile }: DeckDetailProps) {
 
   return (
     <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
-      <div className="relative h-24 md:h-32 overflow-hidden rounded-[2rem] shadow-lg">
+      <div className="relative h-24 md:h-32 overflow-hidden rounded-3xl shadow-lg">
         <img
           src={getCategoryArt(deck.category)}
           alt=""
@@ -1379,30 +1379,30 @@ export default function DeckDetail({ user, profile }: DeckDetailProps) {
       </Dialog>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 md:gap-8">
-        <Card className="bg-white dark:bg-zinc-900 border-none shadow-xl p-6 md:p-8 rounded-[1.5rem] md:rounded-[2.5rem] flex flex-col items-center justify-center text-center space-y-2 md:space-y-3 relative overflow-hidden group">
+        <Card className="bg-white dark:bg-zinc-900 border-none shadow-xl p-6 md:p-8 rounded-2xl md:rounded-3xl flex flex-col items-center justify-center text-center space-y-2 md:space-y-3 relative overflow-hidden group">
           <div className="absolute -top-12 -right-12 w-32 h-32 bg-orange-500/5 rounded-full blur-2xl group-hover:bg-orange-500/10 transition-colors" />
           <div className="h-12 w-12 md:h-14 md:w-14 rounded-xl md:rounded-2xl bg-orange-50 dark:bg-orange-900/30 text-orange-600 dark:text-orange-400 flex items-center justify-center mb-1 md:mb-2 shadow-inner">
             <Calendar className="w-6 h-6 md:w-7 md:h-7" />
           </div>
-          <span className="text-3xl md:text-4xl font-extrabold text-zinc-900 dark:text-white tracking-tight">{dueCards}</span>
+          <span className="text-3xl md:text-4xl font-extrabold tabular-nums text-zinc-900 dark:text-white tracking-tight">{dueCards}</span>
           <span className="text-[9px] md:text-[10px] font-extrabold text-zinc-400 uppercase tracking-[0.2em]">Cần ôn tập ngay</span>
         </Card>
         
-        <Card className="bg-white dark:bg-zinc-900 border-none shadow-xl p-6 md:p-8 rounded-[1.5rem] md:rounded-[2.5rem] flex flex-col items-center justify-center text-center space-y-2 md:space-y-3 relative overflow-hidden group">
+        <Card className="bg-white dark:bg-zinc-900 border-none shadow-xl p-6 md:p-8 rounded-2xl md:rounded-3xl flex flex-col items-center justify-center text-center space-y-2 md:space-y-3 relative overflow-hidden group">
           <div className="absolute -top-12 -right-12 w-32 h-32 bg-emerald-500/5 rounded-full blur-2xl group-hover:bg-emerald-500/10 transition-colors" />
           <div className="h-12 w-12 md:h-14 md:w-14 rounded-xl md:rounded-2xl bg-emerald-50 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400 flex items-center justify-center mb-1 md:mb-2 shadow-inner">
             <BookOpen className="w-6 h-6 md:w-7 md:h-7" />
           </div>
-          <span className="text-3xl md:text-4xl font-extrabold text-zinc-900 dark:text-white tracking-tight">{cards.length}</span>
+          <span className="text-3xl md:text-4xl font-extrabold tabular-nums text-zinc-900 dark:text-white tracking-tight">{cards.length}</span>
           <span className="text-[9px] md:text-[10px] font-extrabold text-zinc-400 uppercase tracking-[0.2em]">Tổng số thẻ học</span>
         </Card>
 
-        <Card className="bg-white dark:bg-zinc-900 border-none shadow-xl p-6 md:p-8 rounded-[1.5rem] md:rounded-[2.5rem] flex flex-col items-center justify-center text-center space-y-2 md:space-y-3 relative overflow-hidden group sm:col-span-2 lg:col-span-1">
+        <Card className="bg-white dark:bg-zinc-900 border-none shadow-xl p-6 md:p-8 rounded-2xl md:rounded-3xl flex flex-col items-center justify-center text-center space-y-2 md:space-y-3 relative overflow-hidden group sm:col-span-2 lg:col-span-1">
           <div className="absolute -top-12 -right-12 w-32 h-32 bg-emerald-500/5 rounded-full blur-2xl group-hover:bg-emerald-500/10 transition-colors" />
           <div className="h-12 w-12 md:h-14 md:w-14 rounded-xl md:rounded-2xl bg-emerald-50 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400 flex items-center justify-center mb-1 md:mb-2 shadow-inner">
             <Clock className="w-6 h-6 md:w-7 md:h-7" />
           </div>
-          <span className="text-3xl md:text-4xl font-extrabold text-zinc-900 dark:text-white tracking-tight">
+          <span className="text-3xl md:text-4xl font-extrabold tabular-nums text-zinc-900 dark:text-white tracking-tight">
             {format(new Date(deck.createdAt), 'dd/MM')}
           </span>
           <span className="text-[9px] md:text-[10px] font-extrabold text-zinc-400 uppercase tracking-[0.2em]">Ngày khởi tạo</span>
@@ -1453,7 +1453,7 @@ export default function DeckDetail({ user, profile }: DeckDetailProps) {
         
         {showMindmap && (
           <div className="space-y-4">
-          <Card className="bg-white dark:bg-zinc-900 border-none shadow-2xl rounded-2xl md:rounded-[2rem] overflow-hidden animate-in fade-in zoom-in duration-300">
+          <Card className="bg-white dark:bg-zinc-900 border-none shadow-2xl rounded-2xl md:rounded-3xl overflow-hidden animate-in fade-in zoom-in duration-300">
             <div className="p-1 bg-zinc-50 dark:bg-zinc-800/50 border-b border-zinc-100 dark:border-white/5 flex items-center gap-2 px-4 md:px-6 py-2 md:py-3">
               <div className="flex gap-1">
                 <div className="w-2.5 h-2.5 rounded-full bg-red-400/20 border border-red-400/30" />
@@ -1482,7 +1482,7 @@ export default function DeckDetail({ user, profile }: DeckDetailProps) {
             )}
           </Card>
           {aiMindmap.trim() && (
-            <Card className="premium-panel border-none shadow-2xl rounded-2xl md:rounded-[2rem] overflow-hidden animate-in fade-in zoom-in duration-300">
+            <Card className="premium-panel border-none shadow-2xl rounded-2xl md:rounded-3xl overflow-hidden animate-in fade-in zoom-in duration-300">
               <div className="p-1 bg-primary/5 dark:bg-primary/10 border-b border-primary/10 flex items-center gap-2 px-4 md:px-6 py-2 md:py-3">
                 <Sparkles size={14} className="text-primary" />
                 <span className="text-[8px] md:text-[10px] font-extrabold text-primary uppercase tracking-[0.2em]">Mindmap do AI tạo — tách riêng khỏi ghi chú của bạn</span>
@@ -1524,7 +1524,7 @@ export default function DeckDetail({ user, profile }: DeckDetailProps) {
                 key={filter.key}
                 variant={cardFilter === filter.key ? 'default' : 'outline'}
                 onClick={() => setCardFilter(filter.key)}
-                className="rounded-xl font-bold h-10 px-4 text-xs"
+                className="rounded-xl font-bold tabular-nums h-10 px-4 text-xs"
               >
                 {filter.label} ({filterCounts[filter.key]})
               </Button>
@@ -1555,7 +1555,7 @@ export default function DeckDetail({ user, profile }: DeckDetailProps) {
               Chọn tất cả đang hiển thị ({visibleCards.length})
             </Button>
             {selectedCards.length > 0 && (
-              <span className="text-[11px] font-extrabold text-emerald-600 dark:text-emerald-400 uppercase tracking-widest">
+              <span className="text-[11px] font-extrabold tabular-nums text-emerald-600 dark:text-emerald-400 uppercase tracking-widest">
                 Đã chọn {selectedCards.length} thẻ
               </span>
             )}
@@ -1604,6 +1604,26 @@ export default function DeckDetail({ user, profile }: DeckDetailProps) {
               onToggleSuspend={handleToggleSuspendCard}
             />
           ))}
+          {cards.length === 0 && (
+            <div className="premium-panel py-16 text-center">
+              <div className="flex justify-center mb-6">
+                <div className="p-6 bg-emerald-50 dark:bg-emerald-500/10 rounded-full text-emerald-500">
+                  <BookOpen size={48} />
+                </div>
+              </div>
+              <p className="text-lg font-bold text-zinc-900 dark:text-white">Bộ thẻ chưa có thẻ nào</p>
+              <p className="text-zinc-500 dark:text-zinc-400 mt-2 font-medium max-w-md mx-auto">Thêm thẻ đầu tiên để bắt đầu học — tự soạn thủ công, để AI tạo từ nội dung bạn dán, hoặc nhập thẳng từ file tài liệu (PDF, DOCX, TXT).</p>
+              {isDeckOwner && (
+                <Button
+                  onClick={() => setIsAddModalOpen(true)}
+                  className="gap-2 h-11 px-6 rounded-xl font-bold mt-6"
+                >
+                  <Plus size={16} />
+                  Thêm thẻ đầu tiên
+                </Button>
+              )}
+            </div>
+          )}
           {cards.length > 0 && filteredCards.length === 0 && (
             <div className="premium-panel py-16 text-center">
               <p className="text-lg font-bold text-zinc-900 dark:text-white">Không có thẻ nào khớp điều kiện lọc</p>
@@ -1622,7 +1642,7 @@ export default function DeckDetail({ user, profile }: DeckDetailProps) {
 
         {filteredCards.length > 0 && (
           <div className="flex flex-col items-center gap-3 pt-2">
-            <p className="text-xs font-bold text-zinc-400 uppercase tracking-widest">
+            <p className="text-xs font-bold tabular-nums text-zinc-400 uppercase tracking-widest">
               Đang hiển thị {visibleCards.length}/{filteredCards.length} thẻ
               {(cardSearch.trim() || cardFilter !== 'all') ? ` (đã lọc từ ${cards.length} thẻ)` : ''}
             </p>

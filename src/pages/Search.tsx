@@ -97,7 +97,7 @@ export default function Search({ user }: SearchProps) {
         category: deck.category,
         cardCount: deck.cardCount,
         mindmap: deck.mindmap || '',
-        color: deck.color || '#4f46e5',
+        color: deck.color || '#059669',
         createdAt: new Date().toISOString(),
         isPublic: false
       });
@@ -151,12 +151,12 @@ export default function Search({ user }: SearchProps) {
         {loading ? (
           <div className="col-span-full grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8" aria-busy="true">
             {[0, 1, 2].map((i) => (
-              <div key={i} className="skeleton-block animate-pulse h-80 rounded-[2rem] bg-slate-200/50 dark:bg-white/5" />
+              <div key={i} className="skeleton-block animate-pulse h-80 rounded-3xl bg-slate-200/50 dark:bg-white/5" />
             ))}
           </div>
         ) : results.length > 0 ? (
           results.map(deck => (
-            <Card key={deck.id} className="hover:shadow-[0_32px_64px_-12px_rgba(0,0,0,0.14)] transition-all duration-500 border border-slate-200 dark:border-white/5 group overflow-hidden bg-white dark:bg-[#0C0D0E] h-full flex flex-col rounded-[3rem]">
+            <Card key={deck.id} className="hover:shadow-[0_32px_64px_-12px_rgba(0,0,0,0.14)] transition-all duration-500 border border-slate-200 dark:border-white/5 group overflow-hidden bg-white dark:bg-[#0C0D0E] h-full flex flex-col rounded-3xl">
               <div className="h-2 bg-primary w-full opacity-50 group-hover:opacity-100 transition-opacity" />
               <CardHeader className="p-10 pb-4">
                 <div className="flex justify-between items-start">

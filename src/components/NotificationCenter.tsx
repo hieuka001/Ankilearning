@@ -177,7 +177,7 @@ export default function NotificationCenter({ user, profile }: NotificationCenter
         aria-label="Mở thông báo"
         aria-expanded={open}
         onClick={() => setOpen((value) => !value)}
-        className="relative flex h-10 w-10 items-center justify-center rounded-lg border border-black/[0.08] bg-white/90 text-zinc-900 shadow-sm backdrop-blur-xl transition hover:bg-white dark:border-white/10 dark:bg-zinc-900/90 dark:text-white"
+        className="relative flex h-11 w-11 items-center justify-center rounded-lg border border-black/[0.08] bg-white/90 text-zinc-900 shadow-sm backdrop-blur-xl transition hover:bg-white dark:border-white/10 dark:bg-zinc-900/90 dark:text-white"
       >
         <Bell className="h-4 w-4" />
         {unreadNotifications.length > 0 && (

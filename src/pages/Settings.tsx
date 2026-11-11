@@ -785,12 +785,12 @@ export default function Settings({ user, profile }: SettingsProps) {
           <div className="mt-6 grid grid-cols-2 gap-3">
             <div className="rounded-lg border border-zinc-200 bg-zinc-50 p-4 dark:border-white/10 dark:bg-white/5">
               <Flame className="mb-4 h-4 w-4 text-amber-600 dark:text-amber-400" />
-              <p className="font-mono text-2xl font-semibold text-zinc-950 dark:text-white">{profile?.streakDays ?? profile?.streak ?? 0}</p>
+              <p className="font-mono text-2xl font-semibold tabular-nums text-zinc-950 dark:text-white">{profile?.streakDays ?? profile?.streak ?? 0}</p>
               <p className="mt-1 text-xs font-medium text-zinc-500">Ngày liên tục</p>
             </div>
             <div className="rounded-lg border border-zinc-200 bg-zinc-50 p-4 dark:border-white/10 dark:bg-white/5">
               <Trophy className="mb-4 h-4 w-4 text-primary" />
-              <p className="font-mono text-2xl font-semibold text-zinc-950 dark:text-white">{profile?.totalCardsLearned || 0}</p>
+              <p className="font-mono text-2xl font-semibold tabular-nums text-zinc-950 dark:text-white">{profile?.totalCardsLearned || 0}</p>
               <p className="mt-1 text-xs font-medium text-zinc-500">Thẻ đã học</p>
             </div>
           </div>

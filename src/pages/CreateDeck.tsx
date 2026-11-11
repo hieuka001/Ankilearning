@@ -62,7 +62,7 @@ export default function CreateDeck({ user, profile }: CreateDeckProps) {
   const [isGenerating, setIsGenerating] = useState(false);
   const [isProcessingPdf, setIsProcessingPdf] = useState(false);
   const [isPublic, setIsPublic] = useState(false);
-  const [color, setColor] = useState('#4f46e5');
+  const [color, setColor] = useState('#059669');
   const [tags, setTags] = useState('');
   const pdfInputRef = useRef<HTMLInputElement>(null);
 
@@ -382,7 +382,7 @@ export default function CreateDeck({ user, profile }: CreateDeckProps) {
       </header>
 
       <form onSubmit={handleSubmit} className="space-y-10">
-        <Card className="border border-zinc-200 dark:border-white/5 shadow-2xl overflow-hidden bg-white dark:bg-[#0C0D0E] rounded-[2rem]">
+        <Card className="border border-zinc-200 dark:border-white/5 shadow-2xl overflow-hidden bg-white dark:bg-[#0C0D0E] rounded-3xl">
           <CardHeader className="p-8 pb-4 border-b border-zinc-100 dark:border-white/5 bg-zinc-50/50 dark:bg-white/5">
             <CardTitle className="text-xl font-extrabold tracking-tight">Thông tin bộ thẻ</CardTitle>
             <CardDescription className="text-[10px] font-extrabold uppercase tracking-widest text-zinc-400">Thông tin chung</CardDescription>
@@ -467,7 +467,7 @@ export default function CreateDeck({ user, profile }: CreateDeckProps) {
                   className="w-16 h-12 p-1 rounded-xl cursor-pointer"
                 />
                 <div className="flex gap-2">
-                  {['#4f46e5', '#ef4444', '#f59e0b', '#10b981', '#3b82f6', '#8b5cf6', '#ec4899'].map(c => (
+                  {['#059669', '#10b981', '#ef4444', '#f59e0b', '#3b82f6', '#8b5cf6', '#ec4899'].map(c => (
                     <button
                       key={c}
                       type="button"
@@ -498,7 +498,7 @@ export default function CreateDeck({ user, profile }: CreateDeckProps) {
         </Card>
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-          <Card className="border border-primary/20 border-dashed shadow-xl overflow-hidden bg-primary/5 rounded-[2rem]">
+          <Card className="border border-primary/20 border-dashed shadow-xl overflow-hidden bg-primary/5 rounded-3xl">
             <CardHeader className="p-8 pb-4">
               <CardTitle className="text-primary flex items-center gap-3 text-xl font-extrabold tracking-tight">
                 <Sparkles className="w-6 h-6" />
@@ -566,7 +566,7 @@ export default function CreateDeck({ user, profile }: CreateDeckProps) {
             </CardContent>
           </Card>
 
-          <Card className="border border-emerald-500/20 border-dashed shadow-xl overflow-hidden bg-emerald-500/5 rounded-[2rem]">
+          <Card className="border border-emerald-500/20 border-dashed shadow-xl overflow-hidden bg-emerald-500/5 rounded-3xl">
             <CardHeader className="p-8 pb-4">
               <CardTitle className="text-emerald-600 dark:text-emerald-400 flex items-center gap-3 text-xl font-extrabold tracking-tight">
                 <LinkIcon className="w-6 h-6" />
@@ -617,7 +617,7 @@ export default function CreateDeck({ user, profile }: CreateDeckProps) {
 
           <div className="space-y-6">
             {cards.map((card, index) => (
-              <Card key={index} className="border border-zinc-200 dark:border-white/5 shadow-xl relative group bg-white dark:bg-[#0C0D0E] rounded-[2rem] overflow-hidden">
+              <Card key={index} className="border border-zinc-200 dark:border-white/5 shadow-xl relative group bg-white dark:bg-[#0C0D0E] rounded-3xl overflow-hidden">
                 <CardContent className="p-8 space-y-6">
                   <CardTypeFields
                     value={toDraft(card)}

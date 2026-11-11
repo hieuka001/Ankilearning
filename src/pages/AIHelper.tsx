@@ -291,7 +291,7 @@ export default function AIHelper({ user, profile }: AIHelperProps) {
           cardCount: cardsToSave.length,
           createdAt: new Date().toISOString(),
           isPublic: false,
-          color: '#4f46e5',
+          color: '#059669',
           authorName: profile?.displayName || 'Unknown'
         });
         deckId = deckRef.id;
@@ -333,7 +333,7 @@ export default function AIHelper({ user, profile }: AIHelperProps) {
   return (
     <div className="max-w-6xl mx-auto space-y-8 md:space-y-12 animate-in fade-in slide-in-from-bottom-8 duration-700 font-sans pt-4 md:pt-6">
       <header className="text-center max-w-3xl mx-auto space-y-4 md:space-y-6 px-4">
-        <div className="inline-flex p-4 md:p-6 bg-primary/10 text-primary rounded-[1.5rem] md:rounded-[2rem] mb-2 shadow-2xl shadow-primary/10">
+        <div className="inline-flex p-4 md:p-6 bg-primary/10 text-primary rounded-2xl md:rounded-3xl mb-2 shadow-2xl shadow-primary/10">
           <BrainCircuit className="w-8 h-8 md:w-12 md:h-12" />
         </div>
         <h1 className="text-3xl md:text-5xl font-extrabold text-zinc-900 dark:text-white tracking-tighter text-balance">Study Copilot</h1>
@@ -353,7 +353,7 @@ export default function AIHelper({ user, profile }: AIHelperProps) {
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 md:gap-10">
         {/* Input Section */}
         <section className="lg:col-span-7 space-y-6 md:space-y-8">
-          <Card className="premium-panel border-0 bg-transparent shadow-2xl overflow-hidden rounded-3xl md:rounded-[3rem]">
+          <Card className="premium-panel border-0 bg-transparent shadow-2xl overflow-hidden rounded-3xl md:rounded-3xl">
             <CardHeader className="p-6 md:p-10 pb-4 md:pb-6 border-b border-zinc-100 dark:border-white/5">
               <div className="flex items-center gap-3 md:gap-4">
                 <div className="p-2.5 md:p-3 bg-primary/10 text-primary rounded-xl md:rounded-2xl">
@@ -373,7 +373,7 @@ export default function AIHelper({ user, profile }: AIHelperProps) {
                 </label>
                 <div 
                   onClick={() => pdfInputRef.current?.click()}
-                  className="group border-2 border-dashed border-zinc-200 dark:border-white/10 rounded-2xl md:rounded-[2rem] p-6 flex flex-col items-center justify-center cursor-pointer hover:border-blue-500/50 hover:bg-blue-500/5 transition-all"
+                  className="group border-2 border-dashed border-zinc-200 dark:border-white/10 rounded-2xl md:rounded-3xl p-6 flex flex-col items-center justify-center cursor-pointer hover:border-blue-500/50 hover:bg-blue-500/5 transition-all"
                 >
                   <div className="flex items-center gap-4">
                     <div className="p-3 bg-blue-50 dark:bg-blue-500/10 rounded-xl text-blue-500">
@@ -421,7 +421,7 @@ export default function AIHelper({ user, profile }: AIHelperProps) {
 
                 <div 
                   onClick={() => fileInputRef.current?.click()}
-                  className="group border-2 border-dashed border-zinc-200 dark:border-white/10 rounded-2xl md:rounded-[2.5rem] p-8 md:p-12 flex flex-col items-center justify-center cursor-pointer hover:border-primary/50 hover:bg-primary/5 transition-all duration-500"
+                  className="group border-2 border-dashed border-zinc-200 dark:border-white/10 rounded-2xl md:rounded-3xl p-8 md:p-12 flex flex-col items-center justify-center cursor-pointer hover:border-primary/50 hover:bg-primary/5 transition-all duration-500"
                 >
                 {image ? (
                   <div className="relative">
@@ -500,7 +500,7 @@ export default function AIHelper({ user, profile }: AIHelperProps) {
                 <Button
                   onClick={handleGenerateCards}
                   disabled={(!ocrText.trim() && !image) || isGenerating}
-                  className="w-full bg-primary hover:bg-primary/90 gap-3 md:gap-4 h-16 md:h-20 rounded-2xl md:rounded-[2rem] font-extrabold text-base md:text-xl shadow-2xl shadow-primary/30 transition-all active:scale-[0.98] group"
+                  className="w-full bg-primary hover:bg-primary/90 gap-3 md:gap-4 h-16 md:h-20 rounded-2xl md:rounded-3xl font-extrabold text-base md:text-xl shadow-2xl shadow-primary/30 transition-all active:scale-[0.98] group"
                 >
                   {isGenerating ? <Loader2 className="animate-spin w-6 h-6 md:w-7 md:h-7" /> : <Sparkles className="group-hover:animate-pulse w-6 h-6 md:w-7 md:h-7" />}
                   TẠO BỘ THẺ VỚI AI
@@ -512,7 +512,7 @@ export default function AIHelper({ user, profile }: AIHelperProps) {
 
         {/* AI Results Section */}
         <section className="lg:col-span-5 space-y-6 md:space-y-8">
-          <Card className="premium-panel border-0 bg-transparent shadow-2xl h-full flex flex-col rounded-3xl md:rounded-[3rem] overflow-hidden min-h-[400px]">
+          <Card className="premium-panel border-0 bg-transparent shadow-2xl h-full flex flex-col rounded-3xl md:rounded-3xl overflow-hidden min-h-[400px]">
             <CardHeader className="p-6 md:p-10 pb-4 md:pb-6 bg-zinc-900 dark:bg-black text-white">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-3 md:gap-4">
@@ -574,7 +574,7 @@ export default function AIHelper({ user, profile }: AIHelperProps) {
                       initial={{ opacity: 0, y: 20 }}
                       animate={{ opacity: 1, y: 0 }}
                       transition={{ delay: idx * 0.1 }}
-                      className="p-5 md:p-8 bg-zinc-50 dark:bg-white/5 rounded-2xl md:rounded-[2rem] border border-zinc-100 dark:border-white/5 space-y-4 md:space-y-6 hover:border-primary/30 transition-all group"
+                      className="p-5 md:p-8 bg-zinc-50 dark:bg-white/5 rounded-2xl md:rounded-3xl border border-zinc-100 dark:border-white/5 space-y-4 md:space-y-6 hover:border-primary/30 transition-all group"
                     >
                       <div className="flex items-center justify-between">
                         <span className="text-[8px] md:text-[9px] font-extrabold text-zinc-400 uppercase tracking-[0.3em]">Thẻ {idx + 1}</span>
@@ -614,7 +614,7 @@ export default function AIHelper({ user, profile }: AIHelperProps) {
                 </div>
               ) : (
                 <div className="h-full min-h-[300px] md:min-h-[500px] flex flex-col items-center justify-center text-center p-6 md:p-12 space-y-6 md:space-y-8">
-                  <div className="p-6 md:p-10 bg-zinc-50 dark:bg-white/5 rounded-[2rem] md:rounded-[3rem] text-zinc-200 dark:text-zinc-800 border border-zinc-100 dark:border-white/5">
+                  <div className="p-6 md:p-10 bg-zinc-50 dark:bg-white/5 rounded-3xl md:rounded-3xl text-zinc-200 dark:text-zinc-800 border border-zinc-100 dark:border-white/5">
                     <BrainCircuit className="w-16 h-16 md:w-24 md:h-24" />
                   </div>
                   <div className="space-y-2 md:space-y-3">

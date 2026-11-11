@@ -965,13 +965,13 @@ export default function Study({ user, profile }: StudyProps) {
             <div className="space-y-3 text-left">
               <div className="grid grid-cols-2 gap-3">
                 <div className="rounded-lg border border-zinc-200 bg-zinc-50 p-4 dark:border-white/10 dark:bg-white/5">
-                  <p className="text-lg font-semibold text-zinc-950 dark:text-white">
+                  <p className="text-lg font-semibold tabular-nums text-zinc-950 dark:text-white">
                     {formatSessionDuration(finishSummary.duration)}
                   </p>
                   <p className="mt-0.5 text-[11px] font-semibold uppercase text-zinc-500">Thời lượng phiên</p>
                 </div>
                 <div className="rounded-lg border border-zinc-200 bg-zinc-50 p-4 dark:border-white/10 dark:bg-white/5">
-                  <p className="text-lg font-semibold text-zinc-950 dark:text-white">
+                  <p className="text-lg font-semibold tabular-nums text-zinc-950 dark:text-white">
                     {sessionStats.reviewed > 0
                       ? `${(finishSummary.duration / sessionStats.reviewed).toFixed(1).replace('.', ',')} giây/thẻ`
                       : '—'}
@@ -985,7 +985,7 @@ export default function Study({ user, profile }: StudyProps) {
                     key={rating}
                     className="rounded-lg border border-zinc-200 bg-zinc-50 px-2 py-3 text-center dark:border-white/10 dark:bg-white/5"
                   >
-                    <p className="font-mono text-xl font-semibold text-zinc-950 dark:text-white">
+                    <p className="font-mono text-xl font-semibold tabular-nums text-zinc-950 dark:text-white">
                       {finishSummary.ratings[rating]}
                     </p>
                     <p className="mt-0.5 text-[10px] font-semibold uppercase text-zinc-500">{RATING_LABELS[rating]}</p>
@@ -994,10 +994,10 @@ export default function Study({ user, profile }: StudyProps) {
               </div>
               <div className="rounded-lg border border-zinc-200 bg-zinc-50 p-4 dark:border-white/10 dark:bg-white/5">
                 <div className="mb-2 flex items-center justify-between gap-3">
-                  <p className="text-xs font-semibold text-zinc-600 dark:text-zinc-300">
+                  <p className="text-xs font-semibold tabular-nums text-zinc-600 dark:text-zinc-300">
                     Phiên này: {sessionStats.reviewed}/{dailyGoal} thẻ so với mục tiêu ngày
                   </p>
-                  <p className="font-mono text-xs font-semibold text-zinc-500">
+                  <p className="font-mono text-xs font-semibold tabular-nums text-zinc-500">
                     {Math.min(100, Math.round((sessionStats.reviewed / dailyGoal) * 100))}%
                   </p>
                 </div>

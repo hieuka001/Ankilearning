@@ -495,7 +495,7 @@ export default function Assessment({ user, profile }: AssessmentProps) {
       : aiQuestions.filter((q, idx) => userAnswers[idx] !== q.correctAnswer).length;
     return (
       <div className="max-w-3xl mx-auto space-y-10 animate-in fade-in zoom-in duration-700 pt-10">
-        <Card className="border border-zinc-200 dark:border-white/5 shadow-2xl overflow-hidden rounded-[2rem] md:rounded-[3rem] bg-white dark:bg-[#0C0D0E]">
+        <Card className="border border-zinc-200 dark:border-white/5 shadow-2xl overflow-hidden rounded-3xl md:rounded-3xl bg-white dark:bg-[#0C0D0E]">
           <div className="h-2 md:h-3 bg-primary w-full" />
           <CardContent className="p-8 md:p-20 text-center space-y-8 md:space-y-10">
             <div className="flex justify-center">
@@ -515,17 +515,17 @@ export default function Assessment({ user, profile }: AssessmentProps) {
             </div>
             
             <div className="grid grid-cols-2 gap-4 md:gap-6 py-2 md:py-4 font-mono">
-              <div className="p-5 md:p-8 bg-zinc-50 dark:bg-white/5 rounded-[1.5rem] md:rounded-[2.5rem] border border-zinc-100 dark:border-white/5">
+              <div className="p-5 md:p-8 bg-zinc-50 dark:bg-white/5 rounded-2xl md:rounded-3xl border border-zinc-100 dark:border-white/5">
                 <p className="text-3xl md:text-5xl font-bold text-primary">{score}/{totalQuestions}</p>
                 <p className="text-[8px] md:text-[10px] font-bold text-zinc-400 uppercase tracking-[0.2em] mt-2 md:mt-3">Số câu đúng</p>
               </div>
-              <div className="p-5 md:p-8 bg-zinc-50 dark:bg-white/5 rounded-[1.5rem] md:rounded-[2.5rem] border border-zinc-100 dark:border-white/5">
+              <div className="p-5 md:p-8 bg-zinc-50 dark:bg-white/5 rounded-2xl md:rounded-3xl border border-zinc-100 dark:border-white/5">
                 <p className="text-3xl md:text-5xl font-bold text-emerald-500">{percentage}%</p>
                 <p className="text-[8px] md:text-[10px] font-bold text-zinc-400 uppercase tracking-[0.2em] mt-2 md:mt-3">Độ chính xác</p>
               </div>
             </div>
 
-            <div className="bg-zinc-50 dark:bg-white/5 p-6 md:p-8 rounded-[2rem] border border-zinc-100 dark:border-white/5">
+            <div className="bg-zinc-50 dark:bg-white/5 p-6 md:p-8 rounded-3xl border border-zinc-100 dark:border-white/5">
               <Suspense fallback={<div className="h-48 md:h-64 flex items-center justify-center animate-pulse bg-zinc-100 dark:bg-white/5 rounded-xl" />}>
                 <AssessmentResultChart score={score} total={totalQuestions} />
               </Suspense>
@@ -607,7 +607,7 @@ export default function Assessment({ user, profile }: AssessmentProps) {
             {aiQuestions.map((q, qIdx) => {
               const isCorrect = userAnswers[qIdx] === q.correctAnswer;
               return (
-                <Card key={qIdx} className={`border-none shadow-xl rounded-[2.5rem] overflow-hidden bg-white dark:bg-[#0C0D0E] ${isCorrect ? 'ring-2 ring-emerald-500/20' : 'ring-2 ring-red-500/20'}`}>
+                <Card key={qIdx} className={`border-none shadow-xl rounded-3xl overflow-hidden bg-white dark:bg-[#0C0D0E] ${isCorrect ? 'ring-2 ring-emerald-500/20' : 'ring-2 ring-red-500/20'}`}>
                   <CardHeader className="p-8 md:p-10 border-b border-zinc-50 dark:border-white/5">
                     <div className="flex items-start gap-4">
                       <div className={`flex-shrink-0 w-10 h-10 rounded-xl flex items-center justify-center font-extrabold ${isCorrect ? 'bg-emerald-100 text-emerald-600' : 'bg-red-100 text-red-600'}`}>
@@ -701,7 +701,7 @@ export default function Assessment({ user, profile }: AssessmentProps) {
           </div>
           <div className="grid gap-6">
             {testCards.map((card, idx) => (
-              <Card key={card.id} className="p-8 rounded-[2rem] border-none shadow-xl bg-white dark:bg-[#0C0D0E] overflow-hidden relative">
+              <Card key={card.id} className="p-8 rounded-3xl border-none shadow-xl bg-white dark:bg-[#0C0D0E] overflow-hidden relative">
                 <div className="absolute top-0 left-0 w-2 h-full bg-primary/20" />
                 <div className="flex flex-col md:flex-row gap-8">
                   <div className="flex-1 space-y-3">
@@ -763,7 +763,7 @@ export default function Assessment({ user, profile }: AssessmentProps) {
                 className="w-full h-full"
               >
                 <Card 
-                  className={`w-full min-h-[400px] md:min-h-[500px] flex flex-col items-center justify-center p-8 md:p-20 text-center cursor-pointer shadow-2xl rounded-[2rem] md:rounded-[3rem] border border-zinc-200 dark:border-white/5 relative overflow-hidden ${showAnswer ? 'bg-primary/5 dark:bg-primary/10' : 'bg-white dark:bg-[#0C0D0E]'}`}
+                  className={`w-full min-h-[400px] md:min-h-[500px] flex flex-col items-center justify-center p-8 md:p-20 text-center cursor-pointer shadow-2xl rounded-3xl md:rounded-3xl border border-zinc-200 dark:border-white/5 relative overflow-hidden ${showAnswer ? 'bg-primary/5 dark:bg-primary/10' : 'bg-white dark:bg-[#0C0D0E]'}`}
                   style={{
                     backgroundColor: showAnswer ? undefined : currentCard.customStyles?.backgroundColor,
                     color: showAnswer ? undefined : currentCard.customStyles?.textColor,
@@ -783,7 +783,7 @@ export default function Assessment({ user, profile }: AssessmentProps) {
                     <motion.div 
                       initial={{ y: 20, opacity: 0 }}
                       animate={{ y: 0, opacity: 1 }}
-                      className="mb-8 md:mb-12 w-full max-w-2xl mx-auto rounded-[2.5rem] overflow-hidden shadow-2xl border-4 border-white dark:border-white/10"
+                      className="mb-8 md:mb-12 w-full max-w-2xl mx-auto rounded-3xl overflow-hidden shadow-2xl border-4 border-white dark:border-white/10"
                     >
                       <img 
                         src={currentCard.imageUrl} 
@@ -822,13 +822,13 @@ export default function Assessment({ user, profile }: AssessmentProps) {
             <div className="grid grid-cols-2 gap-6 animate-in fade-in slide-in-from-top-8 duration-700">
               <Button 
                 onClick={() => handleSelfAnswer(false)}
-                className="h-24 rounded-[2rem] bg-rose-50 dark:bg-rose-500/10 text-rose-600 dark:text-rose-400 hover:bg-rose-100 dark:hover:bg-rose-500/20 border-2 border-rose-100 dark:border-rose-500/20 text-2xl font-extrabold gap-4 shadow-xl shadow-rose-500/10 transition-all hover:scale-[1.02] active:scale-95"
+                className="h-24 rounded-3xl bg-rose-50 dark:bg-rose-500/10 text-rose-600 dark:text-rose-400 hover:bg-rose-100 dark:hover:bg-rose-500/20 border-2 border-rose-100 dark:border-rose-500/20 text-2xl font-extrabold gap-4 shadow-xl shadow-rose-500/10 transition-all hover:scale-[1.02] active:scale-95"
               >
                 <XCircle size={32} /> Sai rồi
               </Button>
               <Button 
                 onClick={() => handleSelfAnswer(true)}
-                className="h-24 rounded-[2rem] bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-100 dark:hover:bg-emerald-500/20 border-2 border-emerald-100 dark:border-emerald-500/20 text-2xl font-extrabold gap-4 shadow-xl shadow-emerald-500/10 transition-all hover:scale-[1.02] active:scale-95"
+                className="h-24 rounded-3xl bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-100 dark:hover:bg-emerald-500/20 border-2 border-emerald-100 dark:border-emerald-500/20 text-2xl font-extrabold gap-4 shadow-xl shadow-emerald-500/10 transition-all hover:scale-[1.02] active:scale-95"
               >
                 <CheckCircle2 size={32} /> Chính xác
               </Button>
@@ -869,7 +869,7 @@ export default function Assessment({ user, profile }: AssessmentProps) {
             </div>
           </div>
 
-          <Card className={`border shadow-2xl rounded-[2rem] md:rounded-[3rem] overflow-hidden bg-white dark:bg-[#0C0D0E] transition-all ${isFlagged ? 'border-orange-500/50 ring-4 ring-orange-500/10' : 'border-zinc-200 dark:border-white/5'}`}>
+          <Card className={`border shadow-2xl rounded-3xl md:rounded-3xl overflow-hidden bg-white dark:bg-[#0C0D0E] transition-all ${isFlagged ? 'border-orange-500/50 ring-4 ring-orange-500/10' : 'border-zinc-200 dark:border-white/5'}`}>
             <CardContent className="p-8 md:p-16 space-y-8 md:space-y-10 relative">
               <div className="absolute top-6 right-6 z-20 flex gap-2">
                 <Button 
@@ -959,7 +959,7 @@ export default function Assessment({ user, profile }: AssessmentProps) {
   return (
     <div className="max-w-6xl mx-auto space-y-12 animate-in fade-in slide-in-from-bottom-8 duration-700 pt-6">
       <header className="text-center max-w-3xl mx-auto space-y-4 md:space-y-6 px-4">
-        <div className="inline-flex p-4 md:p-6 bg-primary/10 text-primary rounded-[1.5rem] md:rounded-[2rem] mb-2 shadow-2xl shadow-primary/10">
+        <div className="inline-flex p-4 md:p-6 bg-primary/10 text-primary rounded-2xl md:rounded-3xl mb-2 shadow-2xl shadow-primary/10">
           <BrainCircuit className="w-8 h-8 md:w-12 md:h-12" />
         </div>
         <h1 className="text-3xl md:text-5xl font-extrabold text-zinc-900 dark:text-white tracking-tighter">Kiểm tra năng lực</h1>
@@ -970,7 +970,7 @@ export default function Assessment({ user, profile }: AssessmentProps) {
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-10 pb-20">
         <div className="lg:col-span-5 space-y-8">
-          <Card className="border border-zinc-200 dark:border-white/5 shadow-2xl rounded-[3rem] overflow-hidden bg-white dark:bg-[#0C0D0E]">
+          <Card className="border border-zinc-200 dark:border-white/5 shadow-2xl rounded-3xl overflow-hidden bg-white dark:bg-[#0C0D0E]">
             <CardHeader className="p-10 border-b border-zinc-100 dark:border-white/5">
               <div className="flex items-center gap-4">
                 <div className="p-3 bg-primary/10 text-primary rounded-2xl">
@@ -999,7 +999,7 @@ export default function Assessment({ user, profile }: AssessmentProps) {
                     <div 
                       key={deck.id}
                       onClick={() => toggleDeckSelection(deck.id)}
-                      className={`p-5 rounded-[1.5rem] border-2 transition-all cursor-pointer flex items-center justify-between group ${
+                      className={`p-5 rounded-2xl border-2 transition-all cursor-pointer flex items-center justify-between group ${
                         selectedDeckIds.includes(deck.id)
                           ? 'bg-primary/5 border-primary/30 text-primary shadow-lg shadow-primary/5'
                           : 'border-zinc-100 dark:border-white/5 text-zinc-600 dark:text-zinc-400 hover:border-primary/20'
@@ -1081,7 +1081,7 @@ export default function Assessment({ user, profile }: AssessmentProps) {
         <div className="lg:col-span-7 grid grid-cols-1 gap-8">
           <Card 
             onClick={startSelfTest}
-            className="group cursor-pointer border-none shadow-xl hover:shadow-2xl transition-all duration-500 rounded-[3rem] bg-white dark:bg-[#0C0D0E] overflow-hidden border-2 border-transparent hover:border-primary/20"
+            className="group cursor-pointer border-none shadow-xl hover:shadow-2xl transition-all duration-500 rounded-3xl bg-white dark:bg-[#0C0D0E] overflow-hidden border-2 border-transparent hover:border-primary/20"
           >
             <div className="p-10 md:p-14 space-y-6">
               <div className="w-16 h-16 rounded-2xl bg-emerald-50 dark:bg-emerald-900/20 text-emerald-600 dark:text-emerald-400 flex items-center justify-center group-hover:scale-110 transition-transform duration-500">
@@ -1099,7 +1099,7 @@ export default function Assessment({ user, profile }: AssessmentProps) {
 
           <Card 
             onClick={startAIExam}
-            className="group cursor-pointer border-none shadow-xl hover:shadow-2xl transition-all duration-500 rounded-[3rem] bg-zinc-900 dark:bg-emerald-950 text-white overflow-hidden"
+            className="group cursor-pointer border-none shadow-xl hover:shadow-2xl transition-all duration-500 rounded-3xl bg-zinc-900 dark:bg-emerald-950 text-white overflow-hidden"
           >
             <div className="p-10 md:p-14 space-y-6 relative overflow-hidden">
               <div className="absolute -top-10 -right-10 w-40 h-40 bg-primary/20 rounded-full blur-3xl animate-pulse" />
@@ -1116,7 +1116,7 @@ export default function Assessment({ user, profile }: AssessmentProps) {
             </div>
           </Card>
 
-          <Card className="border border-zinc-200 dark:border-white/5 shadow-2xl rounded-[3rem] bg-white dark:bg-[#0C0D0E] overflow-hidden">
+          <Card className="border border-zinc-200 dark:border-white/5 shadow-2xl rounded-3xl bg-white dark:bg-[#0C0D0E] overflow-hidden">
             <div className="p-10 md:p-14 space-y-8">
               <div className="flex items-center gap-4">
                 <div className="w-16 h-16 rounded-2xl bg-emerald-50 dark:bg-emerald-900/20 text-emerald-600 dark:text-emerald-400 flex items-center justify-center">

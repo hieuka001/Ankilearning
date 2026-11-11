@@ -351,7 +351,7 @@ export default function Decks({ user }: DecksProps) {
         key={`virtual:${node.name}`}
         style={depth > 0 ? { marginLeft: `${Math.min(depth, 3) * 16}px` } : undefined}
       >
-        <Card className="h-full flex flex-col rounded-[2rem] border-2 border-dashed border-zinc-300 bg-zinc-50/70 shadow-none dark:border-white/15 dark:bg-white/[0.02]">
+        <Card className="h-full flex flex-col rounded-3xl border-2 border-dashed border-zinc-300 bg-zinc-50/70 shadow-none dark:border-white/15 dark:bg-white/[0.02]">
           <CardHeader className="p-8 pb-4">
             <div className="flex items-start justify-between">
               <div className="p-3 rounded-2xl bg-zinc-100 dark:bg-white/5 text-zinc-400">
@@ -382,15 +382,15 @@ export default function Decks({ user }: DecksProps) {
           <CardContent className="flex-1 flex flex-col justify-end px-8 pb-8">
             <div className="mb-6 grid grid-cols-3 gap-2 text-center rounded-2xl border border-emerald-500/10 bg-emerald-500/[0.035] p-4 dark:border-white/10 dark:bg-white/[0.035]">
               <div className="mode-chip p-2">
-                <p className="font-mono text-sm font-extrabold text-zinc-900 dark:text-white">{stats.learned}</p>
+                <p className="font-mono text-sm font-extrabold tabular-nums text-zinc-900 dark:text-white">{stats.learned}</p>
                 <p className="text-[9px] font-bold uppercase text-zinc-400">Đã học</p>
               </div>
               <div className="mode-chip p-2">
-                <p className="font-mono text-sm font-extrabold text-zinc-900 dark:text-white">{stats.due}</p>
+                <p className="font-mono text-sm font-extrabold tabular-nums text-zinc-900 dark:text-white">{stats.due}</p>
                 <p className="text-[9px] font-bold uppercase text-zinc-400">Đến hạn</p>
               </div>
               <div className="mode-chip p-2">
-                <p className="font-mono text-sm font-extrabold text-zinc-900 dark:text-white">{totalCards}</p>
+                <p className="font-mono text-sm font-extrabold tabular-nums text-zinc-900 dark:text-white">{totalCards}</p>
                 <p className="text-[9px] font-bold uppercase text-zinc-400">Tổng</p>
               </div>
             </div>
@@ -418,7 +418,7 @@ export default function Decks({ user }: DecksProps) {
         <div className="skeleton-block animate-pulse h-14 w-full rounded-2xl bg-zinc-200/50 dark:bg-white/5" />
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
           {[0, 1, 2].map((i) => (
-            <div key={i} className="skeleton-block animate-pulse h-72 rounded-[2rem] bg-zinc-200/50 dark:bg-white/5" />
+            <div key={i} className="skeleton-block animate-pulse h-72 rounded-3xl bg-zinc-200/50 dark:bg-white/5" />
           ))}
         </div>
       </div>
@@ -516,7 +516,7 @@ export default function Decks({ user }: DecksProps) {
 
             return (
             <Link key={deck.id} to={`/decks/${deck.id}`} style={row.depth > 0 ? { marginLeft: `${Math.min(row.depth, 3) * 16}px` } : undefined}>
-              <Card className="cv-auto card-hover deck-card-premium hover:shadow-2xl hover:-tranzinc-y-2 transition-all duration-500 border shadow-xl group overflow-hidden h-full flex flex-col rounded-[2rem]">
+              <Card className="cv-auto card-hover deck-card-premium hover:shadow-2xl hover:-tranzinc-y-2 transition-all duration-500 border shadow-xl group overflow-hidden h-full flex flex-col rounded-3xl">
                 <div className="relative h-28 w-full shrink-0 overflow-hidden">
                   <img
                     src={getCategoryArt(deck.category)}
@@ -596,22 +596,22 @@ export default function Decks({ user }: DecksProps) {
                   <div className="mb-6 space-y-3 rounded-2xl border border-emerald-500/10 bg-emerald-500/[0.035] p-4 dark:border-white/10 dark:bg-white/[0.035]">
                     <div className="flex items-center justify-between text-xs font-bold text-zinc-500 dark:text-zinc-400">
                       <span>Đã thuộc</span>
-                      <span className="font-mono text-primary">{progress}%</span>
+                      <span className="font-mono tabular-nums text-primary">{progress}%</span>
                     </div>
                     <div className="h-2 overflow-hidden rounded-full bg-zinc-200/70 dark:bg-white/10">
                       <div className="xp-gradient h-full rounded-full" style={{ width: `${progress}%` }} />
                     </div>
                     <div className="grid grid-cols-3 gap-2 text-center">
                       <div className="mode-chip p-2">
-                        <p className="font-mono text-sm font-extrabold text-zinc-900 dark:text-white">{stats.learned}</p>
+                        <p className="font-mono text-sm font-extrabold tabular-nums text-zinc-900 dark:text-white">{stats.learned}</p>
                         <p className="text-[9px] font-bold uppercase text-zinc-400">Đã học</p>
                       </div>
                       <div className="mode-chip p-2">
-                        <p className="font-mono text-sm font-extrabold text-zinc-900 dark:text-white">{stats.due}</p>
+                        <p className="font-mono text-sm font-extrabold tabular-nums text-zinc-900 dark:text-white">{stats.due}</p>
                         <p className="text-[9px] font-bold uppercase text-zinc-400">Đến hạn</p>
                       </div>
                       <div className="mode-chip p-2">
-                        <p className="font-mono text-sm font-extrabold text-zinc-900 dark:text-white">{row.totalCards}</p>
+                        <p className="font-mono text-sm font-extrabold tabular-nums text-zinc-900 dark:text-white">{row.totalCards}</p>
                         <p className="text-[9px] font-bold uppercase text-zinc-400">Tổng</p>
                       </div>
                     </div>
@@ -634,7 +634,7 @@ export default function Decks({ user }: DecksProps) {
                   <div className="flex items-center justify-between pt-6 border-t border-zinc-100 dark:border-white/5">
                     <div className="flex flex-col">
                       <span className="text-[9px] font-extrabold text-zinc-400 uppercase tracking-[0.2em]">Dung lượng</span>
-                      <span className="text-2xl font-extrabold text-zinc-900 dark:text-white font-mono tracking-tighter">{row.totalCards}</span>
+                      <span className="text-2xl font-extrabold text-zinc-900 dark:text-white font-mono tabular-nums tracking-tighter">{row.totalCards}</span>
                     </div>
                     <div className="flex flex-col items-end">
                       <span className="text-[9px] font-extrabold text-zinc-400 uppercase tracking-[0.2em]">Danh mục</span>

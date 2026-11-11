@@ -1,3 +1,20 @@
+/* ==========================================================================
+   DESIGN TOKENS — Appllama adaptation (web), locked rules. Do not improvise
+   outside this scale; a new value needs a rule change here first.
+   - Accent: ONE hue — emerald, via the --primary token (#059669 light /
+     #34d399 dark). Other hues are semantic only (red/rose destructive,
+     amber/orange warning & streak). No indigo/violet UI accents.
+   - Shape lock (corner-radius scale):
+       dialogs / sheets ......... rounded-3xl
+       hero / feature panels .... rounded-3xl
+       cards .................... rounded-2xl
+       inputs / buttons ......... rounded-xl
+       chips / pills / avatars .. rounded-full
+     Arbitrary rounded-[...] values are banned in pages/components.
+   - Numbers that count (due cards, streak, XP, totals) use tabular-nums.
+   - Motion: press feedback 120-150 ms, scale 0.97, strong ease-out
+     (--ease-out). Decorative motion dies under prefers-reduced-motion.
+   ========================================================================== */
 @import "@fontsource-variable/geist";
 @import "tailwindcss";
 @plugin "@tailwindcss/typography";
@@ -7,6 +24,8 @@
 @custom-variant dark (&:is(.dark *));
 
 @theme {
+  /* Strong ease-out (Appllama motion laws): built-in curves are too weak. */
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
   --font-sans: "Be Vietnam Pro", "Geist Variable", "Geist", "Noto Sans SC", ui-sans-serif, system-ui, sans-serif;
   --font-serif: "Be Vietnam Pro", "Geist Variable", "Geist", "Noto Sans SC", ui-sans-serif, system-ui, sans-serif;
 }
@@ -222,8 +241,8 @@
 
   .card-hover {
     transition:
-      transform 240ms ease,
-      box-shadow 240ms ease;
+      transform 240ms var(--ease-out),
+      box-shadow 240ms var(--ease-out);
   }
 
   @media (hover: hover) {
@@ -255,7 +274,7 @@
   .stagger-children > *:nth-child(12) { animation-delay: 440ms; }
 
   .btn-press {
-    transition: transform 120ms ease;
+    transition: transform 120ms var(--ease-out);
   }
 
   .btn-press:active {
@@ -751,8 +770,8 @@
 
   .topbar-menu-button {
     display: flex;
-    height: 2.5rem;
-    width: 2.5rem;
+    height: 2.75rem;
+    width: 2.75rem;
     flex-shrink: 0;
     align-items: center;
     justify-content: center;

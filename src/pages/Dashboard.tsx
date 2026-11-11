@@ -438,7 +438,7 @@ export default function Dashboard({ user, profile, recentSessions }: DashboardPr
                   <p className="text-sm font-medium text-zinc-700 dark:text-zinc-300">
                     Hôm nay: {cardsToday}/{dailyGoal} thẻ
                   </p>
-                  <p className="font-mono text-xs font-semibold text-muted-foreground">{Math.round(dailyProgress)}%</p>
+                  <p className="font-mono text-xs font-semibold tabular-nums text-muted-foreground">{Math.round(dailyProgress)}%</p>
                 </div>
                 <div className="h-2 overflow-hidden rounded-full bg-black/[0.06] dark:bg-white/10">
                   <motion.div
@@ -487,15 +487,15 @@ export default function Dashboard({ user, profile, recentSessions }: DashboardPr
           </div>
           <div>
             <p className="text-sm font-semibold text-zinc-950 dark:text-white">Cấp {xpProgress.level}</p>
-            <p className="text-xs text-muted-foreground">{xpProgress.xp} XP tích lũy</p>
+            <p className="text-xs tabular-nums text-muted-foreground">{xpProgress.xp} XP tích lũy</p>
           </div>
         </div>
         <div className="min-w-0 flex-1">
           <div className="mb-2 flex items-center justify-between gap-4">
-            <p className="text-xs font-medium text-zinc-600 dark:text-zinc-300">
+            <p className="text-xs font-medium tabular-nums text-zinc-600 dark:text-zinc-300">
               Còn {Math.max(0, xpProgress.xpForNextLevel - xpProgress.xpIntoLevel)} XP để lên cấp {xpProgress.level + 1}
             </p>
-            <p className="font-mono text-xs font-semibold text-muted-foreground">
+            <p className="font-mono text-xs font-semibold tabular-nums text-muted-foreground">
               {xpProgress.xpIntoLevel}/{xpProgress.xpForNextLevel} XP
             </p>
           </div>
@@ -773,7 +773,7 @@ function StatTile({
         {icon}
       </div>
       <p className="text-xs font-medium text-muted-foreground">{label}</p>
-      <p className="mt-1 font-mono text-3xl font-semibold text-zinc-950 dark:text-white">{value}</p>
+      <p className="mt-1 font-mono text-3xl font-semibold tabular-nums text-zinc-950 dark:text-white">{value}</p>
     </div>
   );
 }
@@ -1021,7 +1021,7 @@ function DeepStatsPanel({ data }: { data: DeepStatsData }) {
           <p className="text-xs font-semibold uppercase text-muted-foreground">Tỷ lệ nhớ thật (true retention)</p>
           {retention.rate !== null ? (
             <>
-              <p className="mt-3 font-mono text-4xl font-semibold text-zinc-950 dark:text-white">
+              <p className="mt-3 font-mono text-4xl font-semibold tabular-nums text-zinc-950 dark:text-white">
                 {formatRatePercent(retention.rate)}
               </p>
               <p className="mt-2 text-sm leading-6 text-muted-foreground">

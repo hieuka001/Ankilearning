@@ -398,7 +398,7 @@ export const ReviewCard = memo(function ReviewCard({
           </Button>
         </div>
         <div className="min-w-0 flex-1 text-right">
-          <p className="text-xs font-semibold text-zinc-500 dark:text-zinc-400">{currentIndex + 1} / {totalCards}</p>
+          <p className="text-xs font-semibold tabular-nums text-zinc-500 dark:text-zinc-400">{currentIndex + 1} / {totalCards}</p>
           <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-zinc-200 dark:bg-white/10">
             <motion.div
               className="h-full rounded-full bg-zinc-950 dark:bg-white"
